@@ -1,9 +1,20 @@
+// ============================================================================
+// File: main.js
+// Purpose: Three.js sandbox environment for testing the liquid-glass shaders.
+// Description: 
+//   This module initializes a Three.js scene containing a post-processed
+//   Gaussian blur layer and a main refraction target. It wires up interactive
+//   UI controls for tuning shader uniforms dynamically.
+// ============================================================================
+
 import './style.css';
 import * as THREE from 'three';
 import vertexShader from './shaders/vertex.glsl?raw';
 import fragmentShader from './shaders/glass.frag?raw';
 import gaussianBlurShader from './shaders/gaussianBlur.frag?raw';
 
+// --- Configuration Defaults ---
+// These default values map directly to the uniform variables used by the shaders
 const DEFAULTS = {
   max_z: 16.0,
   displacement_scale: 78.5,
@@ -31,8 +42,9 @@ const DEFAULTS = {
   shadow_intensity: 0.50,
 };
 
+// --- Constants ---
 const BLUR_RADIUS_MAX_PX = 28.0;
-const MAX_GAUSS_PAIRS = 14;
+const MAX_GAUSS_PAIRS = 14;       // Bound the maximum blurring capability based on shader limits
 const MAX_GAUSS_RADIUS = MAX_GAUSS_PAIRS * 2;
 const DEFAULT_BACKGROUND_URL = '/reference-scene.svg';
 const DEFAULT_STAGE_SHAPE = {
@@ -151,6 +163,9 @@ const bgResetEl = document.querySelector('[data-bg-reset]');
 const controlsToggleEl = document.querySelector('[data-controls-toggle]');
 const controlsPanels = document.querySelectorAll('[data-controls-panel]');
 
+// --- Three.js Initialization ---
+
+// Create the primary WebGL renderer
 const renderer = new THREE.WebGLRenderer({
     canvas: canvasEl,
     antialias: true,
@@ -160,12 +175,14 @@ const renderer = new THREE.WebGLRenderer({
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.setClearColor(0x000000, 0);
 
+// Basic scene layout with single orthogonal camera rendering planes
 const scene = new THREE.Scene();
 const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
 
+// Construct object configuration mirroring 'glass.frag' shader properties
 const uniforms = {
-    cogl_sampler: { value: null },
-  scene_blur: { value: null },
+    cogl_sampler: { value: null },     // Unaltered background input
+    scene_blur: { value: null },       // Blurred background input
     resolution_x: { value: 0.0 },
     resolution_y: { value: 0.0 },
     pointer_x: { value: -1000.0 },
@@ -179,6 +196,7 @@ const uniforms = {
     ...Object.fromEntries(Object.entries(DEFAULTS).map(([k, v]) => [k, { value: v }])),
 };
 
+// Assign the refraction shader to the mesh material
 const material = new THREE.ShaderMaterial({
     vertexShader,
     fragmentShader,
@@ -188,18 +206,23 @@ const material = new THREE.ShaderMaterial({
     depthWrite: false,
 });
 
+// Setup the single plane mesh on the primary scene
 scene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material));
+
+// --- Gaussian Blur Initialization ---
 
 const postCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
 const backgroundScene = new THREE.Scene();
 const blurScene = new THREE.Scene();
 
+// Allocating cached arrays mapping to shader arrays
 const blurPairOffsets = new Float32Array(MAX_GAUSS_PAIRS);
 const blurPairWeights = new Float32Array(MAX_GAUSS_PAIRS);
 const blurKernelState = {
   radiusKey: -1,
 };
 
+// Configuration variables for the separation passes of blur
 const blurUniforms = {
   tInput: { value: null },
   uDirection: { value: new THREE.Vector2(1.0, 0.0) },
@@ -210,6 +233,7 @@ const blurUniforms = {
   uPairWeights: { value: blurPairWeights },
 };
 
+// Shader responsible for executing individual Gaussian blur passes
 const blurMaterial = new THREE.ShaderMaterial({
   vertexShader,
   fragmentShader: gaussianBlurShader,
@@ -546,6 +570,8 @@ window.addEventListener('beforeunload', () => {
   releaseObjectUrl();
 });
 
+// --- WebGL Render Targets ---
+// Render layers utilized for multipass drawing operations.
 const renderTargetOptions = {
   minFilter: THREE.LinearFilter,
   magFilter: THREE.LinearFilter,
@@ -554,8 +580,11 @@ const renderTargetOptions = {
   stencilBuffer: false,
 };
 
+// Target caching primary unblurred background pass
 const sharpTarget = new THREE.WebGLRenderTarget(1, 1, renderTargetOptions);
+// Target resolving ping-pong axis blur outputs
 const blurTempTarget = new THREE.WebGLRenderTarget(1, 1, renderTargetOptions);
+// Target containing final blurred backdrop supplied to master shader
 const blurTarget = new THREE.WebGLRenderTarget(1, 1, renderTargetOptions);
 
 sharpTarget.texture.colorSpace = THREE.SRGBColorSpace;
@@ -602,50 +631,63 @@ function blurStrengthToRadiusPx(blurStrength) {
   return eased * BLUR_RADIUS_MAX_PX;
 }
 
+// Standard probability mass density scaling for Gaussian distribution
 function gaussianWeight(distance, sigma) {
   return Math.exp(-(distance * distance) / (2.0 * sigma * sigma));
 }
 
+// Calculate bilinear weights to reduce shader texture sampling taps
 function rebuildGaussianKernel(radiusPx) {
   const clampedRadius = THREE.MathUtils.clamp(radiusPx, 0.0, MAX_GAUSS_RADIUS);
   const radiusKey = Math.round(clampedRadius * 100);
 
+  // Return early if kernel size matches cached version
   if (radiusKey === blurKernelState.radiusKey)
     return;
 
+  // Clear buffers
   blurKernelState.radiusKey = radiusKey;
   blurPairOffsets.fill(0.0);
   blurPairWeights.fill(0.0);
 
   const kernelRadius = Math.min(Math.ceil(clampedRadius), MAX_GAUSS_RADIUS);
 
+  // Default no-blur case pushes a 1.0 weight center tap
   if (kernelRadius <= 0) {
     blurUniforms.uCenterWeight.value = 1.0;
     blurUniforms.uPairCount.value = 0;
     return;
   }
 
+  // Populate mathematical weights spanning given radius 
   const sigma = Math.max(clampedRadius * 0.5, 0.0001);
   const weights = new Array(kernelRadius + 1);
   let normalization = 0.0;
 
+  // Evaluate linear Gaussian density
   for (let tap = 0; tap <= kernelRadius; tap += 1) {
     const weight = gaussianWeight(tap, sigma);
     weights[tap] = weight;
-    normalization += tap === 0 ? weight : weight * 2.0;
+    normalization += tap === 0 ? weight : weight * 2.0; // Fold right half into symmetric calculation
   }
 
+  // Preconfigure Center weight 
   blurUniforms.uCenterWeight.value = weights[0] / normalization;
 
   let pairCount = 0;
+  
+  // Collapse adjacent fragment inputs into single bilinear paired lookups to half GPU fetch load
   for (let tap = 1; tap <= kernelRadius && pairCount < MAX_GAUSS_PAIRS; tap += 2) {
     const weightA = weights[tap];
     const weightB = tap + 1 <= kernelRadius ? weights[tap + 1] : 0.0;
     const pairWeight = (weightA + weightB) / normalization;
+    
+    // Evaluate spatial gradient offset between pixels
     const pairOffset = (weightA + weightB) > 0.0
       ? ((tap * weightA) + ((tap + 1) * weightB)) / (weightA + weightB)
       : tap;
 
+    // Apply linear mapping pairs to shader inputs
     blurPairOffsets[pairCount] = pairOffset;
     blurPairWeights[pairCount] = pairWeight;
     pairCount += 1;
@@ -736,13 +778,16 @@ window.addEventListener('scroll', () => {
 
 new ResizeObserver(updateResolution).observe(frameEl);
 
+// Main Render Cycle: Calculates underlying blurred image textures prior to rendering refractive lens 
 function renderBackgroundBlur() {
   const blurStrength = Math.max(uniforms.blur_strength.value, 0.0);
   const blurRadiusPx = blurStrengthToRadiusPx(blurStrength);
 
+  // Initial step captures unblurred 1:1 image representation into Sharp target 
   renderer.setRenderTarget(sharpTarget);
   renderer.render(backgroundScene, postCamera);
 
+  // Bail rendering early for zero-blur to reduce performance impact
   if (blurRadiusPx < 0.25) {
     renderer.setRenderTarget(blurTarget);
     renderer.render(backgroundScene, postCamera);
@@ -750,17 +795,18 @@ function renderBackgroundBlur() {
     return;
   }
 
+  // Pre-calculate gaussian optimization kernel if radius has changed
   rebuildGaussianKernel(blurRadiusPx);
 
-  // Separable Gaussian blur pass: horizontal then vertical.
+  // Separable Gaussian blur pass: horizontal then vertical pass.
   blurUniforms.tInput.value = sharpTarget.texture;
-  blurUniforms.uDirection.value.set(1.0, 0.0);
-  renderer.setRenderTarget(blurTempTarget);
+  blurUniforms.uDirection.value.set(1.0, 0.0);       // Execute Horizontal blurring algorithm
+  renderer.setRenderTarget(blurTempTarget);          // Draw partial horizontally-blurred intermediate buffer
   renderer.render(blurScene, postCamera);
 
   blurUniforms.tInput.value = blurTempTarget.texture;
-  blurUniforms.uDirection.value.set(0.0, 1.0);
-  renderer.setRenderTarget(blurTarget);
+  blurUniforms.uDirection.value.set(0.0, 1.0);       // Proceed with Vertical algorithm based on horizontal data
+  renderer.setRenderTarget(blurTarget);              // Output fully convoluted Blur Result into ultimate map
   renderer.render(blurScene, postCamera);
 
   renderer.setRenderTarget(null);
@@ -805,26 +851,36 @@ shapeSliders.forEach(slider => {
   });
 });
 
+// Ensure the UI state is accurately matching defaults on startup script initialization
 syncShapeForCurrentImage();
 setupUniformSliderInfo();
 updateControlsVisibility();
 updateStageShadow();
 
+// Main rendering lifecycle drawing individual frames
 function renderLoop() {
   const rect = frameEl.getBoundingClientRect();
+  
+  // Track the CSS position of the DOM frame
   updateViewportMapping(rect);
 
+  // Evaluate post-process gaussian blurring
   renderBackgroundBlur();
 
+  // Reset pointer state uniformly to fallback positions
   uniforms.pointer_x.value = -1000.0;
   uniforms.pointer_y.value = -1000.0;
   uniforms.intensity.value = 0.0;
+  
+  // Track and visualize drag variables for debugging
   pointerEl.textContent = drag.active
     ? `drag: ${drag.x.toFixed(1)}, ${drag.y.toFixed(1)}`
     : `drag: ${drag.x.toFixed(1)}, ${drag.y.toFixed(1)}`;
 
-    renderer.render(scene, camera);
-    requestAnimationFrame(renderLoop);
+  // Finally draw standard composition to presentation canvas  
+  renderer.render(scene, camera);
+  requestAnimationFrame(renderLoop);
 }
 
+// Start the continuous animation cycle  
 requestAnimationFrame(renderLoop);
