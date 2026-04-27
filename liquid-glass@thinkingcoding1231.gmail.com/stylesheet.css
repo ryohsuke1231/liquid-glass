@@ -1,0 +1,43 @@
+/* Class to make the original GNOME popup backgrounds (like the calendar) completely transparent */
+.liquid-glass-transparent {
+    background-color: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    
+    /* Completely disable default GNOME CSS transitions. 
+       We handle the open/close animations manually via JavaScript spring physics. */
+    transition: none !important;
+    transition-duration: 0ms !important;
+}
+
+/* Base class for our custom background actor that renders the glass effect */
+.liquid-glass-bg-actor {
+    background-color: transparent !important;
+}
+
+/* Classes to adjust text color based on the system theme (Light/Dark mode) */
+.liquid-glass-dark-bg {
+    color: #FFFFFF !important;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.5);
+}
+
+.liquid-glass-light-bg {
+    color: #000000 !important;
+}
+
+/* Force transparency on all Dash to Dock background containers */
+#dashtodockDashContainer,
+#dashtodockContainer,
+.dashtodock-box,
+.dash-background {
+    background-color: transparent !important;
+    background-image: none !important;
+    border: none !important;
+    box-shadow: none !important;
+}
+
+/* Force transparency on the notification banner */
+.liquid-glass-transparent.notification-banner {
+    background-color: transparent !important;
+    box-shadow: none !important;
+}

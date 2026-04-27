@@ -1,0 +1,8 @@
+{
+  "name": "Liquid Glass",
+  "description": "like liquid glass",
+  "uuid": "liquid-glass@thinkingcoding1231.gmail.com",
+  "shell-version": [
+    "49", "50"
+  ]
+}
