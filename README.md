@@ -56,10 +56,10 @@ This is not just a blurred background. I built a custom `Clutter.ShaderEffect` t
 ## 📖 The Story Behind the Math
 Recreating the perfect "glass" look was a journey of trial and error. 
 I started with simple Gaussian blur and opacity tweaks, but it looked flat and lifeless. To capture the depth and fluidity of real glass, I had to dive deep into optics and geometry.
-I started to make on WebGL/Three.js to perfect the math and real-time tuning before porting it to GJS/Clutter. I had to implement Snell's Law for refraction, superellipse formulas for volume profiling, and a custom lighting model that combined rim lighting with fresnel falloff and specular highlights.
+I started by building a prototype in WebGL/Three.js to perfect the math and real-time tuning before porting it to GJS/Clutter. I had to implement Snell's Law for refraction, superellipse formulas for volume profiling, and a custom lighting model that combined rim lighting with fresnel falloff and specular highlights.
 
 Capturing the background of the menu and applying the shader effect to it was another challenge. I had to figure out how to sample the background texture and apply the shader effect in real-time as the menu opened and closed.
-In Wayland, I was not able to capture the background texture directly, so I had to use 'Clutter.Clone' to create a live clone of the background and apply the shader effect to it.
+In Wayland, I wasn't able to capture the background texture directly, so I had to use `Clutter.Clone` to create a live clone of the background and apply the shader effect to it.
 
 I lost count of how many times I crashed GNOME Shell during development.
 
