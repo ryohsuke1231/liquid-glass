@@ -1,0 +1,117 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.liquid-glass@thinkingcoding1231.gmail.com" path="/org/gnome/shell/extensions/liquid-glass/">
+
+    <key name="enable-dock-glass" type="b">
+      <default>true</default>
+      <summary>Enable glass effect for Dock</summary>
+      <description>Whether to apply the liquid glass effect to the dash to dock.</description>
+    </key>
+    <key name="dock-margin-bottom" type="i">
+      <default>8</default>
+      <summary>Bottom margin</summary>
+    </key>
+    <key name="dock-tint-color" type="s">
+      <default>"#ffffff"</default>
+      <summary>Tint color (Hex)</summary>
+    </key>
+    <key name="dock-tint-strength" type="d">
+      <default>0.12</default>
+      <summary>Tint strength</summary>
+    </key>
+    <key name="dock-blur-radius" type="i">
+      <default>5</default>
+      <summary>Blur radius</summary>
+    </key>
+    <key name="dock-corner-radius" type="d">
+      <default>30.0</default>
+      <summary>Corner radius</summary>
+    </key>
+
+    <key name="enable-menu-glass" type="b">
+      <default>true</default>
+      <summary>Enable glass effect for Menus</summary>
+    </key>
+    <key name="menu-glass-expand" type="i">
+      <default>12</default>
+      <summary>Glass expand pixels</summary>
+    </key>
+    <key name="menu-y-offset" type="i">
+      <default>17</default> <summary>Y offset</summary>
+    </key>
+    <key name="menu-enable-adaptive-text-color" type="b">
+      <default>true</default>
+      <summary>Enable adaptive text color</summary>
+    </key>
+    <key name="menu-sample-per-element" type="b">
+      <default>false</default>
+      <summary>Sample per element</summary>
+    </key>
+    <key name="menu-sample-interval-ms" type="i">
+      <default>400</default>
+      <summary>Sample interval (ms)</summary>
+    </key>
+    <key name="menu-tint-color" type="s">
+      <default>"#ffffff"</default>
+      <summary>Tint color (Hex)</summary>
+    </key>
+    <key name="menu-tint-strength" type="d">
+      <default>0.20</default>
+      <summary>Tint strength</summary>
+    </key>
+    <key name="menu-blur-radius" type="i">
+      <default>8</default>
+      <summary>Blur radius</summary>
+    </key>
+    <key name="menu-corner-radius" type="d">
+      <default>60.0</default>
+      <summary>Corner radius</summary>
+    </key>
+
+    <key name="enable-notification-glass" type="b">
+      <default>true</default>
+      <summary>Enable glass effect for Notifications</summary>
+    </key>
+    <key name="notification-enable-adaptive-text-color" type="b">
+      <default>true</default>
+      <summary>Enable adaptive text color</summary>
+    </key>
+    <key name="notification-sample-per-element" type="b">
+      <default>false</default>
+      <summary>Sample per element</summary>
+    </key>
+    <key name="notification-sample-interval-ms" type="i">
+      <default>400</default>
+      <summary>Sample interval (ms)</summary>
+    </key>
+    <key name="notification-hide-safety-margin" type="i">
+      <default>7</default>
+      <summary>Hide safety margin</summary>
+    </key>
+    <key name="notification-tint-color" type="s">
+      <default>"#ffffff"</default>
+      <summary>Tint color (Hex)</summary>
+    </key>
+    <key name="notification-tint-strength" type="d">
+      <default>0.08</default>
+      <summary>Tint strength</summary>
+    </key>
+    <key name="notification-blur-radius" type="i">
+      <default>10</default>
+      <summary>Blur radius</summary>
+    </key>
+    <key name="notification-corner-radius" type="d">
+      <default>30.0</default>
+      <summary>Corner radius</summary>
+    </key>
+    <key name="notification-glass-expand" type="i">
+      <default>12</default>
+      <summary>Glass expand pixels</summary>
+    </key>
+    <key name="notification-y-offset" type="i">
+      <default>10</default>
+      <summary>Y offset</summary>
+    </key>
+
+  </schema>
+</schemalist>

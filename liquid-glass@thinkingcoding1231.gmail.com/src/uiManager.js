@@ -15,21 +15,27 @@ import { StageContrastSampler, AdaptiveContrastConfig } from './contrastSampler.
 const SHADER_PADDING = 20; 
 
 // How much larger the glass background should be compared to the actual menu UI.
-const GLASS_EXPAND = 12;   
+// const GLASS_EXPAND = 12;   
 
 // Distance to shift the entire menu downwards to avoid overlapping with the top panel.
-const MENU_Y_OFFSET = GLASS_EXPAND + 5;  
+// const MENU_Y_OFFSET = GLASS_EXPAND + 5;  
 
 // Adaptive text color flags
 const ENABLE_ADAPTIVE_TEXT_COLOR = true;
 const SAMPLE_PER_ELEMENT = false;
 const SAMPLE_INTERVAL_MS = 400; // How often to resample colors while the menu is open (in milliseconds)
 
+const TINT_COLOR = [1.0, 1.0, 1.0]; // Pure white tint for the frosted glass effect
+const TINT_STRENGTH = 0.20; // Subtle tint strength to enhance the glass look without overpowering the background
+const BLUR_RADIUS = 8; // The radius of the native blur effect applied to the background clones
+const CORNER_RADIUS = 60.0; // The radius for the rounded corners of the dock background
+
 // ==============================================
 
 export class UIManager {
-    constructor(extensionPath) {
+    constructor(extensionPath, settings) {
         this.extensionPath = extensionPath;
+        this._settings = settings;
         
         // Target the main container of the Date/Calendar menu
         this.targetActor = Main.panel.statusArea.dateMenu.menu.actor;
@@ -51,6 +57,9 @@ export class UIManager {
         this._signals = [];
         this._frameSyncId = 0;
 
+        this._glassExpand = null;
+        this._menuYoffset = null;
+
         // Custom spring physics parameters for the open/close animation
         // Spring(stiffness, damping, mass)
         this._springScale = new Spring(120, 8, 1.0);
@@ -58,15 +67,17 @@ export class UIManager {
         this._tickId = 0;
 
         this._contrastSampler = new StageContrastSampler();
-        this._adaptiveConfig = {
-            ...AdaptiveContrastConfig,
-            enabled: ENABLE_ADAPTIVE_TEXT_COLOR,
-            samplePerElement: SAMPLE_PER_ELEMENT,
-            sampleIntervalMs: SAMPLE_INTERVAL_MS,
-        };
         this._adaptiveTimerId = 0;
         this._adaptiveInFlight = false;
         this._styledActors = new Map();
+
+        this._settingsSignals = [];
+        this._isEffectActive = false;
+
+        this.overviewCloneContainer = null;
+        this._overviewClone = null;
+        this._appDisplayClone = null;
+        this._searchClone = null;
 
         // Listen for the menu opening/closing to trigger our custom physics animation
         this._signals.push(this.menu.connect('open-state-changed', (menu, isOpen) => {
@@ -79,6 +90,90 @@ export class UIManager {
     }
 
     setup() {
+        if (!this._settings) return;
+        this._bindSettings();
+
+        // uiManager は 'enable-menu-glass'、notificationManager は 'notification-enable-glass' （※スキーマによる）
+        if (this._settings.get_boolean('enable-menu-glass')) {
+            this._applyEffect();
+        }
+    }
+
+    // Utility: Convert HEX color string to normalized RGB array
+    _hexToColorArray(hex) {
+        if (!hex || typeof hex !== 'string' || !hex.startsWith('#') || hex.length !== 7) return [1.0, 1.0, 1.0];
+        let r = parseInt(hex.slice(1, 3), 16) / 255.0;
+        let g = parseInt(hex.slice(3, 5), 16) / 255.0;
+        let b = parseInt(hex.slice(5, 7), 16) / 255.0;
+        return [r, g, b];
+    }
+
+    // 追加: 設定の動的反映
+    _bindSettings() {
+        const connectSetting = (key, callback) => {
+            let id = this._settings.connect(`changed::${key}`, callback.bind(this));
+            this._settingsSignals.push(id);
+        };
+
+        // ON/OFF切り替え
+        connectSetting('enable-menu-glass', () => {
+            let enabled = this._settings.get_boolean('enable-menu-glass');
+            if (enabled && !this._isEffectActive) this._applyEffect();
+            else if (!enabled && this._isEffectActive) this._removeEffect();
+        });
+
+        connectSetting('menu-tint-color', () => {
+            if (this.effect && this._isEffectActive) {
+                let colorArray = this._hexToColorArray(this._settings.get_string('menu-tint-color'));
+                this.effect.setTintColor(...colorArray);
+            }
+        });
+
+        connectSetting('menu-tint-strength', () => {
+            if (this.effect && this._isEffectActive) {
+                this.effect.setTintStrength(this._settings.get_double('menu-tint-strength'));
+            }
+        });
+
+        connectSetting('menu-blur-radius', () => {
+            if (this.blurEffect && this._isEffectActive) {
+                this.blurEffect.radius = this._settings.get_int('menu-blur-radius');
+            }
+        });
+
+        connectSetting('menu-corner-radius', () => {
+            if (this.effect && this._isEffectActive) {
+                this.effect.setCornerRadius(this._settings.get_double('menu-corner-radius'));
+            }
+        });
+
+        connectSetting('menu-glass-expand', () => {
+            if (this.effect && this._isEffectActive) {
+                this._glassExpand = this._settings.get_int('menu-glass-expand');
+            }
+        });
+
+        connectSetting('menu-y-offset', () => {
+            if (this.animActor && this._isEffectActive) {
+                this._menuYoffset = this._settings.get_int('menu-y-offset');
+                this.animActor.translation_y = this._menuYoffset;
+            }
+        });
+
+        connectSetting('menu-enable-adaptive-text-color', () => {
+            this._adaptiveConfig.enabled = this._settings.get_boolean('menu-enable-adaptive-text-color');
+        });
+
+        connectSetting('menu-sample-interval-ms', () => {
+            this._adaptiveConfig.sampleIntervalMs = this._settings.get_int('menu-sample-interval-ms');
+
+        });
+    }
+
+    _applyEffect() {
+        if (this._isEffectActive) return;
+        this._isEffectActive = true;
+
         if (!this.targetActor) return;
         
         // Remove default GNOME styling and make the background transparent
@@ -86,8 +181,18 @@ export class UIManager {
         this.animActor.add_style_class_name('liquid-glass-transparent');
 
         // Shift the menu down to prevent it from clipping into the top bar
-        this.animActor.translation_y = MENU_Y_OFFSET;
+        this._menuYoffset = this._settings.get_int('menu-y-offset');
+        this.animActor.translation_y = this._menuYoffset;
         // this.targetActor.margin_top = MENU_Y_OFFSET;
+
+        this._glassExpand = this._settings.get_int('menu-glass-expand');
+
+        this._adaptiveConfig = {
+            ...AdaptiveContrastConfig,
+            enabled: this._settings.get_boolean('menu-enable-adaptive-text-color'),
+            samplePerElement: SAMPLE_PER_ELEMENT,
+            sampleIntervalMs: this._settings.get_int('menu-sample-interval-ms'),
+        };
 
         // Create the main background actor that will hold the glass effect
         // clip_to_allocation is false so the shader can draw outside the strict bounds if needed
@@ -123,8 +228,13 @@ export class UIManager {
             Main.uiGroup.add_child(this.bgActor);
         }
 
+        let blurRadius = this._settings.get_int('menu-blur-radius');
+        let tintColorStr = this._settings.get_string('menu-tint-color');
+        let tintStrength = this._settings.get_double('menu-tint-strength');
+        let cornerRadius = this._settings.get_double('menu-corner-radius');
+
         // Apply native GNOME blur to the internal clipBox (which contains the clones)
-        this.blurEffect = new Shell.BlurEffect({ radius: 5, mode: Shell.BlurMode.ACTOR });
+        this.blurEffect = new Shell.BlurEffect({ radius: blurRadius, mode: Shell.BlurMode.ACTOR });
         this.clipBox.add_effect(this.blurEffect);
 
         // Apply our custom GLSL liquid shader to the outer background actor
@@ -132,8 +242,8 @@ export class UIManager {
         
         // Tell the shader about the padding so it calculates refraction coordinates correctly
         this.effect.setPadding(SHADER_PADDING);
-        this.effect.setTintColor(1.0, 1.0, 1.0); // Pure transparent base
-        this.effect.setTintStrength(0.20); // 20% tint overlay for the frosted glass look
+        this.effect.setTintColor(...this._hexToColorArray(tintColorStr)); // Pure transparent base
+        this.effect.setTintStrength(tintStrength); // Subtle tint strength to enhance the glass look without overpowering the background
         this.effect.setIsDock(false);
         this.bgActor.add_effect(this.effect);
 
@@ -170,16 +280,26 @@ export class UIManager {
                 this.windowClonesContainer.destroy();
                 this.windowClonesContainer = null;
             }
+            if (this.overviewCloneContainer) {
+                this.overviewCloneContainer.destroy();
+                this.overviewCloneContainer = null;
+            }
 
             // Clone the desktop background
             this.bgClone = new Clutter.Clone({ source: Main.layoutManager._backgroundGroup });
             this.clipBox.add_child(this.bgClone); 
+
+            this.overviewCloneContainer = new Clutter.Actor();
+            this.clipBox.add_child(this.overviewCloneContainer);
 
             // Create a container for the window clones
             this.windowClonesContainer = new Clutter.Actor();
             this.clipBox.add_child(this.windowClonesContainer);
 
             this._windowClones.clear();
+            this._overviewClone = null; 
+            this._appDisplayClone = null;
+            this._searchClone = null;
 
             // Iterate through all windows managed by the compositor
             let windows = global.get_window_actors();
@@ -245,45 +365,86 @@ export class UIManager {
         }
     }
 
+    // 追加: UIクローンの位置・サイズ同期用メソッド
+    _syncActorProperties(source, clone) {
+        if (!source || !clone) return;
+        
+        let [absX, absY] = source.get_transformed_position();
+        let [w, h] = source.get_size();
+
+        if (Number.isNaN(absX) || Number.isNaN(absY) || Number.isNaN(w) || Number.isNaN(h) || w <= 0 || h <= 0) {
+            clone.visible = false;
+            return;
+        }
+
+        clone.set_position(absX, absY);
+        clone.set_size(w, h);
+        clone.set_scale(source.scale_x, source.scale_y);
+        
+        let pX = source.pivot_point ? source.pivot_point.x : 0;
+        let pY = source.pivot_point ? source.pivot_point.y : 0;
+        clone.set_pivot_point(pX, pY);
+
+        clone.translation_x = 0;
+        clone.translation_y = 0;
+        
+        clone.opacity = source.opacity;
+        clone.visible = source.visible && source.mapped;
+    }
+
     // Calculates and synchronizes the position/size of the glass background every frame
     _syncGeometry() {
         if (!this.bgActor || !this.targetActor || !this.targetActor.mapped)
             return;
 
-        let [rawBaseW, rawBaseH] = this.animActor.get_size();
+        let [inW, inH] = this.animActor.get_size();
+        let [outW, outH] = this.targetActor.get_size();
         let [scaleX, scaleY] = this.animActor.get_scale();
 
-        // Initialize stable width/height if undefined
-        if (this._stableBaseW === undefined) this._stableBaseW = rawBaseW;
-        if (this._stableBaseH === undefined) this._stableBaseH = rawBaseH;
+        let themeNode = this.animActor.get_theme_node();
+        let mL = themeNode ? themeNode.get_margin(St.Side.LEFT) : 0;
+        let mR = themeNode ? themeNode.get_margin(St.Side.RIGHT) : 0;
+        let mT = themeNode ? themeNode.get_margin(St.Side.TOP) : 0;
+        let mB = themeNode ? themeNode.get_margin(St.Side.BOTTOM) : 0;
 
-        // Anti-jitter logic: Only update the base size if the UI changes significantly 
-        // (e.g., dismissing a notification). Ignore tiny sub-pixel fluctuations.
-        if (Math.abs(rawBaseW - this._stableBaseW) > 50) {
-            this._stableBaseW = rawBaseW;
+        let marginW = mL + mR;
+        let marginH = mT + mB;
+
+        let targetW = Math.round(inW);
+        let targetH = Math.round(inH);
+
+        // バグ検知フラグを用意
+        let isBugActive = false;
+
+        // GNOME Shell Hover Bug Compensation:
+        if (Math.abs(inW - outW) <= 2 && marginW > 0) {
+            targetW = Math.round(inW - marginW);
+            targetH = Math.round(inH - marginH);
+            isBugActive = true; // バグ発動中！
         }
-        if (Math.abs(rawBaseH - this._stableBaseH) > 50) {
-            this._stableBaseH = rawBaseH;
-        }
+
+        this._stableBaseW = targetW;
+        this._stableBaseH = targetH;
 
         // Multiply by the current animation scale. 
         // Math.max guarantees the size never drops below 1px (prevents Cogl crashes).
         let w = Math.max(1, this._stableBaseW * scaleX);
         let h = Math.max(1, this._stableBaseH * scaleY);
 
-        let [absX, absY] = this.targetActor.get_transformed_position();
-        let [_, animAbsY] = this.animActor.get_transformed_position();
+        // --- ここから修正 ---
+        // 実際のUIコンテンツ領域である animActor から直接正しい座標を取得する
+        let [animAbsX, animAbsY] = this.animActor.get_transformed_position();
 
         // --------------------------------------------------------
         // Advanced Fallback Logic for NaN Coordinates
         // GNOME sometimes fails to report actor positions during the very first frame
         // of an animation. This logic predicts where the menu should be.
         // --------------------------------------------------------
-        if (Number.isNaN(absX) || Number.isNaN(absY)) {
-            if (this._lastValidAbsX !== undefined && this._lastValidAbsY !== undefined) {
+        if (Number.isNaN(animAbsX) || Number.isNaN(animAbsY)) {
+            if (this._lastValidAnimAbsX !== undefined && this._lastValidAnimAbsY !== undefined) {
                 // Use the last known good coordinates if available
-                absX = this._lastValidAbsX;
-                absY = this._lastValidAbsY;
+                animAbsX = this._lastValidAnimAbsX;
+                animAbsY = this._lastValidAnimAbsY;
             } else {
                 // If no history exists, calculate based on the top panel clock button
                 let buttonActor = Main.panel.statusArea.dateMenu.actor;
@@ -292,33 +453,31 @@ export class UIManager {
                 
                 if (!Number.isNaN(btnX) && !Number.isNaN(btnY)) {
                     // Assume the menu opens centered directly below the clock button
-                    absX = btnX + (btnW / 2) - (this._stableBaseW / 2);
-                    absY = btnY + btnH;
+                    animAbsX = btnX + (btnW / 2) - (w / 2);
+                    animAbsY = btnY + btnH + MENU_Y_OFFSET;
                 } else {
                     // Ultimate fallback: Just place it in the top-center of the primary monitor
                     let monitor = Main.layoutManager.primaryMonitor;
-                    absX = (monitor.width / 2) - (w / 2);
-                    absY = Main.panel.height || 27; 
+                    animAbsX = (monitor.width / 2) - (w / 2);
+                    animAbsY = (Main.panel.height || 27) + MENU_Y_OFFSET; 
                 }
             }
         } else {
             // Save successful coordinates for future fallbacks
-            this._lastValidAbsX = absX;
-            this._lastValidAbsY = absY;
+            this._lastValidAnimAbsX = animAbsX;
+            this._lastValidAnimAbsY = animAbsY;
         }
         
         // --------------------------------------------------------
 
         // The background needs to be larger than the UI to account for the glass expansion
         // and the extra padding required by the shader for edge refraction.
-        let currentAbsX = absX + (this._stableBaseW / 2) - (w / 2);
-        let currentAbsY = animAbsY; // Use the animated Y position for smoother movement during the open/close animation
-        let bgW = w + (GLASS_EXPAND * 2) + (SHADER_PADDING * 2);
-        let bgH = h + (GLASS_EXPAND * 2) + (SHADER_PADDING * 2);
+        let bgW = w + (this._glassExpand * 2) + (SHADER_PADDING * 2);
+        let bgH = h + (this._glassExpand * 2) + (SHADER_PADDING * 2);
         
-        // Shift the X/Y coordinates up and to the left to center the larger background behind the UI
-        let bgX = currentAbsX - GLASS_EXPAND - SHADER_PADDING;
-        let bgY = currentAbsY - GLASS_EXPAND - SHADER_PADDING;
+        // UIの正確な座標に対して、純粋にパディング分だけマイナスして背景を被せる
+        let bgX = animAbsX - this._glassExpand - SHADER_PADDING;
+        let bgY = animAbsY - this._glassExpand - SHADER_PADDING;
 
         if (!Number.isNaN(bgX) && !Number.isNaN(bgY) && w >= 1.0 && h >= 1.0) {
             
@@ -346,34 +505,77 @@ export class UIManager {
             this.bgClone.set_position(-bgX, -bgY);
             this.windowClonesContainer.set_position(-bgX, -bgY);
 
+            if (this.overviewCloneContainer) {
+                this.overviewCloneContainer.set_position(-bgX, -bgY);
+            }
+
             // Efficient window synchronization logic.
+            let isOverview = Main.overview.visible || Main.overview.animationInProgress;
             let windows = global.get_window_actors();
             let activeWindows = new Set();
             let zIndex = 0; // Tracks the stacking order
 
-            for (let w of windows) {
-                let metaWindow = w.get_meta_window();
-                if (!metaWindow || metaWindow.minimized || !w.visible) continue;
+            if (!isOverview) {
+                // --- 通常時 ---
+                if (this._overviewClone) { this._overviewClone.destroy(); this._overviewClone = null; }
+                if (this._appDisplayClone) { this._appDisplayClone.destroy(); this._appDisplayClone = null; }
+                if (this._searchClone) { this._searchClone.destroy(); this._searchClone = null; }
 
-                activeWindows.add(w);
+                this.bgClone.show();
 
-                let clone;
-                if (!this._windowClones.has(w)) {
-                    // Create a clone for newly opened windows.
-                    clone = new Clutter.Clone({ source: w });
-                    this.windowClonesContainer.add_child(clone);
-                    this._windowClones.set(w, clone);
-                } else {
-                    // Retrieve existing clone.
-                    clone = this._windowClones.get(w);
+
+                for (let w of windows) {
+                    let metaWindow = w.get_meta_window();
+                    if (!metaWindow || metaWindow.minimized || !w.visible) continue;
+
+                    activeWindows.add(w);
+
+                    let clone;
+                    if (!this._windowClones.has(w)) {
+                        // Create a clone for newly opened windows.
+                        clone = new Clutter.Clone({ source: w });
+                        this.windowClonesContainer.add_child(clone);
+                        this._windowClones.set(w, clone);
+                    } else {
+                        // Retrieve existing clone.
+                        clone = this._windowClones.get(w);
+                    }
+                    
+                    // Keep the position synchronized with the real window.
+                    clone.set_position(w.x, w.y);
+
+                    // Update the Z-index dynamically to reflect window focus changes.
+                    this.windowClonesContainer.set_child_at_index(clone, zIndex);
+                    zIndex++;
                 }
+            } else {
+                // --- Overview時 ---
+                this.bgClone.show();
+                let controls = Main.overview._overview?._controls;
                 
-                // Keep the position synchronized with the real window.
-                clone.set_position(w.x, w.y);
-
-                // Update the Z-index dynamically to reflect window focus changes.
-                this.windowClonesContainer.set_child_at_index(clone, zIndex);
-                zIndex++;
+                if (controls) {
+                    if (controls._workspacesDisplay) {
+                        if (!this._overviewClone) {
+                            this._overviewClone = new Clutter.Clone({ source: controls._workspacesDisplay });
+                            this.overviewCloneContainer.add_child(this._overviewClone);
+                        }
+                        this._syncActorProperties(controls._workspacesDisplay, this._overviewClone);
+                    }
+                    if (controls._appDisplay) {
+                        if (!this._appDisplayClone) {
+                            this._appDisplayClone = new Clutter.Clone({ source: controls._appDisplay });
+                            this.overviewCloneContainer.add_child(this._appDisplayClone);
+                        }
+                        this._syncActorProperties(controls._appDisplay, this._appDisplayClone);
+                    }
+                    if (controls._searchController && controls._searchController.actor) {
+                        if (!this._searchClone) {
+                            this._searchClone = new Clutter.Clone({ source: controls._searchController.actor });
+                            this.overviewCloneContainer.add_child(this._searchClone);
+                        }
+                        this._syncActorProperties(controls._searchController.actor, this._searchClone);
+                    }
+                }
             }
 
             // Destroy clones for windows that have been closed or minimized.
@@ -433,30 +635,60 @@ export class UIManager {
     _setActorColor(actor, color) {
         if (!actor || typeof actor.set_style !== 'function') return;
 
+        if (!this._styledActors.has(actor)) {
+            let origStyle = typeof actor.get_style === 'function' ? actor.get_style() : null;
+            this._styledActors.set(actor, origStyle);
+        }
+
+        let isInsensitive = false;
+        if (actor instanceof St.Button) {
+            isInsensitive = (actor.reactive === false) || (typeof actor.has_style_pseudo_class === 'function' && actor.has_style_pseudo_class('insensitive'));
+        }
         // Save the target color to prevent redundant animation triggers for the same color.
-        if (actor._currentTargetColor === color) return;
+        // if (actor._currentTargetColor === color) return;
+        if (actor._currentTargetColor === color && actor._currentInsensitiveState === isInsensitive) return;
         actor._currentTargetColor = color;
+        actor._currentInsensitiveState = isInsensitive;
 
         // Kick off the color transition animation!
-        this._animateActorColor(actor, color);
+        this._animateActorColor(actor, color, isInsensitive);
     }
 
     // Removes all dynamically applied adaptive text color styles and stops related animations
     _clearAdaptiveStyles() {
-        for (const [actor, style] of this._styledActors.entries()) {
+        // 1. 変更履歴 (styledActors) から元の状態を復元する
+        for (const [actor, originalStyle] of this._styledActors.entries()) {
             if (actor && typeof actor.set_style === 'function') {
                 if (actor._colorTweenId) {
                     GLib.source_remove(actor._colorTweenId);
                     actor._colorTweenId = null;
                 }
                 actor._currentTargetColor = null;
+                actor._currentInsensitiveState = null;
+                
                 actor.remove_style_class_name('adaptive-text-transition');
                 actor.remove_style_class_name('adaptive-color-light');
                 actor.remove_style_class_name('adaptive-color-dark');
-                actor.set_style(style);
+                
+                // 修正: 存在しない remove_style() を削除し、元のスタイル(またはnull)をセット
+                actor.set_style(originalStyle || null);
             }
         }
         this._styledActors.clear();
+
+        // 2. 念のため、現在DOM上に存在するターゲットの色も強制クリア（フェイルセーフ）
+        const currentTargets = this._collectAdaptiveTextTargets();
+        for (let actor of currentTargets) {
+            if (actor && typeof actor.set_style === 'function') {
+                if (actor._colorTweenId) {
+                    GLib.source_remove(actor._colorTweenId);
+                    actor._colorTweenId = null;
+                }
+                actor._currentTargetColor = null;
+                actor._currentInsensitiveState = null;
+                actor.set_style(null);
+            }
+        }
     }
 
     // Iterates through the color map and applies the new target colors to the respective actors
@@ -541,7 +773,7 @@ export class UIManager {
         return "#" + (1 << 24 | r << 16 | g << 8 | b).toString(16).slice(1);
     }
 
-    _animateActorColor(actor, targetHexColor) {
+    _animateActorColor(actor, targetHexColor, isInsensitive) {
         if (!actor || Object.keys(actor).length === 0) return;
 
         // Cancel any existing color tween if running (handles mid-transition target changes).
@@ -556,6 +788,10 @@ export class UIManager {
         let startColor = themeNode.get_foreground_color(); // Returns Clutter.Color
 
         let targetRgb = this._hexToRgb(targetHexColor);
+        
+        // 無効状態なら透明度を50%(0.5)にし、有効なら100%(1.0)にする
+        let targetAlpha = isInsensitive ? 0.5 : 1.0;
+        let startAlpha = startColor.alpha / 255.0; // Clutter.Colorのalphaは0〜255で返る
         
         let startTime = GLib.get_monotonic_time();
         let durationMs = 380; // Animation duration in milliseconds
@@ -577,10 +813,15 @@ export class UIManager {
             let g = Math.round(startColor.green + (targetRgb.g - startColor.green) * easeProgress);
             let b = Math.round(startColor.blue + (targetRgb.b - startColor.blue) * easeProgress);
 
-            let currentHex = this._rgbToHex(r, g, b);
+            // Alpha値も補間して rgba() 形式を生成
+            let a = startAlpha + (targetAlpha - startAlpha) * easeProgress;
+            a = Math.max(0.0, Math.min(1.0, a)); // 0.0 ~ 1.0 に安全にクランプ
+            
+            let alphaStr = a.toFixed(3); // CSS用に小数点第3位まで
+            let currentRgba = `rgba(${r}, ${g}, ${b}, ${alphaStr})`;
 
             // Override text color and icon foreground color directly using inline CSS
-            actor.set_style(`color: ${currentHex}; -st-icon-foreground-color: ${currentHex};`);
+            actor.set_style(`color: ${currentRgba}; -st-icon-foreground-color: ${currentRgba};`);
 
             // Check for animation completion
             if (progress >= 1.0) {
@@ -662,10 +903,13 @@ export class UIManager {
                     
                     // Fade out opacity faster than the scale shrinks (fades between scale 1.0 and 0.3)
                     opacity = Math.min(255, Math.max(0, (s - 0.3) / 0.7 * 255));
+                    // opacity = Math.min(255, Math.max(0, (s / 0.6) * 255));
+                    // opacity = 255;
                 } else {
                     // Start opening from scale 0.2 instead of 0.0 so it looks less jarring
                     currentScale = 0.2 + (s * 0.8); 
-                    opacity = Math.min(255, Math.max(0, s * 255));
+                    // opacity = Math.min(255, Math.max(0, s * 255));
+                    opacity = Math.min(255, Math.max(0, (s / 0.3) * 255));
                 }
 
                 // Apply the calculated scale to the UI
@@ -674,8 +918,11 @@ export class UIManager {
                 // Dynamically adjust the shader's corner radius during the animation.
                 // As the menu shrinks, the absolute radius shrinks too, keeping the corners proportional.
                 if (this.effect && typeof this.effect.setCornerRadius === 'function') {
-                    let baseRadius = 60.0; 
+                    let baseRadius = CORNER_RADIUS; 
                     this.effect.setCornerRadius(baseRadius * currentScale);
+                    if (typeof this.effect.setAnimationScale === 'function') {
+                        this.effect.setAnimationScale(currentScale);
+                    }
                 }
 
                 this.bgActor.opacity = opacity;
@@ -691,6 +938,8 @@ export class UIManager {
                     
                     if (isClosing && this.menu.actor) {
                         this.menu.actor.hide(); // Tell GNOME the menu is officially closed
+                        this.bgActor.opacity = 0; // Ensure the background is fully transparent when closed
+                        this.animActor.opacity = 0;
                     }
                     
                     if (!isClosing) {
@@ -707,8 +956,9 @@ export class UIManager {
         }
     }
 
-    cleanup() {
-        if (!this.targetActor) return;
+    _removeEffect() {
+        if (!this._isEffectActive) return;
+        this._isEffectActive = false;
 
         this._stopAdaptiveColorSampling();
         this._clearAdaptiveStyles();
@@ -770,6 +1020,11 @@ export class UIManager {
 
         this._stableBaseW = undefined;
         this._stableBaseH = undefined;
+    }
+
+    cleanup() {
+        if (!this.targetActor) return;
+        this._removeEffect();
     }
 }
 

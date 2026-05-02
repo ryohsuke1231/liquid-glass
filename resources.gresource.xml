@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+  <gresource prefix="/com/example/my-app/icons">
+    <file alias="my-custom-icon-symbolic.svg">icons/dock-bottom-symbolic.svg</file>
+  </gresource>
+</gresources>

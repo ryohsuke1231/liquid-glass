@@ -7,13 +7,18 @@ A GNOME Shell Extension that brings Apple's "Liquid Glass" UI (introduced in iOS
 
 I love the look of Apple's Liquid Glass, but since I don't own any Apple products (I use an Android smartphone and a Linux computer), I wanted a way to see it on my desktop every day. So, I decided to build it myself.
 
-### 🎥 Demo
-<video src="desktop.mp4" autoplay loop muted width="100%"></video>
+### Demo
+Overview:
+![GNOME Desktop Screenshot](demo1.png)
+Dash to Dock:
+![Dash to Dock Screenshot](demo2.png)
+Notifications:
+![Notifications Screenshot](demo3.png)
+Panel Menus:
+![Panel Menu Screenshot](demo4.png)
 
-![GNOME Desktop Screenshot](image_gnome.png)
 
-
-## 🚀 Installation (GNOME Extension)
+## Installation (GNOME Extension)
 
 Currently, this extension targets the **Top Panel Menus** and **Dock**.
 
@@ -37,24 +42,26 @@ cp -r liquid-glass/liquid-glass@thinkingcoding1231.gmail.com ~/.local/share/gnom
 5. Enable **Liquid Glass** in the "Extensions" app or Extension Manager.
 
 
-## ✨ Under the Hood: Shader Processing & Optical Effects
+## Under the Hood: Shader Processing & Optical Effects
 
 This is not just a blurred background. I built a custom `Clutter.ShaderEffect` to simulate physically-based light refraction and fluid-like surface tension.
 
-* **Refraction via Snell's Law**: Calculates realistic light bending using the Index of Refraction (IOR). It projects the refracted view vector onto the background plane to determine spatial displacement.
-* **Volume Profiling**: Computes interior depth using **Superellipse** cross-section formulas, allowing the capsule to simulate fluid-like thickness (`max_z`) and smooth height falloffs toward the edges.
-* **Chromatic Aberration**: Displaces RGB color channels independently based on the refraction direction, simulating prismatic effects at the edges of the volume.
-* **Adaptive Anti-Aliasing (Pseudo-MSAA)**: Implements dynamic multi-tap sampling. It adjusts the sampling radius based on the steepness of the surface normal, smoothing out jaggies caused by steep texture displacement.
-* **Complex Lighting Model**: Combines directional rim lighting with fresnel falloff, specular highlights, and surface sheen matched to 3D surface normals rather than flat 2D gradients.
-* **Custom Spring Physics**: Bypasses standard CSS transitions to implement a custom physics-based Spring animation system for opening/closing menus, mimicking the natural, snappy feel of native UI.
+- **Refraction via Snell's Law**: Calculates realistic light bending using the Index of Refraction (IOR). It projects the refracted view vector onto the background plane to determine spatial displacement.
+- **Volume Profiling**: Computes interior depth using **Superellipse** cross-section formulas, allowing the capsule to simulate fluid-like thickness and smooth height falloffs toward the edges.
+- **Complex Lighting Model**: Combines directional rim lighting with fresnel falloff, specular highlights, and surface sheen matched to 3D surface normals rather than flat 2D gradients.
+- **Custom Spring Physics**: Bypasses standard CSS transitions to implement a custom physics-based Spring animation system for opening/closing menus, mimicking the natural, snappy feel of native UI. (Only for panel menus for now.)
+- **Adaptive Text Coloring**: Dynamically adjusts text color based on the underlying background brightness to maintain readability while preserving the glassy aesthetic.
 
 
 ## 📖 The Story Behind the Math
 Recreating the perfect "glass" look was a journey of trial and error. 
+I started with simple Gaussian blur and opacity tweaks, but it looked flat and lifeless. To capture the depth and fluidity of real glass, I had to dive deep into optics and geometry.
+I started to make on WebGL/Three.js to perfect the math and real-time tuning before porting it to GJS/Clutter. I had to implement Snell's Law for refraction, superellipse formulas for volume profiling, and a custom lighting model that combined rim lighting with fresnel falloff and specular highlights.
 
-Initially, I tried using a raw SDF (Signed Distance Field) directly as the height map, but it resulted in a "hipped roof" shape with sharp ridges. I then tried combining straight lines and circular arcs, but the sudden change in curvature caused unnatural, sharp distortions in the light refraction. 
+Capturing the background of the menu and applying the shader effect to it was another challenge. I had to figure out how to sample the background texture and apply the shader effect in real-time as the menu opened and closed.
+In Wayland, I was not able to capture the background texture directly, so I had to use 'Clutter.Clone' to create a live clone of the background and apply the shader effect to it.
 
-The breakthrough was implementing a **Superellipse** and properly defining the normal vectors (displacement field). This finally solved the distortion issues and gave the UI that perfect, melting surface tension.
+I lost count of how many times I crashed GNOME Shell during development.
 
 
 ## 🧪 The WebGL/Three.js Prototype (The Lab)
@@ -77,5 +84,8 @@ npm run dev
 - [x] Apply Liquid Glass to Top Panel Menus
 - [x] Add Dash to Dock support
 - [x] Add Notifications support
-- [ ] Add Settings Feature
+- [x] Add Settings Feature
+- [x] Add Adaptive Text Coloring
+- [ ] Add Quick Settings Support
+- [ ] Add Perfect Antialiasing
 - [ ] Publish to extensions.gnome.org

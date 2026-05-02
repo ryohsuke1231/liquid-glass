@@ -93,6 +93,13 @@ export const LiquidEffect = GObject.registerClass({
         this._setFloat('corner_radius', radius);
     }
 
+    setAnimationScale(scale) {
+        // UIのスケールに合わせて、物理的な厚みや屈折の距離も比例して小さくする
+        this._setFloat('displacement_scale', 78.5 * scale);
+        this._setFloat('max_z', 25.0 * scale);
+        this._setFloat('chroma_strength', 0.006 * scale); // 色収差もスケールに合わせる
+    }
+
     // Loads the GLSL fragment shader file from the disk.
     _loadShader() {
         let shaderPath = this._extensionPath + '/shaders/glass.frag';

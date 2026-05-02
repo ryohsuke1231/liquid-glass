@@ -119,6 +119,10 @@ vec2 getDisplacement(float d, vec3 normal, vec2 resolution) {
     // by ensuring the Z component never gets dangerously close to 0.
     float safe_z = max(-refractedRay.z, 0.15); 
     vec2 displacement = (refractedRay.xy / safe_z) * thicknessNorm;
+    float max_disp = 0.30;
+    if (length(displacement) > max_disp) {
+        displacement = normalize(displacement) * max_disp;
+    }
     
     return displacement;
 }

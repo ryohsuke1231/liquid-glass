@@ -3,6 +3,7 @@
     background-color: transparent !important;
     border: none !important;
     box-shadow: none !important;
+    background-image: none !important;
     
     /* Completely disable default GNOME CSS transitions. 
        We handle the open/close animations manually via JavaScript spring physics. */
@@ -25,19 +26,21 @@
     color: #000000 !important;
 }
 
-/* Force transparency on all Dash to Dock background containers */
-#dashtodockDashContainer,
-#dashtodockContainer,
-.dashtodock-box,
-.dash-background {
-    background-color: transparent !important;
-    background-image: none !important;
-    border: none !important;
-    box-shadow: none !important;
-}
 
 /* Force transparency on the notification banner */
 .liquid-glass-transparent.notification-banner {
     background-color: transparent !important;
+    box-shadow: none !important;
+}
+
+
+/* Force transparency ONLY when the liquid-glass effect is active */
+#dashtodockDashContainer.liquid-glass-transparent,
+.liquid-glass-transparent #dashtodockContainer,
+.liquid-glass-transparent .dashtodock-box,
+.liquid-glass-transparent .dash-background {
+    background-color: transparent !important;
+    background-image: none !important;
+    border: none !important;
     box-shadow: none !important;
 }
