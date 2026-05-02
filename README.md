@@ -9,12 +9,19 @@ I love the look of Apple's Liquid Glass, but since I don't own any Apple product
 
 ### Demo
 Overview:
+
 ![GNOME Desktop Screenshot](demo1.png)
+
 Dash to Dock:
+
 ![Dash to Dock Screenshot](demo2.png)
+
 Notifications:
+
 ![Notifications Screenshot](demo3.png)
+
 Panel Menus:
+
 ![Panel Menu Screenshot](demo4.png)
 
 
