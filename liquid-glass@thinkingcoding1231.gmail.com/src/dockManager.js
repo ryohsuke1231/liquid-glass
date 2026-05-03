@@ -32,6 +32,8 @@ export class DashManager {
         this.bgActor = null;
         this.blurEffect = null;
         this.effect = null;
+
+        this._glassExpand = 0; // ガラスエリアの拡張量（ピクセル）
         
         this.bgClone = null;
         this.windowClonesContainer = null;
@@ -71,6 +73,12 @@ export class DashManager {
                 this._applyEffect();
             } else if (!enabled && this._isEffectActive) {
                 this._removeEffect();
+            }
+        });
+
+        connectSetting('dock-glass-expand', () => {
+            if (this.effect && this._isEffectActive) {
+                this._glassExpand = this._settings.get_int('dock-glass-expand');
             }
         });
 
@@ -398,10 +406,10 @@ export class DashManager {
             this.bgActor.opacity = this.targetActor.opacity;
         }
 
-        let bgW = Math.max(1.0, w + (SHADER_PADDING * 2));
-        let bgH = Math.max(1.0, h + (SHADER_PADDING * 2));
-        let bgX = absX - SHADER_PADDING;
-        let bgY = absY - SHADER_PADDING;
+        let bgW = Math.max(1.0, w + (SHADER_PADDING * 2) + (this._glassExpand * 2));
+        let bgH = Math.max(1.0, h + (SHADER_PADDING * 2) + (this._glassExpand * 2));
+        let bgX = absX - SHADER_PADDING - this._glassExpand;
+        let bgY = absY - SHADER_PADDING - this._glassExpand;
 
         if (this._lastBgW !== bgW || this._lastBgH !== bgH || this._lastBgX !== bgX || this._lastBgY !== bgY) {
             this.bgActor.set_size(bgW, bgH);

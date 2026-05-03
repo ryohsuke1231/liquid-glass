@@ -7,6 +7,10 @@
       <summary>Enable glass effect for Dock</summary>
       <description>Whether to apply the liquid glass effect to the dash to dock.</description>
     </key>
+    <key name="dock-glass-expand" type="i">
+      <default>0</default>
+      <summary>Glass expand pixels</summary>
+    </key>
     <key name="dock-margin-bottom" type="i">
       <default>8</default>
       <summary>Bottom margin</summary>
