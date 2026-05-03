@@ -3,14 +3,14 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { UIManager } from './src/uiManager.js';
 import { DashManager } from './src/dockManager.js';
 import { NotificationManager } from './src/notificationManager.js';
-import { QuickSettingsManager } from './src/quickSettingsManager.js';
+// import { QuickSettingsManager } from './src/quickSettingsManager.js';
 import GLib from 'gi://GLib';
 
 export default class LiquidGlassExtension extends Extension {
     enable() {
         console.log(`[Liquid Glass] Enabled. UUID: ${this.uuid}`);
         
-        this._settings = this.getSettings();
+        this._settings = this.getSettings("org.gnome.shell.extensions.liquid-glass@thinkingcoding1231.gmail.com");
 
         // Initialize the UI manager for the top panel (e.g., Date Menu)
         // Pass the extension path so it can properly load the GLSL shader files
