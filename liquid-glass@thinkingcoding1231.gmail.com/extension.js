@@ -3,7 +3,7 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { UIManager } from './src/uiManager.js';
 import { DashManager } from './src/dockManager.js';
 import { NotificationManager } from './src/notificationManager.js';
-import { QuickSettingsManager } from './src/quickSettingsManager.js';
+//import { QuickSettingsManager } from './src/quickSettingsManager.js';
 import GLib from 'gi://GLib';
 
 export default class LiquidGlassExtension extends Extension {

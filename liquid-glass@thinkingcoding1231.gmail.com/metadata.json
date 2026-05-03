@@ -4,5 +4,6 @@
   "uuid": "liquid-glass@thinkingcoding1231.gmail.com",
   "shell-version": [
     "49", "50"
-  ]
+  ],
+  "settings-schema": "org.gnome.shell.extensions.liquid-glass@thinkingcoding1231.gmail.com"
 }
