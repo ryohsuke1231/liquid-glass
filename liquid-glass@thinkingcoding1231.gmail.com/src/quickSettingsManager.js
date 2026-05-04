@@ -228,7 +228,8 @@ export class QuickSettingsManager {
         
         // Set pivot points for scaling. 
         // The menu scales from the top-center (0.5, 0.0)
-        this.animActor.set_pivot_point(0.5, 0.0);
+        // this.animActor.set_pivot_point(0.5, 0.0);
+        this.animActor.set_pivot_point(0.0, 0.0); // Scale from top-left to match the background actor's coordinate system
         
         // bgActor scales from the top-left (0.0, 0.0) because we manually sync its exact coordinates
         this.bgActor.set_pivot_point(0.0, 0.0);
@@ -963,6 +964,11 @@ export class QuickSettingsManager {
                 // Apply the calculated scale to the UI
                 this.animActor.set_scale(currentScale, currentScale);
 
+                let baseW = this._stableBaseW || this.animActor.width;
+                let centerOffset = (baseW * (1.0 - currentScale)) / 2.0;
+                let userX = this._menuXoffset || 0;
+                this.animActor.translation_x = userX + centerOffset;
+
                 // Dynamically adjust the shader's corner radius during the animation.
                 // As the menu shrinks, the absolute radius shrinks too, keeping the corners proportional.
                 if (this.effect && typeof this.effect.setCornerRadius === 'function') {
@@ -993,6 +999,7 @@ export class QuickSettingsManager {
                     if (!isClosing) {
                         // Restore scale to exactly 1.0 to fix font hinting/blurriness issues
                         this.animActor.set_scale(1.0, 1.0);
+                        this.animActor.translation_x = this._menuXoffset || 0;
                         this.animActor.opacity = 255;
                         this.bgActor.opacity = 255;
                         this._syncGeometry();
