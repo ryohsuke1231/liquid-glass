@@ -117,5 +117,50 @@
       <summary>Y offset</summary>
     </key>
 
+    <key name="enable-quick-settings-glass" type="b">
+      <default>true</default>
+      <summary>Enable glass effect for Quick Settings</summary>
+    </key>
+    <key name="quick-settings-enable-adaptive-text-color" type="b">
+      <default>true</default>
+      <summary>Enable adaptive text color</summary>
+    </key>
+    <key name="quick-settings-sample-per-element" type="b">
+      <default>false</default>
+      <summary>Sample per element</summary>
+    </key>
+    <key name="quick-settings-sample-interval-ms" type="i">
+      <default>400</default>
+      <summary>Sample interval (ms)</summary>
+    </key>
+    <key name="quick-settings-tint-color" type="s">
+      <default>"#ffffff"</default>
+      <summary>Tint color (Hex)</summary>
+    </key>
+    <key name="quick-settings-tint-strength" type="d">
+      <default>0.12</default>
+      <summary>Tint strength</summary>
+    </key>
+    <key name="quick-settings-blur-radius" type="i">
+      <default>5</default>
+      <summary>Blur radius</summary>
+    </key>
+    <key name="quick-settings-corner-radius" type="d">
+      <default>30.0</default>
+      <summary>Corner radius</summary>
+    </key>
+    <key name="quick-settings-glass-expand" type="i">
+      <default>12</default>
+      <summary>Glass expand pixels</summary>
+    </key>
+    <key name="quick-settings-y-offset" type="i">
+      <default>17</default>
+      <summary>Y offset</summary>
+    </key>
+    <key name="quick-settings-x-offset" type="i">
+      <default>0</default>
+      <summary>X offset</summary>
+    </key>
+
   </schema>
 </schemalist>

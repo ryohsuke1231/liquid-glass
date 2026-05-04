@@ -24,6 +24,10 @@ Panel Menus:
 
 ![Panel Menu Screenshot](demo4.png)
 
+Quick Settings (Experimental):
+
+![Quick Settings Screenshot](demo5.png)
+
 
 ## Installation (GNOME Extension)
 
@@ -93,6 +97,6 @@ npm run dev
 - [x] Add Notifications support
 - [x] Add Settings Feature
 - [x] Add Adaptive Text Coloring
-- [ ] Add Quick Settings Support
+- [x] Add Quick Settings Support
 - [ ] Add Perfect Antialiasing
 - [ ] Publish to extensions.gnome.org

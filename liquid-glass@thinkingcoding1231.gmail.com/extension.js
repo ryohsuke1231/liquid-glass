@@ -3,7 +3,7 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { UIManager } from './src/uiManager.js';
 import { DashManager } from './src/dockManager.js';
 import { NotificationManager } from './src/notificationManager.js';
-// import { QuickSettingsManager } from './src/quickSettingsManager.js';
+import { QuickSettingsManager } from './src/quickSettingsManager.js';
 import GLib from 'gi://GLib';
 
 export default class LiquidGlassExtension extends Extension {
@@ -21,8 +21,8 @@ export default class LiquidGlassExtension extends Extension {
         this._notificationManager = new NotificationManager(this.dir.get_path(), this._settings);
         this._notificationManager.setup();
 
-        // this._quickSettingsManager = new QuickSettingsManager(this.dir.get_path());
-        // this._quickSettingsManager.setup();
+        this._quickSettingsManager = new QuickSettingsManager(this.dir.get_path(), this._settings);
+        this._quickSettingsManager.setup();
 
         // Variable to store the timeout ID so we can cancel it if the extension is disabled quickly
         this._timeoutId = 0;

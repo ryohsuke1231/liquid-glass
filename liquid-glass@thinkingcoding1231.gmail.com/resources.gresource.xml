@@ -2,5 +2,6 @@
 <gresources>
   <gresource prefix="/com/example/my-app/icons">
     <file alias="dock-bottom-symbolic.svg">icons/dock-bottom-symbolic.svg</file>
+    <file alias="shapes-large-symbolic.svg">icons/shapes-large-symbolic.svg</file>
   </gresource>
 </gresources>

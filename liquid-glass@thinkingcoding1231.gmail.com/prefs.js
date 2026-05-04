@@ -78,6 +78,25 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
         this._addSpinRow(notifGroup, settings, 'notification-tint-strength', 'Tint Strength', 'Intensity of the color tint', 0.0, 1.0, 0.01);
         this._addSpinRow(notifGroup, settings, 'notification-blur-radius', 'Blur Radius', 'Background blur intensity', 0, 100, 1);
         this._addSpinRow(notifGroup, settings, 'notification-corner-radius', 'Corner Radius', 'Roundness of the corners', 0, 200, 1);
+
+        // --- Quick Settings タブ ---
+        const qsPage = new Adw.PreferencesPage({
+            title: 'Quick Settings (Experimental)',
+            icon_name: 'shapes-large-symbolic',
+        });
+        window.add(qsPage);
+
+        const qsGroup = new Adw.PreferencesGroup({ title: 'Quick Settings Settings' });
+        qsPage.add(qsGroup);
+
+        this._addSwitchRow(qsGroup, settings, 'enable-quick-settings-glass', 'Enable Glass Effect', 'Apply to quick settings panel');
+        this._addSpinRow(qsGroup, settings, 'quick-settings-glass-expand', 'Glass Expand', 'Extra area for the effect', 0, 50, 1);
+        this._addSpinRow(qsGroup, settings, 'quick-settings-x-offset', 'X Offset', 'Horizontal offset adjustment', -100, 100, 1);
+        this._addSpinRow(qsGroup, settings, 'quick-settings-y-offset', 'Y Offset', 'Vertical offset adjustment', 0, 100, 1);
+        this._addColorRow(qsGroup, settings, 'quick-settings-tint-color', 'Tint Color', 'Color of the glass tint');
+        this._addSpinRow(qsGroup, settings, 'quick-settings-tint-strength', 'Tint Strength', 'Intensity of the color tint', 0.0, 1.0, 0.01);
+        this._addSpinRow(qsGroup, settings, 'quick-settings-blur-radius', 'Blur Radius', 'Background blur intensity', 0, 100, 1);
+        this._addSpinRow(qsGroup, settings, 'quick-settings-corner-radius', 'Corner Radius', 'Roundness of the corners', 0, 200, 1);
     }
 
     // --- 便利メソッド群 ---
