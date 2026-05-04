@@ -30,6 +30,7 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
         // 有効化スイッチ
         this._addSwitchRow(dockGroup, settings, 'enable-dock-glass', 'Enable Glass Effect', 'Apply the effect to the dock');
         // 各種パラメータ
+        this._addSpinRow(dockGroup, settings, 'dock-glass-expand', 'Glass Expand', 'Extra area for the effect', 0, 50, 1);
         this._addSpinRow(dockGroup, settings, 'dock-margin-bottom', 'Margin Bottom', 'Bottom spacing', 0, 1000, 1);
         this._addColorRow(dockGroup, settings, 'dock-tint-color', 'Tint Color', 'Color of the glass tint');
         this._addSpinRow(dockGroup, settings, 'dock-tint-strength', 'Tint Strength', 'Intensity of the color tint', 0.0, 1.0, 0.01);
