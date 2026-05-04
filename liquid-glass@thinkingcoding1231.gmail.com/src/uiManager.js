@@ -123,38 +123,38 @@ export class UIManager {
         });
 
         connectSetting('menu-tint-color', () => {
-            if (this.effect && this._isEffectActive) {
+            if (this.effect) {
                 let colorArray = this._hexToColorArray(this._settings.get_string('menu-tint-color'));
                 this.effect.setTintColor(...colorArray);
             }
         });
 
         connectSetting('menu-tint-strength', () => {
-            if (this.effect && this._isEffectActive) {
+            if (this.effect) {
                 this.effect.setTintStrength(this._settings.get_double('menu-tint-strength'));
             }
         });
 
         connectSetting('menu-blur-radius', () => {
-            if (this.blurEffect && this._isEffectActive) {
+            if (this.blurEffect) {
                 this.blurEffect.radius = this._settings.get_int('menu-blur-radius');
             }
         });
 
         connectSetting('menu-corner-radius', () => {
-            if (this.effect && this._isEffectActive) {
-                this.effect.setCornerRadius(this._settings.get_double('menu-corner-radius'));
+            if (this.effect) {
+                this.effect.setCornerRadius(this._settings.get_int('menu-corner-radius'));
             }
         });
 
         connectSetting('menu-glass-expand', () => {
-            if (this.effect && this._isEffectActive) {
+            if (this.effect) {
                 this._glassExpand = this._settings.get_int('menu-glass-expand');
             }
         });
 
         connectSetting('menu-y-offset', () => {
-            if (this.animActor && this._isEffectActive) {
+            if (this.animActor) {
                 this._menuYoffset = this._settings.get_int('menu-y-offset');
                 this.animActor.translation_y = this._menuYoffset;
             }
@@ -237,7 +237,7 @@ export class UIManager {
         let blurRadius = this._settings.get_int('menu-blur-radius');
         let tintColorStr = this._settings.get_string('menu-tint-color');
         let tintStrength = this._settings.get_double('menu-tint-strength');
-        let cornerRadius = this._settings.get_double('menu-corner-radius');
+        let cornerRadius = this._settings.get_int('menu-corner-radius');
 
         // Apply native GNOME blur to the internal clipBox (which contains the clones)
         this.blurEffect = new Shell.BlurEffect({ radius: blurRadius, mode: Shell.BlurMode.ACTOR });
@@ -250,6 +250,7 @@ export class UIManager {
         this.effect.setPadding(SHADER_PADDING);
         this.effect.setTintColor(...this._hexToColorArray(tintColorStr)); // Pure transparent base
         this.effect.setTintStrength(tintStrength); // Subtle tint strength to enhance the glass look without overpowering the background
+        this.effect.setCornerRadius(cornerRadius);
         this.effect.setIsDock(false);
         this.bgActor.add_effect(this.effect);
 
@@ -949,7 +950,7 @@ export class UIManager {
                 // Dynamically adjust the shader's corner radius during the animation.
                 // As the menu shrinks, the absolute radius shrinks too, keeping the corners proportional.
                 if (this.effect && typeof this.effect.setCornerRadius === 'function') {
-                    let baseRadius = CORNER_RADIUS; 
+                    let baseRadius = this._settings.get_double('menu-corner-radius'); 
                     this.effect.setCornerRadius(baseRadius * currentScale);
                     if (typeof this.effect.setAnimationScale === 'function') {
                         this.effect.setAnimationScale(currentScale);

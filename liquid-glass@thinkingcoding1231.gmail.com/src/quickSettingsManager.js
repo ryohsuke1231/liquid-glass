@@ -153,16 +153,16 @@ export class QuickSettingsManager {
         });
 
         connectSetting('quick-settings-y-offset', () => {
-            if (this.animActor) {
+            if (this.targetActor) {
                 this._menuYoffset = this._settings.get_int('quick-settings-y-offset');
-                this.animActor.translation_y = this._menuYoffset;
+                this.targetActor.translation_y = this._menuYoffset;
             }
         });
 
         connectSetting('quick-settings-x-offset', () => {
-            if (this.animActor) {
+            if (this.targetActor) {
                 this._menuXoffset = this._settings.get_int('quick-settings-x-offset');
-                this.animActor.translation_x = this._menuXoffset;
+                this.targetActor.translation_x = this._menuXoffset;
             }
         });
 
@@ -194,9 +194,9 @@ export class QuickSettingsManager {
 
         // Shift the menu down to prevent it from clipping into the top bar
         this._menuYoffset = this._settings.get_int('quick-settings-y-offset');
-        this.animActor.translation_y = this._menuYoffset;
+        this.targetActor.translation_y = this._menuYoffset;
         this._menuXoffset = this._settings.get_int('quick-settings-x-offset');
-        this.animActor.translation_x = this._menuXoffset;
+        this.targetActor.translation_x = this._menuXoffset;
         // this.targetActor.margin_top = MENU_Y_OFFSET;
 
         this._glassExpand = this._settings.get_int('quick-settings-glass-expand');
@@ -229,10 +229,10 @@ export class QuickSettingsManager {
         // Set pivot points for scaling. 
         // The menu scales from the top-center (0.5, 0.0)
         // this.animActor.set_pivot_point(0.5, 0.0);
-        this.animActor.set_pivot_point(0.0, 0.0); // Scale from top-left to match the background actor's coordinate system
+        this.animActor.set_pivot_point(0.5, 0.0); // Scale from top-left to match the background actor's coordinate system
         
         // bgActor scales from the top-left (0.0, 0.0) because we manually sync its exact coordinates
-        this.bgActor.set_pivot_point(0.0, 0.0);
+        this.bgActor.set_pivot_point(0.5, 0.0);
 
         // Insert the custom background *underneath* the actual menu UI
         let menuParent = this.menu.actor.get_parent();
@@ -964,15 +964,10 @@ export class QuickSettingsManager {
                 // Apply the calculated scale to the UI
                 this.animActor.set_scale(currentScale, currentScale);
 
-                let baseW = this._stableBaseW || this.animActor.width;
-                let centerOffset = (baseW * (1.0 - currentScale)) / 2.0;
-                let userX = this._menuXoffset || 0;
-                this.animActor.translation_x = userX + centerOffset;
-
                 // Dynamically adjust the shader's corner radius during the animation.
                 // As the menu shrinks, the absolute radius shrinks too, keeping the corners proportional.
                 if (this.effect && typeof this.effect.setCornerRadius === 'function') {
-                    let baseRadius = CORNER_RADIUS; 
+                    let baseRadius = this._settings.get_double('quick-settings-corner-radius'); 
                     this.effect.setCornerRadius(baseRadius * currentScale);
                     if (typeof this.effect.setAnimationScale === 'function') {
                         this.effect.setAnimationScale(currentScale);
@@ -999,7 +994,7 @@ export class QuickSettingsManager {
                     if (!isClosing) {
                         // Restore scale to exactly 1.0 to fix font hinting/blurriness issues
                         this.animActor.set_scale(1.0, 1.0);
-                        this.animActor.translation_x = this._menuXoffset || 0;
+                        // this.animActor.translation_x = 0;
                         this.animActor.opacity = 255;
                         this.bgActor.opacity = 255;
                         this._syncGeometry();
