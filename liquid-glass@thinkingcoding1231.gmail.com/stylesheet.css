@@ -51,3 +51,84 @@
     border-color: transparent !important;
     box-shadow: none !important;
 }
+
+/* =========================================
+   1. カレンダー全体を囲む角丸の半透明な四角形
+   ========================================= */
+.liquid-glass-menu-root .calendar {
+    background-color: rgba(255, 255, 255, 0.3) !important;
+    border-radius: 24px !important;
+    padding: 12px !important;
+    margin: 4px !important;
+}
+
+/* =========================================
+   2. すべてのボタンとラベルの基本透明化
+   ========================================= */
+/* 一旦、メニュー内のすべてのボタンとラベルを完全に透明にします */
+.liquid-glass-menu-root StButton,
+.liquid-glass-menu-root StLabel {
+    background-color: transparent !important;
+    border-color: transparent !important;
+    box-shadow: none !important;
+}
+
+/* =========================================
+   3. カレンダー内の日付ボタン等の基本ホバー挙動
+   ========================================= */
+/* マウスホバー時（薄い白） */
+.liquid-glass-menu-root StButton:hover {
+    background-color: rgba(255, 255, 255, 0.15) !important;
+}
+
+/* クリック・選択・フォーカス時 */
+.liquid-glass-menu-root StButton:active,
+.liquid-glass-menu-root StButton:checked,
+.liquid-glass-menu-root StButton:focus {
+    background-color: rgba(255, 255, 255, 0.3) !important;
+}
+
+/* =========================================
+   4. 今日の日付（オレンジ色）の例外処理
+   ========================================= */
+/* 上記のホバー色に負けないよう、今日の日付は常にオレンジを強制します */
+.liquid-glass-menu-root .calendar-today,
+.liquid-glass-menu-root .calendar-today:hover,
+.liquid-glass-menu-root .calendar-today:active,
+.liquid-glass-menu-root .calendar-today:checked,
+.liquid-glass-menu-root .calendar-today:focus {
+    background-color: #e67e22 !important; /* GNOME標準のオレンジ */
+    color: white !important;
+    border-radius: 99px !important;
+}
+
+/* =========================================
+   5. 通知・Today・世界時計 カードの専用スタイル
+   ========================================= */
+/* 2〜3で設定した透明化ルールよりも下（後）に書くことで、
+   :not() を使わなくてもこちらの色が優先して適用（上書き）されます。
+*/
+
+/* 通常時：ホバーしていなくても半透明のダークグレー */
+.liquid-glass-menu-root .events-button,
+.liquid-glass-menu-root .world-clocks-button {
+    background-color: rgba(51, 51, 51, 0.72) !important;
+    border-radius: 16px !important;
+    margin-bottom: 6px !important;
+}
+
+.liquid-glass-menu-root .message {
+    background-color: rgba(51, 51, 51, 0.72) !important;
+    border-radius: 24px !important;
+    margin-bottom: 6px !important;
+}
+
+/* ホバー・フォーカス時：白みを増す（明るくする） */
+.liquid-glass-menu-root .message:hover,
+.liquid-glass-menu-root .message:focus,
+.liquid-glass-menu-root .events-button:hover,
+.liquid-glass-menu-root .events-button:focus,
+.liquid-glass-menu-root .world-clocks-button:hover,
+.liquid-glass-menu-root .world-clocks-button:focus {
+    background-color: rgba(65, 65, 65, 0.72) !important;
+}

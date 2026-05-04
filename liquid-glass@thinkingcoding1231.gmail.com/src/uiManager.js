@@ -180,6 +180,12 @@ export class UIManager {
         this.targetActor.add_style_class_name('liquid-glass-transparent');
         this.animActor.add_style_class_name('liquid-glass-transparent');
 
+        const messageList = Main.panel.statusArea.dateMenu._messageList;
+        if (messageList && messageList.actor) {
+            messageList.actor.add_style_class_name('liquid-glass-message-list');
+        }
+        this.animActor.add_style_class_name('liquid-glass-menu-root');
+
         // Shift the menu down to prevent it from clipping into the top bar
         this._menuYoffset = this._settings.get_int('menu-y-offset');
         this.animActor.translation_y = this._menuYoffset;
@@ -603,6 +609,7 @@ export class UIManager {
             actor.has_style_class_name(className);
     }
 
+    /*
     // Simplified target collection to use a single top-down recursive pass.
     _collectAdaptiveTextTargets(actor = this.menu?.actor, inPlaceholder = false, inToday = false, targets = []) {
         if (!actor) return targets;
@@ -629,6 +636,30 @@ export class UIManager {
         }
 
         return targets;
+    }
+    */
+    _collectAdaptiveTextTargets(actor = this.menu?.actor, targets = []) {
+        if (!actor) return targets;
+        return this._findAllTextActors(this.menu?.actor);
+    }
+
+    _findAllTextActors(actor, foundActors = []) {
+        if (!actor) return foundActors;
+
+        // 該当するテキストまたはボタン要素で、かつ可視状態のものを収集
+        if (actor instanceof St.Label || actor instanceof Clutter.Text || actor instanceof St.Button || actor instanceof St.Icon) {
+            if (actor.visible) {
+                foundActors.push(actor);
+            }
+        }
+
+        // 子要素を再帰的に走査
+        let children = typeof actor.get_children === 'function' ? actor.get_children() : [];
+        for (let i = 0; i < children.length; i++) {
+            this._findAllTextActors(children[i], foundActors);
+        }
+
+        return foundActors;
     }
 
     // Initiates the color change for a specific actor
@@ -796,7 +827,7 @@ export class UIManager {
         let startTime = GLib.get_monotonic_time();
         let durationMs = 380; // Animation duration in milliseconds
 
-        actor._colorTweenId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 16, () => {
+        actor._colorTweenId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 32, () => {
             if (!actor || Object.keys(actor).length === 0) return GLib.SOURCE_REMOVE;
 
             let currentTime = GLib.get_monotonic_time();
@@ -982,11 +1013,17 @@ export class UIManager {
         this.targetActor.remove_style_class_name('liquid-glass-transparent');
         if (this.animActor) {
             this.animActor.remove_style_class_name('liquid-glass-transparent');
+            this.animActor.remove_style_class_name('liquid-glass-menu-root');
             
             // Revert UI shifts and forced states
             this.animActor.translation_y = 0;
             this.animActor.set_scale(1.0, 1.0);
             this.animActor.opacity = 255;
+        }
+
+        const messageList = Main.panel.statusArea.dateMenu._messageList;
+        if (messageList && messageList.actor) {
+            messageList.actor.add_style_class_name('liquid-glass-message-list');
         }
 
         // Revert UI shifts and forced states when extension is disabled
