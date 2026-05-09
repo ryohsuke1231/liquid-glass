@@ -108,6 +108,15 @@ export class UIManager {
         return [r, g, b];
     }
 
+    _getMenuMonitorGeometry() {
+        let monitorIndex = Main.layoutManager.findIndexForActor(this.targetActor);
+        if (monitorIndex < 0) {
+            monitorIndex = Main.layoutManager.primaryIndex;
+        }
+
+        return Main.layoutManager.monitors[monitorIndex] || Main.layoutManager.primaryMonitor;
+    }
+
     // 追加: 設定の動的反映
     _bindSettings() {
         const connectSetting = (key, callback) => {
@@ -202,21 +211,23 @@ export class UIManager {
 
         // Create the main background actor that will hold the glass effect
         // clip_to_allocation is false so the shader can draw outside the strict bounds if needed
+        // 1. bgActor (LiquidEffect用：メニューサイズ)
         this.bgActor = new St.Widget({
             style_class: 'liquid-glass-bg-actor',
             clip_to_allocation: false,
             reactive: false
         });
-        
-        // Set an initial size of 1x1. Passing a 0x0 size to the Cogl engine 
-        // while applying a shader will immediately crash the GNOME Shell.
         this.bgActor.set_size(1.0, 1.0);
 
-        // Internal box to hold the desktop/window clones and clip them perfectly
+        // 2. clipBox (切り抜き用ハサミ：メニューサイズ)
         this.clipBox = new St.Widget({
             clip_to_allocation: true
         });
         this.bgActor.add_child(this.clipBox);
+
+        // 🌟 新規追加: 3. fboContainer (マイナス座標回避用フルスクリーンキャンバス)
+        this.fboContainer = new Clutter.Actor();
+        this.clipBox.add_child(this.fboContainer);
         
         // Set pivot points for scaling. 
         // The menu scales from the top-center (0.5, 0.0)
@@ -241,7 +252,7 @@ export class UIManager {
 
         // Apply native GNOME blur to the internal clipBox (which contains the clones)
         this.blurEffect = new Shell.BlurEffect({ radius: blurRadius, mode: Shell.BlurMode.ACTOR });
-        this.clipBox.add_effect(this.blurEffect);
+        this.fboContainer.add_effect(this.blurEffect);
 
         // Apply our custom GLSL liquid shader to the outer background actor
         this.effect = new LiquidEffect({ extensionPath: this.extensionPath });
@@ -294,14 +305,14 @@ export class UIManager {
 
             // Clone the desktop background
             this.bgClone = new Clutter.Clone({ source: Main.layoutManager._backgroundGroup });
-            this.clipBox.add_child(this.bgClone); 
+            this.fboContainer.add_child(this.bgClone); 
 
             this.overviewCloneContainer = new Clutter.Actor();
-            this.clipBox.add_child(this.overviewCloneContainer);
+            this.fboContainer.add_child(this.overviewCloneContainer);
 
             // Create a container for the window clones
             this.windowClonesContainer = new Clutter.Actor();
-            this.clipBox.add_child(this.windowClonesContainer);
+            this.fboContainer.add_child(this.windowClonesContainer);
 
             this._windowClones.clear();
             this._overviewClone = null; 
@@ -320,7 +331,11 @@ export class UIManager {
 
                 // Clone the active window and place it at its exact screen coordinates
                 let clone = new Clutter.Clone({ source: w });
-                clone.set_position(w.x, w.y);
+                // クローンを配置する際の処理
+                let [parentX, parentY] = this.windowClonesContainer.get_transformed_position();
+
+                // 親の座標分をマイナスすることで、画面上の絶対座標を w.x, w.y に一致させる
+                clone.set_position(w.x - parentX, w.y - parentY);
                 this.windowClonesContainer.add_child(clone);
 
                 this._windowClones.set(w, clone);
@@ -497,6 +512,23 @@ export class UIManager {
                 this.clipBox.set_size(bgW, bgH);
                 this.clipBox.set_position(0, 0);
 
+                let monitor = this._getMenuMonitorGeometry();
+                let monitorX = monitor?.x ?? 0;
+                let monitorY = monitor?.y ?? 0;
+                let monitorW = Math.max(1, monitor?.width ?? 1);
+                let monitorH = Math.max(1, monitor?.height ?? 1);
+
+                // メニューの絶対座標からモニターの原点を引いた分だけマイナスにシフトする
+                let fboOffsetX = bgX - monitorX;
+                let fboOffsetY = bgY - monitorY;
+                this.fboContainer.set_position(-fboOffsetX, -fboOffsetY);
+                this.fboContainer.set_size(monitorW, monitorH);
+
+                // bgCloneのサイズもモニターに合わせる
+                if (this.bgClone) {
+                    this.bgClone.set_size(monitorW, monitorH);
+                }
+
                 // Update the shader with the new resolution
                 this.effect.setResolution(bgW, bgH);
 
@@ -509,13 +541,13 @@ export class UIManager {
         // This ensures the cloned background matches the real desktop coordinates perfectly,
         // even while the menu is scaling and moving around.
         if (this.bgClone && this.windowClonesContainer && !Number.isNaN(bgX) && !Number.isNaN(bgY)) {
-            this.bgClone.set_position(-bgX, -bgY);
-            this.windowClonesContainer.set_position(-bgX, -bgY);
+            this.bgClone.set_position(0, 0);
+            this.windowClonesContainer.set_position(0, 0);
 
             if (this.overviewCloneContainer) {
-                this.overviewCloneContainer.set_position(-bgX, -bgY);
+                this.overviewCloneContainer.set_position(0, 0);
             }
-
+            
             // Efficient window synchronization logic.
             let isOverview = Main.overview.visible || Main.overview.animationInProgress;
             let windows = global.get_window_actors();
@@ -549,7 +581,11 @@ export class UIManager {
                     }
                     
                     // Keep the position synchronized with the real window.
-                    clone.set_position(w.x, w.y);
+                    // クローンを配置する際の処理
+                    let [parentX, parentY] = this.windowClonesContainer.get_transformed_position();
+
+                    // 親の座標分をマイナスすることで、画面上の絶対座標を w.x, w.y に一致させる
+                    clone.set_position(w.x - parentX, w.y - parentY);
 
                     // Update the Z-index dynamically to reflect window focus changes.
                     this.windowClonesContainer.set_child_at_index(clone, zIndex);
