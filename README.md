@@ -28,10 +28,12 @@ Quick Settings (Experimental):
 
 ![Quick Settings Screenshot](demo5.png)
 
+OSD:
+
+![OSD Screenshot](demo6.png)
+
 
 ## Installation (GNOME Extension)
-
-Currently, this extension targets the **Top Panel Menus** and **Dock**.
 
 ### Option 1: Quick Install (Terminal)
 Copy and paste this one-liner to clone and install it immediately:
@@ -98,5 +100,6 @@ npm run dev
 - [x] Add Settings Feature
 - [x] Add Adaptive Text Coloring
 - [x] Add Quick Settings Support
+- [ ] Add OSD Support
 - [ ] Add Perfect Antialiasing
 - [ ] Publish to extensions.gnome.org
