@@ -100,6 +100,6 @@ npm run dev
 - [x] Add Settings Feature
 - [x] Add Adaptive Text Coloring
 - [x] Add Quick Settings Support
-- [ ] Add OSD Support
+- [x] Add OSD Support
 - [ ] Add Perfect Antialiasing
 - [ ] Publish to extensions.gnome.org
