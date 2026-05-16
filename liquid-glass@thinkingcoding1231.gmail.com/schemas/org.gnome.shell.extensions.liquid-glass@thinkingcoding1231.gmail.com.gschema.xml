@@ -40,6 +40,10 @@
       <default>12</default>
       <summary>Glass expand pixels</summary>
     </key>
+    <key name="menu-x-offset" type="i">
+      <default>0</default>
+      <summary>X offset</summary>
+    </key>
     <key name="menu-y-offset" type="i">
       <default>17</default> <summary>Y offset</summary>
     </key>

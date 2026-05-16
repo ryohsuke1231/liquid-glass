@@ -1,10 +1,11 @@
-// src/uiManager.js
+// src/uiManager.ts
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import Clutter from 'gi://Clutter';
 import Shell from 'gi://Shell';
 import St from 'gi://St';
 import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
+import Gio from 'gi://Gio';
 import { LiquidEffect } from './liquidEffect.js';
 import { StageContrastSampler, AdaptiveContrastConfig } from './contrastSampler.js';
 
@@ -12,44 +13,81 @@ import { StageContrastSampler, AdaptiveContrastConfig } from './contrastSampler.
 
 // Transparent padding outside the glass area. 
 // This prevents the shader distortion or rounded corners from being clipped by the actor bounds.
-const SHADER_PADDING = 20; 
-
-// How much larger the glass background should be compared to the actual menu UI.
-// const GLASS_EXPAND = 12;   
-
-// Distance to shift the entire menu downwards to avoid overlapping with the top panel.
-// const MENU_Y_OFFSET = GLASS_EXPAND + 5;  
+const SHADER_PADDING = 20;
 
 // Adaptive text color flags
-const ENABLE_ADAPTIVE_TEXT_COLOR = true;
 const SAMPLE_PER_ELEMENT = false;
-const SAMPLE_INTERVAL_MS = 400; // How often to resample colors while the menu is open (in milliseconds)
 
-const TINT_COLOR = [1.0, 1.0, 1.0]; // Pure white tint for the frosted glass effect
-const TINT_STRENGTH = 0.20; // Subtle tint strength to enhance the glass look without overpowering the background
-const BLUR_RADIUS = 8; // The radius of the native blur effect applied to the background clones
-const CORNER_RADIUS = 60.0; // The radius for the rounded corners of the dock background
-
+interface CustomBannerActor extends St.Widget {
+    _colorTweenId?: number;
+    _currentTargetColor?: string;
+    _currentInsensitiveState?: boolean;
+    _isUpdatingAlpha?: boolean;
+}
 // ==============================================
 
 export class UIManager {
-    constructor(extensionPath, settings) {
+    private extensionPath: string;
+    private _settings: Gio.Settings;
+    private targetActor: St.Widget;
+    private menu: any;
+    private animActor: St.Widget;
+    private bgActor: St.Widget | null;
+    private blurEffect: Shell.BlurEffect | null;
+    private effect: LiquidEffect | null;
+    private bgClone: Clutter.Clone | null;
+    private windowClonesContainer: Clutter.Actor | null;
+    private fboContainer: Clutter.Actor | null;
+    private overviewCloneContainer: Clutter.Actor | null;
+    private _windowClones: Map<Clutter.Actor, Clutter.Clone>;
+    private _overviewClone: Clutter.Clone | null;
+    private _appDisplayClone: Clutter.Clone | null;
+    private _searchClone: Clutter.Clone | null;
+    private _signals: number[];
+    private _frameSyncId: number;
+    private _glassExpand: number;
+    private _menuXoffset: number;
+    private _menuYoffset: number;
+    private _springScale: Spring;
+    private _springPos: Spring;
+    private _tickId: number;
+    private _contrastSampler: StageContrastSampler;
+    private _adaptiveTimerId: number;
+    private _adaptiveInFlight: boolean;
+    private _styledActors: Map<Clutter.Actor, string>;
+    private _settingsSignals: number[];
+    private _isEffectActive: boolean;
+    private _adaptiveConfig!: typeof AdaptiveContrastConfig;
+    private clipBox: St.Widget | null = null;
+    private _stableBaseW: number | undefined;
+    private _stableBaseH: number | undefined;
+    private _lastValidAnimAbsX: number | undefined;
+    private _lastValidAnimAbsY: number | undefined;
+    private _lastBgW: number | undefined;
+    private _lastBgH: number | undefined;
+    private _lastBgX: number | undefined;
+    private _lastBgY: number | undefined;
+
+    constructor(extensionPath: string, settings: Gio.Settings) {
         this.extensionPath = extensionPath;
         this._settings = settings;
-        
+
         // Target the main container of the Date/Calendar menu
-        this.targetActor = Main.panel.statusArea.dateMenu.menu.actor;
+        this.targetActor = Main.panel.statusArea.dateMenu.menu.actor as St.Widget;
         this.menu = Main.panel.statusArea.dateMenu.menu;
 
         // Target for animations and visual offsets (The inner content)
-        this.animActor = Main.panel.statusArea.dateMenu.menu.box;
-        
+        // @ts-expect-error
+        this.animActor = Main.panel.statusArea.dateMenu.menu.box as St.Widget;
+
         this.bgActor = null;
         this.blurEffect = null;
         this.effect = null;
-        
+
         this.bgClone = null;
         this.windowClonesContainer = null;
+        this.fboContainer = null;
+        this.overviewCloneContainer = null;
 
         // Map to keep track of active windows and their corresponding clone actors.
         this._windowClones = new Map();
@@ -57,8 +95,9 @@ export class UIManager {
         this._signals = [];
         this._frameSyncId = 0;
 
-        this._glassExpand = null;
-        this._menuYoffset = null;
+        this._glassExpand = 0;
+        this._menuXoffset = 0;
+        this._menuYoffset = 0;
 
         // Custom spring physics parameters for the open/close animation
         // Spring(stiffness, damping, mass)
@@ -74,13 +113,12 @@ export class UIManager {
         this._settingsSignals = [];
         this._isEffectActive = false;
 
-        this.overviewCloneContainer = null;
         this._overviewClone = null;
         this._appDisplayClone = null;
         this._searchClone = null;
 
         // Listen for the menu opening/closing to trigger our custom physics animation
-        this._signals.push(this.menu.connect('open-state-changed', (menu, isOpen) => {
+        this._signals.push(this.menu.connect('open-state-changed', (menu: any, isOpen: boolean) => {
             if (isOpen) {
                 this._startAnimation(1); // Target scale: 1.0 (fully open)
             } else {
@@ -100,7 +138,7 @@ export class UIManager {
     }
 
     // Utility: Convert HEX color string to normalized RGB array
-    _hexToColorArray(hex) {
+    _hexToColorArray(hex: string): [number, number, number] {
         if (!hex || typeof hex !== 'string' || !hex.startsWith('#') || hex.length !== 7) return [1.0, 1.0, 1.0];
         let r = parseInt(hex.slice(1, 3), 16) / 255.0;
         let g = parseInt(hex.slice(3, 5), 16) / 255.0;
@@ -119,7 +157,7 @@ export class UIManager {
 
     // 追加: 設定の動的反映
     _bindSettings() {
-        const connectSetting = (key, callback) => {
+        const connectSetting = (key: string, callback: Function) => {
             let id = this._settings.connect(`changed::${key}`, callback.bind(this));
             this._settingsSignals.push(id);
         };
@@ -162,6 +200,13 @@ export class UIManager {
             }
         });
 
+        connectSetting('menu-x-offset', () => {
+            if (this.animActor) {
+                this._menuXoffset = this._settings.get_int('menu-x-offset');
+                this.animActor.translation_x = this._menuXoffset;
+            }
+        });
+
         connectSetting('menu-y-offset', () => {
             if (this.animActor) {
                 this._menuYoffset = this._settings.get_int('menu-y-offset');
@@ -175,7 +220,6 @@ export class UIManager {
 
         connectSetting('menu-sample-interval-ms', () => {
             this._adaptiveConfig.sampleIntervalMs = this._settings.get_int('menu-sample-interval-ms');
-
         });
     }
 
@@ -184,21 +228,18 @@ export class UIManager {
         this._isEffectActive = true;
 
         if (!this.targetActor) return;
-        
+
         // Remove default GNOME styling and make the background transparent
         this.targetActor.add_style_class_name('liquid-glass-transparent');
         this.animActor.add_style_class_name('liquid-glass-transparent');
 
-        const messageList = Main.panel.statusArea.dateMenu._messageList;
-        if (messageList && messageList.actor) {
-            messageList.actor.add_style_class_name('liquid-glass-message-list');
-        }
         this.animActor.add_style_class_name('liquid-glass-menu-root');
 
         // Shift the menu down to prevent it from clipping into the top bar
+        this._menuXoffset = this._settings.get_int('menu-x-offset');
         this._menuYoffset = this._settings.get_int('menu-y-offset');
+        this.animActor.translation_x = this._menuXoffset;
         this.animActor.translation_y = this._menuYoffset;
-        // this.targetActor.margin_top = MENU_Y_OFFSET;
 
         this._glassExpand = this._settings.get_int('menu-glass-expand');
 
@@ -228,11 +269,11 @@ export class UIManager {
         // 🌟 新規追加: 3. fboContainer (マイナス座標回避用フルスクリーンキャンバス)
         this.fboContainer = new Clutter.Actor();
         this.clipBox.add_child(this.fboContainer);
-        
+
         // Set pivot points for scaling. 
         // The menu scales from the top-center (0.5, 0.0)
         this.animActor.set_pivot_point(0.5, 0.0);
-        
+
         // bgActor scales from the top-left (0.0, 0.0) because we manually sync its exact coordinates
         this.bgActor.set_pivot_point(0.0, 0.0);
 
@@ -242,7 +283,7 @@ export class UIManager {
             menuParent.insert_child_below(this.bgActor, this.menu.actor);
         } else {
             // Fallback: If it has no parent yet, add it directly to the UI group
-            Main.uiGroup.add_child(this.bgActor);
+            Main.layoutManager.uiGroup.add_child(this.bgActor);
         }
 
         let blurRadius = this._settings.get_int('menu-blur-radius');
@@ -255,8 +296,8 @@ export class UIManager {
         this.fboContainer.add_effect(this.blurEffect);
 
         // Apply our custom GLSL liquid shader to the outer background actor
-        this.effect = new LiquidEffect({ extensionPath: this.extensionPath, settings: this._settings });
-        
+        this.effect = new LiquidEffect({ extensionPath: this.extensionPath, settings: this._settings } as any);
+
         // Tell the shader about the padding so it calculates refraction coordinates correctly
         this.effect.setPadding(SHADER_PADDING);
         this.effect.setTintColor(...this._hexToColorArray(tintColorStr)); // Pure transparent base
@@ -268,54 +309,61 @@ export class UIManager {
         this.bgActor.show();
 
         // Helper functions to hook into GNOME's render pipeline
-        const laterAdd = (laterType, callback) => {
-            return global.compositor?.get_laters?.().add(laterType, callback) ??
-                Meta.later_add(laterType, callback);
+        const laterAdd = (laterType: Meta.LaterType, callback: GLib.SourceFunc) => {
+            return global.compositor?.get_laters?.().add(laterType, callback);
         };
 
-        const laterRemove = id => {
+        const laterRemove = (id: number) => {
             if (!id) return;
             if (global.compositor?.get_laters)
                 global.compositor.get_laters().remove(id);
-            else if (Meta.later_remove)
-                Meta.later_remove(id);
+
         };
 
         // Hook into the frame right before it is painted to the screen
-        const frameLaterType = Meta.LaterType.BEFORE_REDRAW ?? Meta.LaterType.BEFORE_PAINT;
+        const frameLaterType = Meta.LaterType.BEFORE_REDRAW;
 
         // Function to create clones of the desktop wallpaper and all visible windows
-        // This is necessary because GNOME cannot blur content behind an overlay popup directly
         let buildClones = () => {
             if (!this.bgActor) return;
-            
-            // Clean up old clones before creating new ones
-            if (this.bgClone) {
-                this.bgClone.destroy();
-                this.bgClone = null;
-            }
-            if (this.windowClonesContainer) {
-                this.windowClonesContainer.destroy();
-                this.windowClonesContainer = null;
-            }
-            if (this.overviewCloneContainer) {
-                this.overviewCloneContainer.destroy();
-                this.overviewCloneContainer = null;
-            }
 
+            // 1. ISOLATED CLEANUP (Adopted from quickSettingsManager for safety)
+            const safeDestroy = (actorRef: any) => {
+                if (actorRef) {
+                    try {
+                        actorRef.destroy();
+                    } catch (e) {
+                        // C object was already disposed, ignore safely.
+                    }
+                }
+            };
+
+            safeDestroy(this.bgClone);
+            this.bgClone = null;
+
+            safeDestroy(this.windowClonesContainer);
+            this.windowClonesContainer = null;
+
+            safeDestroy(this.overviewCloneContainer);
+            this.overviewCloneContainer = null;
+
+            // 2. CREATION WITH LIFECYCLE TRACKING
             // Clone the desktop background
             this.bgClone = new Clutter.Clone({ source: Main.layoutManager._backgroundGroup });
-            this.fboContainer.add_child(this.bgClone); 
+            this.bgClone.connect('destroy', () => { this.bgClone = null; });
+            this.fboContainer?.add_child(this.bgClone);
 
             this.overviewCloneContainer = new Clutter.Actor();
-            this.fboContainer.add_child(this.overviewCloneContainer);
+            this.overviewCloneContainer.connect('destroy', () => { this.overviewCloneContainer = null; });
+            this.fboContainer?.add_child(this.overviewCloneContainer);
 
             // Create a container for the window clones
             this.windowClonesContainer = new Clutter.Actor();
-            this.fboContainer.add_child(this.windowClonesContainer);
+            this.windowClonesContainer.connect('destroy', () => { this.windowClonesContainer = null; });
+            this.fboContainer?.add_child(this.windowClonesContainer);
 
             this._windowClones.clear();
-            this._overviewClone = null; 
+            this._overviewClone = null;
             this._appDisplayClone = null;
             this._searchClone = null;
 
@@ -323,7 +371,7 @@ export class UIManager {
             let windows = global.get_window_actors();
             for (let w of windows) {
                 let metaWindow = w.get_meta_window();
-                
+
                 // Skip minimized or hidden windows to save performance
                 if (!metaWindow || metaWindow.minimized || !w.visible) {
                     continue;
@@ -331,7 +379,6 @@ export class UIManager {
 
                 // Clone the active window and place it at its exact screen coordinates
                 let clone = new Clutter.Clone({ source: w });
-                // クローンを配置する際の処理
                 let [parentX, parentY] = this.windowClonesContainer.get_transformed_position();
 
                 // 親の座標分をマイナスすることで、画面上の絶対座標を w.x, w.y に一致させる
@@ -348,7 +395,7 @@ export class UIManager {
             if (!this.bgActor || !this.targetActor.mapped)
                 return GLib.SOURCE_REMOVE;
 
-            this._syncGeometry(); 
+            this._syncGeometry();
             this._frameSyncId = laterAdd(frameLaterType, frameTick);
             return GLib.SOURCE_REMOVE;
         };
@@ -360,7 +407,7 @@ export class UIManager {
                 this._frameSyncId = laterAdd(frameLaterType, frameTick);
             }
         };
-        
+
         let stopFrameSync = () => { // eslint-disable-line no-unused-vars
             if (this._frameSyncId !== 0) {
                 laterRemove(this._frameSyncId);
@@ -370,7 +417,7 @@ export class UIManager {
 
         // Clear the cached size whenever the menu opens so it can recalculate 
         // based on any new notifications or calendar events added
-        this._signals.push(this.menu.connect('open-state-changed', (menu, isOpen) => {
+        this._signals.push(this.menu.connect('open-state-changed', (menu: any, isOpen: boolean) => {
             if (isOpen) {
                 this._stableBaseW = undefined;
                 this._stableBaseH = undefined;
@@ -387,31 +434,35 @@ export class UIManager {
         }
     }
 
-    // 追加: UIクローンの位置・サイズ同期用メソッド
-    _syncActorProperties(source, clone) {
+    // 追加: UIクローンの位置・サイズ同期用メソッド (Adopted try/catch from quickSettingsManager)
+    _syncActorProperties(source: any, clone: Clutter.Clone) {
         if (!source || !clone) return;
-        
-        let [absX, absY] = source.get_transformed_position();
-        let [w, h] = source.get_size();
 
-        if (Number.isNaN(absX) || Number.isNaN(absY) || Number.isNaN(w) || Number.isNaN(h) || w <= 0 || h <= 0) {
-            clone.visible = false;
-            return;
+        try {
+            let [absX, absY] = source.get_transformed_position();
+            let [w, h] = source.get_size();
+
+            if (Number.isNaN(absX) || Number.isNaN(absY) || Number.isNaN(w) || Number.isNaN(h) || w <= 0 || h <= 0) {
+                clone.visible = false;
+                return;
+            }
+
+            clone.set_position(absX, absY);
+            clone.set_size(w, h);
+            clone.set_scale(source.scale_x, source.scale_y);
+
+            let pX = source.pivot_point ? source.pivot_point.x : 0;
+            let pY = source.pivot_point ? source.pivot_point.y : 0;
+            clone.set_pivot_point(pX, pY);
+
+            clone.translation_x = 0;
+            clone.translation_y = 0;
+
+            clone.opacity = source.opacity;
+            clone.visible = source.visible && source.mapped;
+        } catch (e) {
+            // The C-level actor was destroyed by GNOME Shell, but JS hasn't caught up yet.
         }
-
-        clone.set_position(absX, absY);
-        clone.set_size(w, h);
-        clone.set_scale(source.scale_x, source.scale_y);
-        
-        let pX = source.pivot_point ? source.pivot_point.x : 0;
-        let pY = source.pivot_point ? source.pivot_point.y : 0;
-        clone.set_pivot_point(pX, pY);
-
-        clone.translation_x = 0;
-        clone.translation_y = 0;
-        
-        clone.opacity = source.opacity;
-        clone.visible = source.visible && source.mapped;
     }
 
     // Calculates and synchronizes the position/size of the glass background every frame
@@ -469,19 +520,34 @@ export class UIManager {
                 animAbsY = this._lastValidAnimAbsY;
             } else {
                 // If no history exists, calculate based on the top panel clock button
+                /*
                 let buttonActor = Main.panel.statusArea.dateMenu.actor;
                 let [btnX, btnY] = buttonActor.get_transformed_position();
                 let [btnW, btnH] = buttonActor.get_size();
-                
+
                 if (!Number.isNaN(btnX) && !Number.isNaN(btnY)) {
                     // Assume the menu opens centered directly below the clock button
-                    animAbsX = btnX + (btnW / 2) - (w / 2);
+                    animAbsX = btnX + (btnW / 2) - (w / 2) + this._menuXoffset; // Apply horizontal offset
                     animAbsY = btnY + btnH + this._menuYoffset;
                 } else {
                     // Ultimate fallback: Just place it in the top-center of the primary monitor
                     let monitor = Main.layoutManager.primaryMonitor;
-                    animAbsX = (monitor.width / 2) - (w / 2);
-                    animAbsY = (Main.panel.height || 27) + this._menuYoffset; 
+                    if (monitor) {
+                        animAbsX = (monitor.width / 2) - (w / 2) + this._menuXoffset; // Apply horizontal offset
+                        animAbsY = (Main.panel.height || 27) + this._menuYoffset;
+                    } else {
+                        animAbsX = 0;
+                        animAbsY = 0;
+                    }
+                }
+                */
+                let monitor = Main.layoutManager.primaryMonitor;
+                if (monitor) {
+                    animAbsX = (monitor.width / 2) - (w / 2) + this._menuXoffset; // Apply horizontal offset
+                    animAbsY = (Main.panel.height || 27) + this._menuYoffset;
+                } else {
+                    animAbsX = 0;
+                    animAbsY = 0;
                 }
             }
         } else {
@@ -489,28 +555,28 @@ export class UIManager {
             this._lastValidAnimAbsX = animAbsX;
             this._lastValidAnimAbsY = animAbsY;
         }
-        
+
         // --------------------------------------------------------
 
         // The background needs to be larger than the UI to account for the glass expansion
         // and the extra padding required by the shader for edge refraction.
         let bgW = w + (this._glassExpand * 2) + (SHADER_PADDING * 2);
         let bgH = h + (this._glassExpand * 2) + (SHADER_PADDING * 2);
-        
+
         // UIの正確な座標に対して、純粋にパディング分だけマイナスして背景を被せる
         let bgX = animAbsX - this._glassExpand - SHADER_PADDING;
         let bgY = animAbsY - this._glassExpand - SHADER_PADDING;
 
         if (!Number.isNaN(bgX) && !Number.isNaN(bgY) && w >= 1.0 && h >= 1.0) {
-            
+
             // Only update positions/sizes if they actually changed to save CPU cycles
             if (this._lastBgW !== bgW || this._lastBgH !== bgH || this._lastBgX !== bgX || this._lastBgY !== bgY) {
                 this.bgActor.set_size(bgW, bgH);
                 this.bgActor.set_position(bgX, bgY);
-                
+
                 // The internal clip region shares the same size, but sits at (0,0) relative to bgActor
-                this.clipBox.set_size(bgW, bgH);
-                this.clipBox.set_position(0, 0);
+                this.clipBox?.set_size(bgW, bgH);
+                this.clipBox?.set_position(0, 0);
 
                 let monitor = this._getMenuMonitorGeometry();
                 let monitorX = monitor?.x ?? 0;
@@ -519,10 +585,12 @@ export class UIManager {
                 let monitorH = Math.max(1, monitor?.height ?? 1);
 
                 // メニューの絶対座標からモニターの原点を引いた分だけマイナスにシフトする
-                let fboOffsetX = bgX - monitorX;
-                let fboOffsetY = bgY - monitorY;
-                this.fboContainer.set_position(-fboOffsetX, -fboOffsetY);
-                this.fboContainer.set_size(monitorW, monitorH);
+                if (this.fboContainer) {
+                    let fboOffsetX = bgX - monitorX;
+                    let fboOffsetY = bgY - monitorY;
+                    this.fboContainer.set_position(-fboOffsetX, -fboOffsetY);
+                    this.fboContainer.set_size(monitorW, monitorH);
+                }
 
                 // bgCloneのサイズもモニターに合わせる
                 if (this.bgClone) {
@@ -530,7 +598,7 @@ export class UIManager {
                 }
 
                 // Update the shader with the new resolution
-                this.effect.setResolution(bgW, bgH);
+                this.effect?.setResolution(bgW, bgH);
 
                 this._lastBgW = bgW; this._lastBgH = bgH;
                 this._lastBgX = bgX; this._lastBgY = bgY;
@@ -547,7 +615,7 @@ export class UIManager {
             if (this.overviewCloneContainer) {
                 this.overviewCloneContainer.set_position(0, 0);
             }
-            
+
             // Efficient window synchronization logic.
             let isOverview = Main.overview.visible || Main.overview.animationInProgress;
             let windows = global.get_window_actors();
@@ -564,57 +632,58 @@ export class UIManager {
 
 
                 for (let w of windows) {
-                    let metaWindow = w.get_meta_window();
-                    if (!metaWindow || metaWindow.minimized || !w.visible) continue;
+                    try {
+                        let metaWindow = w.get_meta_window();
+                        if (!metaWindow || metaWindow.minimized || !w.visible) continue;
 
-                    activeWindows.add(w);
+                        activeWindows.add(w);
 
-                    let clone;
-                    if (!this._windowClones.has(w)) {
-                        // Create a clone for newly opened windows.
-                        clone = new Clutter.Clone({ source: w });
-                        this.windowClonesContainer.add_child(clone);
-                        this._windowClones.set(w, clone);
-                    } else {
-                        // Retrieve existing clone.
-                        clone = this._windowClones.get(w);
+                        let clone: Clutter.Clone | undefined;
+                        if (!this._windowClones.has(w)) {
+                            // Create a clone for newly opened windows.
+                            clone = new Clutter.Clone({ source: w });
+                            this.windowClonesContainer.add_child(clone);
+                            this._windowClones.set(w, clone);
+                        } else {
+                            // Retrieve existing clone.
+                            clone = this._windowClones.get(w);
+                        }
+
+                        // Keep the position synchronized with the real window.
+                        let [parentX, parentY] = this.windowClonesContainer.get_transformed_position();
+                        if (clone) clone.set_position(w.x - parentX, w.y - parentY);
+
+                        // Update the Z-index dynamically to reflect window focus changes.
+                        if (clone) this.windowClonesContainer.set_child_at_index(clone, zIndex);
+                        zIndex++;
+                    } catch (e) {
+                        continue;
                     }
-                    
-                    // Keep the position synchronized with the real window.
-                    // クローンを配置する際の処理
-                    let [parentX, parentY] = this.windowClonesContainer.get_transformed_position();
-
-                    // 親の座標分をマイナスすることで、画面上の絶対座標を w.x, w.y に一致させる
-                    clone.set_position(w.x - parentX, w.y - parentY);
-
-                    // Update the Z-index dynamically to reflect window focus changes.
-                    this.windowClonesContainer.set_child_at_index(clone, zIndex);
-                    zIndex++;
                 }
             } else {
                 // --- Overview時 ---
                 this.bgClone.show();
                 let controls = Main.overview._overview?._controls;
-                
+
                 if (controls) {
                     if (controls._workspacesDisplay) {
                         if (!this._overviewClone) {
                             this._overviewClone = new Clutter.Clone({ source: controls._workspacesDisplay });
-                            this.overviewCloneContainer.add_child(this._overviewClone);
+                            this.overviewCloneContainer?.add_child(this._overviewClone);
                         }
                         this._syncActorProperties(controls._workspacesDisplay, this._overviewClone);
                     }
                     if (controls._appDisplay) {
                         if (!this._appDisplayClone) {
                             this._appDisplayClone = new Clutter.Clone({ source: controls._appDisplay });
-                            this.overviewCloneContainer.add_child(this._appDisplayClone);
+                            this.overviewCloneContainer?.add_child(this._appDisplayClone);
                         }
                         this._syncActorProperties(controls._appDisplay, this._appDisplayClone);
                     }
                     if (controls._searchController && controls._searchController.actor) {
                         if (!this._searchClone) {
                             this._searchClone = new Clutter.Clone({ source: controls._searchController.actor });
-                            this.overviewCloneContainer.add_child(this._searchClone);
+                            this.overviewCloneContainer?.add_child(this._searchClone);
                         }
                         this._syncActorProperties(controls._searchController.actor, this._searchClone);
                     }
@@ -641,46 +710,17 @@ export class UIManager {
     }
 
     // Utility function to safely check if an actor has a specific style class
-    _hasStyleClass(actor, className) {
-        return typeof actor?.has_style_class_name === 'function' &&
+    _hasStyleClass(actor: Clutter.Actor, className: string) {
+        return actor instanceof St.Widget &&
             actor.has_style_class_name(className);
     }
 
-    /*
-    // Simplified target collection to use a single top-down recursive pass.
-    _collectAdaptiveTextTargets(actor = this.menu?.actor, inPlaceholder = false, inToday = false, targets = []) {
-        if (!actor) return targets;
-
-        // Check if the current element has the target parent class and update the corresponding flag.
-        const isPlaceholder = inPlaceholder || this._hasStyleClass(actor, 'message-list-placeholder');
-        const isToday = inToday || this._hasStyleClass(actor, 'datemenu-today-button');
-
-        // Check if the actor matches the specified target criteria.
-        if (typeof actor.set_style === 'function') {
-            if (this._hasStyleClass(actor, 'message-list-clear-button')) {
-                targets.push(actor);
-            } else if (isPlaceholder && (actor instanceof St.Label || actor instanceof St.Icon)) {
-                targets.push(actor);
-            } else if (isToday && actor instanceof St.Label && (this._hasStyleClass(actor, 'day-label') || this._hasStyleClass(actor, 'date-label'))) {
-                targets.push(actor);
-            }
-        }
-
-        // Recurse through children, passing down the flag indicating which parent context we are currently in.
-        const children = actor.get_children?.() ?? [];
-        for (let i = 0; i < children.length; i++) {
-            this._collectAdaptiveTextTargets(children[i], isPlaceholder, isToday, targets);
-        }
-
-        return targets;
-    }
-    */
-    _collectAdaptiveTextTargets(actor = this.menu?.actor, targets = []) {
+    _collectAdaptiveTextTargets(actor: Clutter.Actor = this.menu?.actor, targets: Clutter.Actor[] = []) {
         if (!actor) return targets;
         return this._findAllTextActors(this.menu?.actor);
     }
 
-    _findAllTextActors(actor, foundActors = []) {
+    _findAllTextActors(actor: Clutter.Actor, foundActors: Clutter.Actor[] = []) {
         if (!actor) return foundActors;
 
         // 該当するテキストまたはボタン要素で、かつ可視状態のものを収集
@@ -700,20 +740,19 @@ export class UIManager {
     }
 
     // Initiates the color change for a specific actor
-    _setActorColor(actor, color, skipAnimations = false) {
+    _setActorColor(actor: CustomBannerActor, color: string, skipAnimations = false) {
         if (!actor || typeof actor.set_style !== 'function') return;
 
         if (!this._styledActors.has(actor)) {
             let origStyle = typeof actor.get_style === 'function' ? actor.get_style() : null;
-            this._styledActors.set(actor, origStyle);
+            if (origStyle) this._styledActors.set(actor, origStyle);
         }
 
         let isInsensitive = false;
         if (actor instanceof St.Button) {
             isInsensitive = (actor.reactive === false) || (typeof actor.has_style_pseudo_class === 'function' && actor.has_style_pseudo_class('insensitive'));
         }
-        // Save the target color to prevent redundant animation triggers for the same color.
-        // if (actor._currentTargetColor === color) return;
+
         if (actor._currentTargetColor === color && actor._currentInsensitiveState === isInsensitive) return;
         actor._currentTargetColor = color;
         actor._currentInsensitiveState = isInsensitive;
@@ -725,47 +764,47 @@ export class UIManager {
     // Removes all dynamically applied adaptive text color styles and stops related animations
     _clearAdaptiveStyles() {
         // 1. 変更履歴 (styledActors) から元の状態を復元する
-        for (const [actor, originalStyle] of this._styledActors.entries()) {
+        for (const [actor, originalStyle] of this._styledActors.entries() as MapIterator<[CustomBannerActor, string]>) {
             if (actor && typeof actor.set_style === 'function') {
                 if (actor._colorTweenId) {
                     GLib.source_remove(actor._colorTweenId);
-                    actor._colorTweenId = null;
+                    actor._colorTweenId = undefined;
                 }
-                actor._currentTargetColor = null;
-                actor._currentInsensitiveState = null;
-                
+                actor._currentTargetColor = undefined;
+                actor._currentInsensitiveState = undefined;
+
                 actor.remove_style_class_name('adaptive-text-transition');
                 actor.remove_style_class_name('adaptive-color-light');
                 actor.remove_style_class_name('adaptive-color-dark');
-                
-                // 修正: 存在しない remove_style() を削除し、元のスタイル(またはnull)をセット
+
+                // 元のスタイル(またはnull)をセット
                 actor.set_style(originalStyle || null);
             }
         }
         this._styledActors.clear();
 
         // 2. 念のため、現在DOM上に存在するターゲットの色も強制クリア（フェイルセーフ）
-        const currentTargets = this._collectAdaptiveTextTargets();
+        const currentTargets = this._collectAdaptiveTextTargets() as CustomBannerActor[];
         for (let actor of currentTargets) {
             if (actor && typeof actor.set_style === 'function') {
                 if (actor._colorTweenId) {
                     GLib.source_remove(actor._colorTweenId);
-                    actor._colorTweenId = null;
+                    actor._colorTweenId = undefined;
                 }
-                actor._currentTargetColor = null;
-                actor._currentInsensitiveState = null;
+                actor._currentTargetColor = undefined;
+                actor._currentInsensitiveState = undefined;
                 actor.set_style(null);
             }
         }
     }
 
     // Iterates through the color map and applies the new target colors to the respective actors
-    _applyAdaptiveColorMap(colorMap, skipAnimations = false) {
+    _applyAdaptiveColorMap(colorMap: Map<Clutter.Actor, string>, skipAnimations = false) {
         if (!colorMap || colorMap.size === 0)
             return;
 
         for (const [actor, color] of colorMap.entries()) {
-            this._setActorColor(actor, color, skipAnimations);
+            this._setActorColor(actor as unknown as CustomBannerActor, color, skipAnimations);
         }
     }
 
@@ -827,7 +866,7 @@ export class UIManager {
     }
 
     // Converts a hexadecimal color code string to an RGB object.
-    _hexToRgb(hex) {
+    _hexToRgb(hex: string) {
         let bigint = parseInt(hex.replace('#', ''), 16);
         return {
             r: (bigint >> 16) & 255,
@@ -837,29 +876,28 @@ export class UIManager {
     }
 
     // Converts RGB numerical values to a hexadecimal color string.
-    _rgbToHex(r, g, b) {
+    _rgbToHex(r: number, g: number, b: number) {
         return "#" + (1 << 24 | r << 16 | g << 8 | b).toString(16).slice(1);
     }
 
-    _animateActorColor(actor, targetHexColor, isInsensitive, durationMs = 380, skipAnimations = false) {
+    _animateActorColor(actor: CustomBannerActor, targetHexColor: string, isInsensitive: boolean, durationMs = 380, skipAnimations = false) {
         if (!actor || Object.keys(actor).length === 0) return;
 
         // Cancel any existing color tween if running (handles mid-transition target changes).
         if (actor._colorTweenId) {
             GLib.source_remove(actor._colorTweenId);
-            actor._colorTweenId = null;
+            actor._colorTweenId = undefined;
         }
 
         // --- Retrieve the "actual physical color" currently displayed on screen ---
-        // This allows smooth transitions starting directly from the default theme colors.
         let themeNode = actor.get_theme_node();
         let startColor = themeNode.get_foreground_color(); // Returns Clutter.Color
 
         let targetRgb = this._hexToRgb(targetHexColor);
-        
+
         // 無効状態なら透明度を50%(0.5)にし、有効なら100%(1.0)にする
         let targetAlpha = isInsensitive ? 0.5 : 1.0;
-        let startAlpha = startColor.alpha / 255.0; // Clutter.Colorのalphaは0〜255で返る
+        let startAlpha = startColor.alpha / 255.0;
 
         if (skipAnimations) {
             let alphaStr = targetAlpha.toFixed(3);
@@ -867,9 +905,8 @@ export class UIManager {
             actor.set_style(`color: ${targetRgba}; -st-icon-foreground-color: ${targetRgba};`);
             return;
         }
-        
+
         let startTime = GLib.get_monotonic_time();
-        // let durationMs = 380; // Animation duration in milliseconds
 
         actor._colorTweenId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 32, () => {
             if (!actor || Object.keys(actor).length === 0) return GLib.SOURCE_REMOVE;
@@ -879,8 +916,8 @@ export class UIManager {
             let progress = Math.min(elapsedMs / durationMs, 1.0);
 
             // Standard ease-in-out easing function
-            let easeProgress = progress < 0.5 
-                ? 2 * progress * progress 
+            let easeProgress = progress < 0.5
+                ? 2 * progress * progress
                 : 1 - Math.pow(-2 * progress + 2, 2) / 2;
 
             // Linearly interpolate (lerp) each RGB channel individually
@@ -891,7 +928,7 @@ export class UIManager {
             // Alpha値も補間して rgba() 形式を生成
             let a = startAlpha + (targetAlpha - startAlpha) * easeProgress;
             a = Math.max(0.0, Math.min(1.0, a)); // 0.0 ~ 1.0 に安全にクランプ
-            
+
             let alphaStr = a.toFixed(3); // CSS用に小数点第3位まで
             let currentRgba = `rgba(${r}, ${g}, ${b}, ${alphaStr})`;
 
@@ -900,7 +937,7 @@ export class UIManager {
 
             // Check for animation completion
             if (progress >= 1.0) {
-                actor._colorTweenId = null;
+                actor._colorTweenId = undefined;
                 return GLib.SOURCE_REMOVE;
             }
             return GLib.SOURCE_CONTINUE;
@@ -908,7 +945,7 @@ export class UIManager {
     }
 
     // Handles the custom bounce/spring physics when the menu opens or closes
-    _startAnimation(targetValue) {
+    _startAnimation(targetValue: number) {
         // Clear any built-in GNOME transitions that might interfere with our logic
         if (this.animActor) this.animActor.remove_all_transitions();
         if (this.bgActor) this.bgActor.remove_all_transitions();
@@ -919,7 +956,7 @@ export class UIManager {
         // If an animation loop isn't already running, start a new one
         if (this._tickId === 0) {
             let lastTime = GLib.get_monotonic_time();
-            
+
             // Run at ~60fps (every 16ms)
             this._tickId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 16, () => {
                 if (!this.bgActor || !this.targetActor) {
@@ -932,23 +969,23 @@ export class UIManager {
                 lastTime = currentTime;
 
                 let isClosing = (this._springScale.target === 0);
-                
+
                 // Cap delta time to prevent physics explosions during severe lag spikes
                 let dt = elapsedMs / 1000;
                 if (dt > 0.033) dt = 0.033;
 
                 let stopped = false;
-                let s, p;
+                let s: number, p: number;
 
                 if (isClosing) {
                     // Use a simple exponential decay for closing (faster, no bounce)
                     let speed = 15.0;
                     this._springScale.value += (0 - this._springScale.value) * (1.0 - Math.exp(-speed * dt));
                     this._springPos.value += (0 - this._springPos.value) * (1.0 - Math.exp(-speed * dt));
-                    
+
                     s = this._springScale.value;
                     p = this._springPos.value;
-                    
+
                     // Stop animation completely when it's virtually invisible
                     if (s < 0.005) {
                         s = 0; p = 0;
@@ -961,7 +998,6 @@ export class UIManager {
                     p = this._springPos.value;
 
                     // Magnet effect: Snap to exactly 1.0 when the bounce is almost settled.
-                    // This prevents indefinite micro-stuttering at the end of the animation.
                     if (Math.abs(1.0 - s) < 0.002 && Math.abs(this._springScale.velocity) < 0.03) {
                         s = 1.0;
                         p = 1.0;
@@ -969,21 +1005,18 @@ export class UIManager {
                     }
                 }
 
-                let currentScale;
-                let opacity;
+                let currentScale: number;
+                let opacity: number;
 
                 if (isClosing) {
                     // Clamp to 0.001 because scale = 0 crashes Cogl
-                    currentScale = Math.max(0.001, s); 
-                    
+                    currentScale = Math.max(0.001, s);
+
                     // Fade out opacity faster than the scale shrinks (fades between scale 1.0 and 0.3)
                     opacity = Math.min(255, Math.max(0, (s - 0.3) / 0.7 * 255));
-                    // opacity = Math.min(255, Math.max(0, (s / 0.6) * 255));
-                    // opacity = 255;
                 } else {
                     // Start opening from scale 0.2 instead of 0.0 so it looks less jarring
-                    currentScale = 0.2 + (s * 0.8); 
-                    // opacity = Math.min(255, Math.max(0, s * 255));
+                    currentScale = 0.2 + (s * 0.8);
                     opacity = Math.min(255, Math.max(0, (s / 0.3) * 255));
                 }
 
@@ -991,9 +1024,8 @@ export class UIManager {
                 this.animActor.set_scale(currentScale, currentScale);
 
                 // Dynamically adjust the shader's corner radius during the animation.
-                // As the menu shrinks, the absolute radius shrinks too, keeping the corners proportional.
                 if (this.effect && typeof this.effect.setCornerRadius === 'function') {
-                    let baseRadius = this._settings.get_double('menu-corner-radius'); 
+                    let baseRadius = this._settings.get_double('menu-corner-radius');
                     this.effect.setCornerRadius(baseRadius * currentScale);
                     if (typeof this.effect.setAnimationScale === 'function') {
                         this.effect.setAnimationScale(currentScale);
@@ -1004,19 +1036,18 @@ export class UIManager {
                 this.animActor.opacity = opacity;
 
                 // Crucial step: Instantly update geometry right after scaling.
-                // This guarantees the glass background moves in perfect sync with the UI.
                 this._syncGeometry();
 
                 // Cleanup when animation finishes
                 if (stopped) {
                     this._tickId = 0;
-                    
+
                     if (isClosing && this.menu.actor) {
                         this.menu.actor.hide(); // Tell GNOME the menu is officially closed
                         this.bgActor.opacity = 0; // Ensure the background is fully transparent when closed
                         this.animActor.opacity = 0;
                     }
-                    
+
                     if (!isClosing) {
                         // Restore scale to exactly 1.0 to fix font hinting/blurriness issues
                         this.animActor.set_scale(1.0, 1.0);
@@ -1037,61 +1068,58 @@ export class UIManager {
 
         this._stopAdaptiveColorSampling();
         this._clearAdaptiveStyles();
-        
+
         // Disconnect all event listeners
         for (let sigId of this._signals) {
-            this.menu.disconnect(sigId); 
+            this.menu.disconnect(sigId);
         }
         this._signals = [];
-
 
         if (this._tickId && this._tickId !== 0) {
             GLib.Source.remove(this._tickId);
             this._tickId = 0;
         }
-        
+
         // Stop the render frame loop
         if (this._frameSyncId !== 0) {
             if (global.compositor?.get_laters)
                 global.compositor.get_laters().remove(this._frameSyncId);
-            else if (Meta.later_remove)
-                Meta.later_remove(this._frameSyncId);
             this._frameSyncId = 0;
         }
-        
+
         // Remove transparent CSS overrides
         this.targetActor.remove_style_class_name('liquid-glass-transparent');
         if (this.animActor) {
             this.animActor.remove_style_class_name('liquid-glass-transparent');
             this.animActor.remove_style_class_name('liquid-glass-menu-root');
-            
+
             // Revert UI shifts and forced states
             this.animActor.translation_y = 0;
             this.animActor.set_scale(1.0, 1.0);
             this.animActor.opacity = 255;
         }
-
+        /*
         const messageList = Main.panel.statusArea.dateMenu._messageList;
-        if (messageList && messageList.actor) {
-            messageList.actor.add_style_class_name('liquid-glass-message-list');
+        if (messageList && "actor" in messageList) {
+            messageList.actor.remove_style_class_name('liquid-glass-message-list');
         }
+        */
 
         // Revert UI shifts and forced states when extension is disabled
         this.targetActor.translation_y = 0;
-        // this.targetActor.margin_top = 0;
         this.targetActor.set_scale(1.0, 1.0);
         this.targetActor.opacity = 255;
-        
+
         if (this.menu.actor) {
             this.menu.actor.opacity = 255;
 
             // If the menu is currently open, forcefully close it 
             // without animations to reset GNOME's internal state
             if (this.menu.isOpen) {
-                this.menu.close(false); 
+                this.menu.close(false);
             }
         }
-        
+
         // DESTROY EFFECT FIRST
         if (this.effect) {
             this.effect.cleanup();
@@ -1099,15 +1127,15 @@ export class UIManager {
         }
 
         // DESTROY ACTOR SECOND
-        if (this.bgActor) { 
-            this.bgActor.destroy(); 
-            this.bgActor = null; 
+        if (this.bgActor) {
+            this.bgActor.destroy();
+            this.bgActor = null;
         }
 
         this.blurEffect = null;
         this.bgClone = null;
         this.windowClonesContainer = null;
-        
+
         this._windowClones.clear();
 
         this._stableBaseW = undefined;
@@ -1122,30 +1150,37 @@ export class UIManager {
 
 // A straightforward mathematical implementation of Hooke's Law for spring physics
 class Spring {
-    constructor(stiffness, damping, mass) {
+    private stiffness: number;
+    private damping: number;
+    private mass: number;
+    public value: number;
+    public velocity: number;
+    public target: number;
+
+    constructor(stiffness: number, damping: number, mass: number) {
         this.stiffness = stiffness; // How rigid the spring is (higher = faster, more snappy)
         this.damping = damping;     // Friction (higher = less bounce, settles quicker)
         this.mass = mass;           // Weight of the object
-        
+
         this.value = 0;             // Current position/scale
         this.velocity = 0;          // Current speed
         this.target = 0;            // Destination value
     }
 
-    update(elapsedMs) {
+    update(elapsedMs: number) {
         // Cap max delta time to prevent the spring from violently exploding during heavy CPU load
         let dt = elapsedMs / 1000;
         if (dt > 0.033) dt = 0.033;
 
         // F = -k * x
         let springForce = -this.stiffness * (this.value - this.target);
-        
+
         // F = -c * v
         let dampingForce = -this.damping * this.velocity;
-        
+
         // a = F / m
         let acceleration = (springForce + dampingForce) / this.mass;
-        
+
         // Update velocity and position using Euler integration
         this.velocity += acceleration * dt;
         this.value += this.velocity * dt;

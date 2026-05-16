@@ -2,28 +2,23 @@
 import GObject from 'gi://GObject';
 import Clutter from 'gi://Clutter';
 import Gio from 'gi://Gio';
-
 // Register the custom shader effect class with GObject system.
 export const LiquidEffect = GObject.registerClass({
     GTypeName: 'LiquidGlassEffect',
 }, class LiquidEffect extends Clutter.ShaderEffect {
-    
-    _init(params = {}) {
+    _extensionPath;
+    _settings;
+    _settingsIds;
+    _init(params) {
         const extensionPath = params.extensionPath;
         const settings = params.settings;
-        
         delete params.extensionPath;
         delete params.settings;
-        
         super._init(params);
-        
         this._extensionPath = extensionPath;
         this._settings = settings;
-        
         console.log(`[Liquid Glass] Initing LiquidEffect. path: ${this._extensionPath}`);
-
         this._loadShader();
-
         // Initialize shader uniform variables.
         // These serve as default fallbacks until real values are supplied.
         this._setFloat('resolution_x', 0.0);
@@ -31,10 +26,8 @@ export const LiquidEffect = GObject.registerClass({
         this._setFloat('pointer_x', -100.0);
         this._setFloat('pointer_y', -100.0);
         this._setFloat('intensity', 0.0);
-        
         // Matches the CSS border-radius value to ensure the glass perfectly covers the UI.
-        this._setFloat('corner_radius', 60.0); 
-
+        this._setFloat('corner_radius', 60.0);
         // Parameters controlling the physical appearance of the glass.
         // These are synchronized with standard PBR/Three.js material defaults.
         /*
@@ -66,17 +59,16 @@ export const LiquidEffect = GObject.registerClass({
         // GSettingsとの同期開始
         this._setFloat('padding', 20.0);
         this._setFloat('isDock', 0.0);
-
         this._settingsIds = [];
         if (this._settings) {
             this._bindSettings();
-        } else {
+        }
+        else {
             // settingsがない場合のデフォルトフォールバック
             this._setFloat('max_z', 25.0);
             this._setFloat('displacement_scale', 78.5);
         }
     }
-
     _bindSettings() {
         // 設定キー(GSettings) と シェーダー変数名(Uniform) の対応リスト
         const mappings = [
@@ -96,27 +88,26 @@ export const LiquidEffect = GObject.registerClass({
             { key: 'glass-sheen-intensity', uniform: 'sheen_intensity' },
             { key: 'glass-light-angle-deg', uniform: 'light_angle_deg' }
         ];
-
+        const settings = this._settings;
+        if (!settings)
+            return;
         mappings.forEach(map => {
             // 初回反映
-            this._setFloat(map.uniform, this._settings.get_double(map.key));
-
+            this._setFloat(map.uniform, settings.get_double(map.key));
             // 変更監視の接続
-            let id = this._settings.connect(`changed::${map.key}`, () => {
-                const val = this._settings.get_double(map.key);
+            let id = settings.connect(`changed::${map.key}`, () => {
+                const val = settings.get_double(map.key);
                 this._setFloat(map.uniform, val);
             });
             this._settingsIds.push(id);
         });
     }
-
     cleanup() {
         if (this._settings && this._settingsIds) {
-            this._settingsIds.forEach(id => this._settings.disconnect(id));
+            this._settingsIds.forEach(id => this._settings?.disconnect(id));
             this._settingsIds = [];
         }
     }
-
     // Helper method to safely pass float values to the GLSL shader.
     _setFloat(name, value) {
         let gval = new GObject.Value();
@@ -124,62 +115,55 @@ export const LiquidEffect = GObject.registerClass({
         gval.set_float(value);
         this.set_uniform_value(name, gval);
     }
-
     setIsDock(isDock) {
         this._setFloat('isDock', isDock ? 1.0 : 0.0);
     }
-
     setPadding(pad) {
         this._setFloat('padding', pad);
     }
-
     setTintColor(r, g, b) {
         // RGB values normalized between 0.0 and 1.0
         this._setFloat('tint_r', r);
         this._setFloat('tint_g', g);
         this._setFloat('tint_b', b);
     }
-
     setTintStrength(strength) {
         // Controls the opacity of the tint color (0.0 to 1.0)
         this._setFloat('tint_strength', strength);
     }
-
     setCornerRadius(radius) {
         this._setFloat('corner_radius', radius);
     }
-
     setAnimationScale(scale) {
+        const settings = this._settings;
+        if (!settings)
+            return;
         // UIのスケールに合わせて、物理的な厚みや屈折の距離も比例して小さくする
-        this._setFloat('displacement_scale', this._settings.get_double('glass-displacement-scale') * scale);
-        this._setFloat('max_z', this._settings.get_double('glass-max-z') * scale);
-        this._setFloat('chroma_strength', this._settings.get_double('glass-chroma-strength') * scale); // 色収差もスケールに合わせる
+        this._setFloat('displacement_scale', settings.get_double('glass-displacement-scale') * scale);
+        this._setFloat('max_z', settings.get_double('glass-max-z') * scale);
+        this._setFloat('chroma_strength', settings.get_double('glass-chroma-strength') * scale); // 色収差もスケールに合わせる
     }
-
     // Loads the GLSL fragment shader file from the disk.
     _loadShader() {
         let shaderPath = this._extensionPath + '/shaders/glass.frag';
         let file = Gio.File.new_for_path(shaderPath);
         let [success, contents] = file.load_contents(null);
-
         if (success) {
             let shaderCode = new TextDecoder('utf-8').decode(contents);
             this.set_shader_source(shaderCode);
-        } else {
+        }
+        else {
             console.error('[Liquid Glass] Failed to load shader!');
         }
     }
-
     setPointerPosition(x, y, intensity) {
         this._setFloat('pointer_x', x);
         this._setFloat('pointer_y', y);
         this._setFloat('intensity', intensity);
     }
-
     // Synchronizes the exact actor dimensions with the shader's internal canvas.
     setResolution(width, height) {
         this._setFloat('resolution_x', width);
         this._setFloat('resolution_y', height);
     }
-
 });

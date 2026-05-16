@@ -7,12 +7,13 @@ import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import { LiquidEffect } from './liquidEffect.js';
 import { StageContrastSampler, AdaptiveContrastConfig } from './contrastSampler.js';
+import Gio from 'gi://Gio';
 
 // ========== Configuration Parameters ==========
 
 // Transparent padding outside the glass area. 
 // This prevents the shader distortion or rounded corners from being clipped by the actor bounds.
-const SHADER_PADDING = 20; 
+const SHADER_PADDING = 20;
 
 // How much larger the glass background should be compared to the actual menu UI.
 // const GLASS_EXPAND = 12;   
@@ -21,33 +22,80 @@ const SHADER_PADDING = 20;
 // const MENU_Y_OFFSET = GLASS_EXPAND + 5;  
 
 // Adaptive text color flags
-const ENABLE_ADAPTIVE_TEXT_COLOR = false;
+// const ENABLE_ADAPTIVE_TEXT_COLOR = false;
 const SAMPLE_PER_ELEMENT = false;
-const SAMPLE_INTERVAL_MS = 400; // How often to resample colors while the menu is open (in milliseconds)
+// const SAMPLE_INTERVAL_MS = 400; // How often to resample colors while the menu is open (in milliseconds)
 
-const TINT_COLOR = [1.0, 1.0, 1.0]; // Pure white tint for the frosted glass effect
-const TINT_STRENGTH = 0.20; // Subtle tint strength to enhance the glass look without overpowering the background
-const BLUR_RADIUS = 8; // The radius of the native blur effect applied to the background clones
-const CORNER_RADIUS = 60.0; // The radius for the rounded corners of the dock background
-
+interface CustomBannerActor extends St.Widget {
+    _colorTweenId?: number;
+    _currentTargetColor?: string;
+    _currentInsensitiveState?: boolean;
+    _isUpdatingAlpha?: boolean;
+}
 // ==============================================
 
 export class QuickSettingsManager {
-    constructor(extensionPath, settings) {
+    private extensionPath: string;
+    private _settings: Gio.Settings;
+    private targetActor: St.Widget;
+    private menu: any;
+    private animActor: St.Widget;
+    private bgActor: St.Widget | null;
+    private blurEffect: Shell.BlurEffect | null;
+    private effect: LiquidEffect | null;
+    private bgClone: Clutter.Clone | null;
+    private _isEffectActive: boolean;
+    private windowClonesContainer: Clutter.Actor | null;
+    private fboContainer: Clutter.Actor | null;
+    private overviewCloneContainer: Clutter.Actor | null;
+    private _windowClones: Map<Clutter.Actor, Clutter.Clone>;
+    private _overviewClone: Clutter.Clone | null;
+    private _appDisplayClone: Clutter.Clone | null;
+    private _searchClone: Clutter.Clone | null;
+    private buttonAlpha: number;
+    private _buttonTimerId: number;
+    private _styledButtons: Map<Clutter.Actor, string>;
+    private _buttonSignalIds: Map<Clutter.Actor, number[]>;
+    private _signals: number[];
+    private _frameSyncId: number;
+    private _glassExpand: number;
+    private _menuXoffset: number;
+    private _menuYoffset: number;
+    private _springScale: Spring;
+    private _springPos: Spring;
+    private _tickId: number;
+    private _contrastSampler: StageContrastSampler;
+    private _adaptiveTimerId: number;
+    private _adaptiveInFlight: boolean;
+    private _styledActors: Map<Clutter.Actor, string>;
+    private _hasAutoRefreshed: boolean;
+    private _settingsSignals: number[];
+    private _adaptiveConfig!: typeof AdaptiveContrastConfig;
+    private clipBox: St.Widget | null = null;
+    private _stableBaseW: number | undefined;
+    private _stableBaseH: number | undefined;
+    private _lastValidAnimAbsX: number | undefined;
+    private _lastValidAnimAbsY: number | undefined;
+    private _lastBgW: number | undefined;
+    private _lastBgH: number | undefined;
+    private _lastBgX: number | undefined;
+    private _lastBgY: number | undefined;
+
+    constructor(extensionPath: string, settings: Gio.Settings) {
         this.extensionPath = extensionPath;
         this._settings = settings;
-        
+
         // Target the main container of the Date/Calendar menu
         this.targetActor = Main.panel.statusArea.quickSettings.menu.actor;
         this.menu = Main.panel.statusArea.quickSettings.menu;
 
         // Target for animations and visual offsets (The inner content)
         this.animActor = Main.panel.statusArea.quickSettings.menu.box;
-        
+
         this.bgActor = null;
         this.blurEffect = null;
         this.effect = null;
-        
+
         this.bgClone = null;
         this.windowClonesContainer = null;
         this.fboContainer = null;
@@ -57,9 +105,12 @@ export class QuickSettingsManager {
 
         this._signals = [];
         this._frameSyncId = 0;
+        this._isEffectActive = false;
+        this._hasAutoRefreshed = false;
 
-        this._glassExpand = null;
-        this._menuYoffset = null;
+        this._glassExpand = 0;
+        this._menuXoffset = 0;
+        this._menuYoffset = 0;
 
         // Custom spring physics parameters for the open/close animation
         // Spring(stiffness, damping, mass)
@@ -96,7 +147,7 @@ export class QuickSettingsManager {
     }
 
     // Utility: Convert HEX color string to normalized RGB array
-    _hexToColorArray(hex) {
+    _hexToColorArray(hex: string): [number, number, number] {
         if (!hex || typeof hex !== 'string' || !hex.startsWith('#') || hex.length !== 7) return [1.0, 1.0, 1.0];
         let r = parseInt(hex.slice(1, 3), 16) / 255.0;
         let g = parseInt(hex.slice(3, 5), 16) / 255.0;
@@ -122,7 +173,7 @@ export class QuickSettingsManager {
 
     // 追加: 設定の動的反映
     _bindSettings() {
-        const connectSetting = (key, callback) => {
+        const connectSetting = (key: string, callback: Function) => {
             let id = this._settings.connect(`changed::${key}`, callback.bind(this));
             this._settingsSignals.push(id);
         };
@@ -202,7 +253,7 @@ export class QuickSettingsManager {
         this._isEffectActive = true;
 
         if (!this.targetActor) return;
-        
+
         // Remove default GNOME styling and make the background transparent
         /*
         this.targetActor.add_style_class_name('liquid-glass-transparent');
@@ -233,7 +284,7 @@ export class QuickSettingsManager {
             clip_to_allocation: false,
             reactive: false
         });
-        
+
         // Set an initial size of 1x1. Passing a 0x0 size to the Cogl engine 
         // while applying a shader will immediately crash the GNOME Shell.
         this.bgActor.set_size(1.0, 1.0);
@@ -246,12 +297,12 @@ export class QuickSettingsManager {
 
         this.fboContainer = new Clutter.Actor();
         this.clipBox.add_child(this.fboContainer);
-        
+
         // Set pivot points for scaling. 
         // The menu scales from the top-center (0.5, 0.0)
         // this.animActor.set_pivot_point(0.5, 0.0);
         this.animActor.set_pivot_point(0.5, 0.0); // Scale from top-left to match the background actor's coordinate system
-        
+
         // bgActor scales from the top-left (0.0, 0.0) because we manually sync its exact coordinates
         this.bgActor.set_pivot_point(0.5, 0.0);
 
@@ -261,21 +312,20 @@ export class QuickSettingsManager {
             menuParent.insert_child_below(this.bgActor, this.menu.actor);
         } else {
             // Fallback: If it has no parent yet, add it directly to the UI group
-            Main.uiGroup.add_child(this.bgActor);
+            Main.layoutManager.uiGroup.add_child(this.bgActor);
         }
 
         let blurRadius = this._settings.get_int('quick-settings-blur-radius');
         let tintColorStr = this._settings.get_string('quick-settings-tint-color');
         let tintStrength = this._settings.get_double('quick-settings-tint-strength');
-        let cornerRadius = this._settings.get_double('quick-settings-corner-radius');
 
         // Apply native GNOME blur to the internal clipBox (which contains the clones)
         this.blurEffect = new Shell.BlurEffect({ radius: blurRadius, mode: Shell.BlurMode.ACTOR });
         this.fboContainer.add_effect(this.blurEffect);
 
         // Apply our custom GLSL liquid shader to the outer background actor
-        this.effect = new LiquidEffect({ extensionPath: this.extensionPath, settings: this._settings });
-        
+        this.effect = new LiquidEffect({ extensionPath: this.extensionPath, settings: this._settings } as any);
+
         // Tell the shader about the padding so it calculates refraction coordinates correctly
         this.effect.setPadding(SHADER_PADDING);
         this.effect.setTintColor(...this._hexToColorArray(tintColorStr)); // Pure transparent base
@@ -286,30 +336,27 @@ export class QuickSettingsManager {
         this.bgActor.show();
 
         // Helper functions to hook into GNOME's render pipeline
-        const laterAdd = (laterType, callback) => {
-            return global.compositor?.get_laters?.().add(laterType, callback) ??
-                Meta.later_add(laterType, callback);
+        const laterAdd = (laterType: Meta.LaterType, callback: GLib.SourceFunc) => {
+            return global.compositor?.get_laters?.().add(laterType, callback)
         };
 
-        const laterRemove = id => {
+        const laterRemove = (id: number) => {
             if (!id) return;
             if (global.compositor?.get_laters)
                 global.compositor.get_laters().remove(id);
-            else if (Meta.later_remove)
-                Meta.later_remove(id);
         };
 
         // Hook into the frame right before it is painted to the screen
-        const frameLaterType = Meta.LaterType.BEFORE_REDRAW ?? Meta.LaterType.BEFORE_PAINT;
+        const frameLaterType = Meta.LaterType.BEFORE_REDRAW;
 
         // Function to create clones of the desktop wallpaper and all visible windows
         // This is necessary because GNOME cannot blur content behind an overlay popup directly
         let buildClones = () => {
             if (!this.bgActor) return;
-            
+
             // 1. ISOLATED CLEANUP
             // Wrap the destroy call in a helper function so one failure doesn't halt the rest
-            const safeDestroy = (actorRef) => {
+            const safeDestroy = (actorRef: any) => {
                 if (actorRef) {
                     try {
                         actorRef.destroy();
@@ -333,20 +380,20 @@ export class QuickSettingsManager {
             // Clone the desktop background and track its destruction
             this.bgClone = new Clutter.Clone({ source: Main.layoutManager._backgroundGroup });
             this.bgClone.connect('destroy', () => { this.bgClone = null; });
-            this.fboContainer.add_child(this.bgClone); 
+            this.fboContainer?.add_child(this.bgClone);
 
             // Create and track overview clone container
             this.overviewCloneContainer = new Clutter.Actor();
             this.overviewCloneContainer.connect('destroy', () => { this.overviewCloneContainer = null; });
-            this.fboContainer.add_child(this.overviewCloneContainer);
+            this.fboContainer?.add_child(this.overviewCloneContainer);
 
             // Create and track window clones container
             this.windowClonesContainer = new Clutter.Actor();
             this.windowClonesContainer.connect('destroy', () => { this.windowClonesContainer = null; });
-            this.fboContainer.add_child(this.windowClonesContainer);
+            this.fboContainer?.add_child(this.windowClonesContainer);
 
             this._windowClones.clear();
-            this._overviewClone = null; 
+            this._overviewClone = null;
             this._appDisplayClone = null;
             this._searchClone = null;
 
@@ -354,7 +401,7 @@ export class QuickSettingsManager {
             let windows = global.get_window_actors();
             for (let w of windows) {
                 let metaWindow = w.get_meta_window();
-                
+
                 // Skip minimized or hidden windows to save performance
                 if (!metaWindow || metaWindow.minimized || !w.visible) {
                     continue;
@@ -376,7 +423,7 @@ export class QuickSettingsManager {
             if (!this.bgActor || !this.targetActor.mapped)
                 return GLib.SOURCE_REMOVE;
 
-            this._syncGeometry(); 
+            this._syncGeometry();
             this._frameSyncId = laterAdd(frameLaterType, frameTick);
             return GLib.SOURCE_REMOVE;
         };
@@ -388,7 +435,7 @@ export class QuickSettingsManager {
                 this._frameSyncId = laterAdd(frameLaterType, frameTick);
             }
         };
-        
+
         let stopFrameSync = () => { // eslint-disable-line no-unused-vars
             if (this._frameSyncId !== 0) {
                 laterRemove(this._frameSyncId);
@@ -400,9 +447,9 @@ export class QuickSettingsManager {
             this._hasAutoRefreshed = false;
         }
 
-        
+
         // Handle the first open as a plain GNOME quick settings open; apply custom behavior only afterwards.
-        this._signals.push(this.menu.connect('open-state-changed', (menu, isOpen) => {
+        this._signals.push(this.menu.connect('open-state-changed', (menu, isOpen: boolean) => {
             if (isOpen) {
                 if (!this._hasAutoRefreshed) {
                     this._hasAutoRefreshed = true;
@@ -437,9 +484,9 @@ export class QuickSettingsManager {
     }
 
     // 追加: UIクローンの位置・サイズ同期用メソッド
-    _syncActorProperties(source, clone) {
+    _syncActorProperties(source, clone: Clutter.Clone) {
         if (!source || !clone) return;
-        
+
         try {
             let [absX, absY] = source.get_transformed_position();
             let [w, h] = source.get_size();
@@ -452,14 +499,14 @@ export class QuickSettingsManager {
             clone.set_position(absX, absY);
             clone.set_size(w, h);
             clone.set_scale(source.scale_x, source.scale_y);
-            
+
             let pX = source.pivot_point ? source.pivot_point.x : 0;
             let pY = source.pivot_point ? source.pivot_point.y : 0;
             clone.set_pivot_point(pX, pY);
 
             clone.translation_x = 0;
             clone.translation_y = 0;
-            
+
             clone.opacity = source.opacity;
             clone.visible = source.visible && source.mapped;
         } catch (e) {
@@ -523,10 +570,11 @@ export class QuickSettingsManager {
                 animAbsY = this._lastValidAnimAbsY;
             } else {
                 // If no history exists, calculate based on the top panel clock button
+                /*
                 let buttonActor = Main.panel.statusArea.quickSettings.actor;
                 let [btnX, btnY] = buttonActor.get_transformed_position();
                 let [btnW, btnH] = buttonActor.get_size();
-                
+    
                 if (!Number.isNaN(btnX) && !Number.isNaN(btnY)) {
                     // Assume the menu opens centered directly below the clock button
                     animAbsX = btnX + (btnW / 2) - (w / 2);
@@ -534,40 +582,50 @@ export class QuickSettingsManager {
                 } else {
                     // Ultimate fallback: Just place it in the top-center of the primary monitor
                     let monitor = Main.layoutManager.primaryMonitor;
-                    animAbsX = (monitor.width / 2) - (w / 2);
-                    animAbsY = (Main.panel.height || 27) + (this._menuYoffset ?? 0); 
+                    if (monitor) {
+                        animAbsX = (monitor.width / 2) - (w / 2);
+                        animAbsY = (Main.panel.height || 27) + (this._menuYoffset ?? 0);
+                    }
                 }
+                */
+                let monitor = Main.layoutManager.primaryMonitor;
+                if (monitor) {
+                    animAbsX = (monitor.width / 2) - (w / 2);
+                    animAbsY = (Main.panel.height || 27) + (this._menuYoffset ?? 0);
+                }
+
+
             }
         } else {
             // Save successful coordinates for future fallbacks
             this._lastValidAnimAbsX = animAbsX;
             this._lastValidAnimAbsY = animAbsY;
         }
-        
+
         // --------------------------------------------------------
 
         // The background needs to be larger than the UI to account for the glass expansion
         // and the extra padding required by the shader for edge refraction.
         let bgW = w + (this._glassExpand * 2) + (SHADER_PADDING * 2);
         let bgH = h + (this._glassExpand * 2) + (SHADER_PADDING * 2);
-        
+
         // UIの正確な座標に対して、純粋にパディング分だけマイナスして背景を被せる
         let bgX = animAbsX - this._glassExpand - SHADER_PADDING;
         let bgY = animAbsY - this._glassExpand - SHADER_PADDING;
 
         if (!Number.isNaN(bgX) && !Number.isNaN(bgY) && w >= 1.0 && h >= 1.0) {
-            
+
             // Only update positions/sizes if they actually changed to save CPU cycles
             if (this._lastBgW !== bgW || this._lastBgH !== bgH || this._lastBgX !== bgX || this._lastBgY !== bgY) {
                 this.bgActor.set_size(bgW, bgH);
                 this.bgActor.set_position(bgX, bgY);
-                
+
                 // The internal clip region shares the same size, but sits at (0,0) relative to bgActor
-                this.clipBox.set_size(bgW, bgH);
-                this.clipBox.set_position(0, 0);
+                this.clipBox?.set_size(bgW, bgH);
+                this.clipBox?.set_position(0, 0);
 
                 // Update the shader with the new resolution
-                this.effect.setResolution(bgW, bgH);
+                this.effect?.setResolution(bgW, bgH);
 
                 this._lastBgW = bgW; this._lastBgH = bgH;
                 this._lastBgX = bgX; this._lastBgY = bgY;
@@ -626,7 +684,7 @@ export class QuickSettingsManager {
 
                         activeWindows.add(w);
 
-                        let clone;
+                        let clone: Clutter.Clone | undefined;
                         if (!this._windowClones.has(w)) {
                             // Create a clone for newly opened windows.
                             clone = new Clutter.Clone({ source: w });
@@ -636,13 +694,13 @@ export class QuickSettingsManager {
                             // Retrieve existing clone.
                             clone = this._windowClones.get(w);
                         }
-                        
+
                         // Keep the position synchronized with the real window.
                         let [parentX, parentY] = this.windowClonesContainer.get_transformed_position();
-                        clone.set_position(w.x - parentX, w.y - parentY);
+                        if (clone) clone.set_position(w.x - parentX, w.y - parentY);
 
                         // Update the Z-index dynamically to reflect window focus changes.
-                        this.windowClonesContainer.set_child_at_index(clone, zIndex);
+                        if (clone) this.windowClonesContainer.set_child_at_index(clone, zIndex);
                         zIndex++;
                     } catch (e) {
                         continue; // The window might have been closed or changed state during iteration, just skip it.
@@ -652,26 +710,26 @@ export class QuickSettingsManager {
                 // --- Overview時 ---
                 this.bgClone.show();
                 let controls = Main.overview._overview?._controls;
-                
+
                 if (controls) {
                     if (controls._workspacesDisplay) {
                         if (!this._overviewClone) {
                             this._overviewClone = new Clutter.Clone({ source: controls._workspacesDisplay });
-                            this.overviewCloneContainer.add_child(this._overviewClone);
+                            this.overviewCloneContainer?.add_child(this._overviewClone);
                         }
                         this._syncActorProperties(controls._workspacesDisplay, this._overviewClone);
                     }
                     if (controls._appDisplay) {
                         if (!this._appDisplayClone) {
                             this._appDisplayClone = new Clutter.Clone({ source: controls._appDisplay });
-                            this.overviewCloneContainer.add_child(this._appDisplayClone);
+                            this.overviewCloneContainer?.add_child(this._appDisplayClone);
                         }
                         this._syncActorProperties(controls._appDisplay, this._appDisplayClone);
                     }
                     if (controls._searchController && controls._searchController.actor) {
                         if (!this._searchClone) {
                             this._searchClone = new Clutter.Clone({ source: controls._searchController.actor });
-                            this.overviewCloneContainer.add_child(this._searchClone);
+                            this.overviewCloneContainer?.add_child(this._searchClone);
                         }
                         this._syncActorProperties(controls._searchController.actor, this._searchClone);
                     }
@@ -698,8 +756,8 @@ export class QuickSettingsManager {
     }
 
     // Utility function to safely check if an actor has a specific style class
-    _hasStyleClass(actor, className) {
-        return typeof actor?.has_style_class_name === 'function' &&
+    _hasStyleClass(actor: Clutter.Actor, className: string) {
+        return actor instanceof St.Widget &&
             actor.has_style_class_name(className);
     }
 
@@ -707,11 +765,11 @@ export class QuickSettingsManager {
     // Simplified target collection to use a single top-down recursive pass.
     _collectAdaptiveTextTargets(actor = this.menu?.actor, inPlaceholder = false, inToday = false, targets = []) {
         if (!actor) return targets;
-
+    
         // Check if the current element has the target parent class and update the corresponding flag.
         const isPlaceholder = inPlaceholder || this._hasStyleClass(actor, 'message-list-placeholder');
         const isToday = inToday || this._hasStyleClass(actor, 'datemenu-today-button');
-
+    
         // Check if the actor matches the specified target criteria.
         if (typeof actor.set_style === 'function') {
             if (this._hasStyleClass(actor, 'message-list-clear-button')) {
@@ -722,13 +780,13 @@ export class QuickSettingsManager {
                 targets.push(actor);
             }
         }
-
+    
         // Recurse through children, passing down the flag indicating which parent context we are currently in.
         const children = actor.get_children?.() ?? [];
         for (let i = 0; i < children.length; i++) {
             this._collectAdaptiveTextTargets(children[i], isPlaceholder, isToday, targets);
         }
-
+    
         return targets;
     }
     */
@@ -737,7 +795,7 @@ export class QuickSettingsManager {
         return this._findAllTextActors(this.menu?.actor);
     }
 
-    _findAllTextActors(actor, foundActors = []) {
+    _findAllTextActors(actor: Clutter.Actor, foundActors: Clutter.Actor[] = []) {
         if (!actor) return foundActors;
 
         // 該当するテキストまたはボタン要素で、かつ可視状態のものを収集
@@ -757,12 +815,12 @@ export class QuickSettingsManager {
     }
 
     // Initiates the color change for a specific actor
-    _setActorColor(actor, color, skipAnimations = false) {
+    _setActorColor(actor: CustomBannerActor, color: string, skipAnimations = false) {
         if (!actor || typeof actor.set_style !== 'function') return;
 
         if (!this._styledActors.has(actor)) {
             let origStyle = typeof actor.get_style === 'function' ? actor.get_style() : null;
-            this._styledActors.set(actor, origStyle);
+            if (origStyle) this._styledActors.set(actor, origStyle);
         }
 
         let isInsensitive = false;
@@ -782,19 +840,19 @@ export class QuickSettingsManager {
     // Removes all dynamically applied adaptive text color styles and stops related animations
     _clearAdaptiveStyles() {
         // 1. 変更履歴 (styledActors) から元の状態を復元する
-        for (const [actor, originalStyle] of this._styledActors.entries()) {
+        for (const [actor, originalStyle] of this._styledActors.entries() as MapIterator<[CustomBannerActor, string]>) {
             if (actor && typeof actor.set_style === 'function') {
                 if (actor._colorTweenId) {
                     GLib.source_remove(actor._colorTweenId);
-                    actor._colorTweenId = null;
+                    actor._colorTweenId = undefined;
                 }
-                actor._currentTargetColor = null;
-                actor._currentInsensitiveState = null;
-                
+                actor._currentTargetColor = undefined;
+                actor._currentInsensitiveState = undefined;
+
                 actor.remove_style_class_name('adaptive-text-transition');
                 actor.remove_style_class_name('adaptive-color-light');
                 actor.remove_style_class_name('adaptive-color-dark');
-                
+
                 // 修正: 存在しない remove_style() を削除し、元のスタイル(またはnull)をセット
                 actor.set_style(originalStyle || null);
             }
@@ -802,27 +860,27 @@ export class QuickSettingsManager {
         this._styledActors.clear();
 
         // 2. 念のため、現在DOM上に存在するターゲットの色も強制クリア（フェイルセーフ）
-        const currentTargets = this._collectAdaptiveTextTargets();
+        const currentTargets = this._collectAdaptiveTextTargets() as CustomBannerActor[];
         for (let actor of currentTargets) {
             if (actor && typeof actor.set_style === 'function') {
                 if (actor._colorTweenId) {
                     GLib.source_remove(actor._colorTweenId);
-                    actor._colorTweenId = null;
+                    actor._colorTweenId = undefined;
                 }
-                actor._currentTargetColor = null;
-                actor._currentInsensitiveState = null;
+                actor._currentTargetColor = undefined;
+                actor._currentInsensitiveState = undefined;
                 actor.set_style(null);
             }
         }
     }
 
     // Iterates through the color map and applies the new target colors to the respective actors
-    _applyAdaptiveColorMap(colorMap, skipAnimations = false) {
+    _applyAdaptiveColorMap(colorMap: Map<Clutter.Actor, string>, skipAnimations = false) {
         if (!colorMap || colorMap.size === 0)
             return;
 
         for (const [actor, color] of colorMap.entries()) {
-            this._setActorColor(actor, color, skipAnimations);
+            this._setActorColor(actor as unknown as CustomBannerActor, color, skipAnimations);
         }
     }
 
@@ -884,7 +942,7 @@ export class QuickSettingsManager {
     }
 
     // Converts a hexadecimal color code string to an RGB object.
-    _hexToRgb(hex) {
+    _hexToRgb(hex: string) {
         let bigint = parseInt(hex.replace('#', ''), 16);
         return {
             r: (bigint >> 16) & 255,
@@ -894,17 +952,17 @@ export class QuickSettingsManager {
     }
 
     // Converts RGB numerical values to a hexadecimal color string.
-    _rgbToHex(r, g, b) {
+    _rgbToHex(r: number, g: number, b: number) {
         return "#" + (1 << 24 | r << 16 | g << 8 | b).toString(16).slice(1);
     }
 
-    _animateActorColor(actor, targetHexColor, isInsensitive, durationMs = 380, skipAnimations = false) {
+    _animateActorColor(actor: CustomBannerActor, targetHexColor: string, isInsensitive: boolean, durationMs = 380, skipAnimations = false) {
         if (!actor || Object.keys(actor).length === 0) return;
 
         // Cancel any existing color tween if running (handles mid-transition target changes).
         if (actor._colorTweenId) {
             GLib.source_remove(actor._colorTweenId);
-            actor._colorTweenId = null;
+            actor._colorTweenId = undefined;
         }
 
         // --- Retrieve the "actual physical color" currently displayed on screen ---
@@ -913,7 +971,7 @@ export class QuickSettingsManager {
         let startColor = themeNode.get_foreground_color(); // Returns Clutter.Color
 
         let targetRgb = this._hexToRgb(targetHexColor);
-        
+
         // 無効状態なら透明度を50%(0.5)にし、有効なら100%(1.0)にする
         let targetAlpha = isInsensitive ? 0.5 : 1.0;
         let startAlpha = startColor.alpha / 255.0; // Clutter.Colorのalphaは0〜255で返る
@@ -924,7 +982,7 @@ export class QuickSettingsManager {
             actor.set_style(`color: ${targetRgba}; -st-icon-foreground-color: ${targetRgba};`);
             return;
         }
-        
+
         let startTime = GLib.get_monotonic_time();
         // let durationMs = 380; // Animation duration in milliseconds
 
@@ -936,8 +994,8 @@ export class QuickSettingsManager {
             let progress = Math.min(elapsedMs / durationMs, 1.0);
 
             // Standard ease-in-out easing function
-            let easeProgress = progress < 0.5 
-                ? 2 * progress * progress 
+            let easeProgress = progress < 0.5
+                ? 2 * progress * progress
                 : 1 - Math.pow(-2 * progress + 2, 2) / 2;
 
             // Linearly interpolate (lerp) each RGB channel individually
@@ -948,7 +1006,7 @@ export class QuickSettingsManager {
             // Alpha値も補間して rgba() 形式を生成
             let a = startAlpha + (targetAlpha - startAlpha) * easeProgress;
             a = Math.max(0.0, Math.min(1.0, a)); // 0.0 ~ 1.0 に安全にクランプ
-            
+
             let alphaStr = a.toFixed(3); // CSS用に小数点第3位まで
             let currentRgba = `rgba(${r}, ${g}, ${b}, ${alphaStr})`;
 
@@ -957,7 +1015,7 @@ export class QuickSettingsManager {
 
             // Check for animation completion
             if (progress >= 1.0) {
-                actor._colorTweenId = null;
+                actor._colorTweenId = undefined;
                 return GLib.SOURCE_REMOVE;
             }
             return GLib.SOURCE_CONTINUE;
@@ -965,18 +1023,21 @@ export class QuickSettingsManager {
     }
 
     // Recursively collect all St.Button elements and quick-toggle containers
-    _findAllButtons(actor, foundButtons = []) {
+    _findAllButtons(actor: Clutter.Actor, foundButtons: Clutter.Actor[] = []) {
         if (!actor) return foundButtons;
 
-        // Check if the current actor has the 'quick-slider' class
-        // .quick-slider is controled with stylesheet.css
-        let isQuickSlider = actor.has_style_class_name && actor.has_style_class_name('quick-slider');
+        let isQuickSlider = false;
+        let isToggleContainer = false;
+        let isButton = actor instanceof St.Button;
+
+        // actorがSt.Widget（CSSクラスを持てるUI要素）である場合のみスタイル判定を行う
+        if (actor instanceof St.Widget) {
+            isQuickSlider = actor.has_style_class_name('quick-slider');
+            isToggleContainer = actor.has_style_class_name('quick-toggle');
+        }
 
         // Collect visible St.Button elements and quick-toggle containers (for split buttons)
         if (actor.visible && !isQuickSlider) {
-            let isButton = actor instanceof St.Button;
-            let isToggleContainer = actor.has_style_class_name && actor.has_style_class_name('quick-toggle');
-            
             if (isButton || isToggleContainer) {
                 foundButtons.push(actor);
             }
@@ -992,7 +1053,7 @@ export class QuickSettingsManager {
     }
 
     // Helper function to safely update a single button without traversing the whole menu
-    _updateSingleButtonAlpha(button, targetAlpha) {
+    _updateSingleButtonAlpha(button: CustomBannerActor, targetAlpha: number) {
         if (!button || button._isUpdatingAlpha) return;
         button._isUpdatingAlpha = true;
 
@@ -1003,9 +1064,9 @@ export class QuickSettingsManager {
         let themeNode = button.get_theme_node();
         if (themeNode) {
             let bgColor = themeNode.get_background_color();
-            
+
             if (bgColor) {
-                let isToggleContainer = button.has_style_class_name && button.has_style_class_name('quick-toggle');
+                let isToggleContainer = button instanceof St.Widget && button.has_style_class_name('quick-toggle');
 
                 // FIX 1: If this is a parent toggle container, hide its background if any child is active/colored.
                 // This prevents the dark pod background from muddying the semi-transparent orange child button.
@@ -1013,12 +1074,16 @@ export class QuickSettingsManager {
                     let hasColoredChild = false;
                     let children = typeof button.get_children === 'function' ? button.get_children() : [];
                     for (let i = 0; i < children.length; i++) {
-                        let childTheme = children[i].get_theme_node();
-                        if (childTheme) {
-                            let childBg = childTheme.get_background_color();
-                            if (childBg && childBg.alpha > 0) {
-                                hasColoredChild = true;
-                                break;
+                        let child = children[i];
+                        if (child instanceof St.Widget) {
+                            let childTheme = child.get_theme_node();
+                            if (childTheme) {
+                                let childBg = childTheme.get_background_color();
+                                if (childBg && childBg.alpha > 0) {
+                                    hasColoredChild = true;
+                                    break;
+                                }
+
                             }
                         }
                     }
@@ -1043,9 +1108,10 @@ export class QuickSettingsManager {
                     // Ensure the parent toggle container is also updated dynamically.
                     // If a child button changes state, we must force the parent to re-evaluate its transparency.
                     let parent = typeof button.get_parent === 'function' ? button.get_parent() : null;
-                    if (parent && parent.has_style_class_name && parent.has_style_class_name('quick-toggle')) {
+                    if (parent && parent instanceof St.Widget && parent.has_style_class_name('quick-toggle')) {
+                        // if (parent && parent.has_style_class_name && parent.has_style_class_name('quick-toggle')) {
                         // Safe to call recursively since _isUpdatingAlpha protects from infinite loops
-                        this._updateSingleButtonAlpha(parent, targetAlpha);
+                        this._updateSingleButtonAlpha(parent as CustomBannerActor, targetAlpha);
                     }
                 }
             }
@@ -1065,15 +1131,16 @@ export class QuickSettingsManager {
 
         for (let button of buttons) {
             if (!this._styledButtons.has(button)) {
-                let origStyle = typeof button.get_style === 'function' ? button.get_style() : null;
-                this._styledButtons.set(button, origStyle);
-                
+                if (button instanceof St.Widget) {
+                    let origStyle = typeof button.get_style === 'function' ? button.get_style() : null;
+                    if (origStyle) this._styledButtons.set(button, origStyle);
+                }
                 // PERFORMANCE FIX: Only update the specific button that triggered the event
                 const updateHandler = () => {
-                    if (this.menu?.isOpen) this._updateSingleButtonAlpha(button, targetAlpha);
+                    if (this.menu?.isOpen) this._updateSingleButtonAlpha(button as CustomBannerActor, targetAlpha);
                 };
 
-                let signalIds = [];
+                let signalIds: number[] = [];
 
                 signalIds.push(button.connect('notify::hover', updateHandler));
                 signalIds.push(button.connect('notify::active', updateHandler));
@@ -1082,7 +1149,7 @@ export class QuickSettingsManager {
                 signalIds.push(button.connect('notify::mapped', updateHandler));
                 signalIds.push(button.connect('key-focus-in', updateHandler));
                 signalIds.push(button.connect('key-focus-out', updateHandler));
-                
+
                 // CRITICAL FIX: Removed 'style-changed'. 
                 // calling set_style() triggers 'style-changed', which caused the infinite crash loop!
 
@@ -1090,7 +1157,7 @@ export class QuickSettingsManager {
             }
 
             // Apply style safely
-            this._updateSingleButtonAlpha(button, targetAlpha);
+            this._updateSingleButtonAlpha(button as CustomBannerActor, targetAlpha);
         }
     }
 
@@ -1101,8 +1168,8 @@ export class QuickSettingsManager {
         if (this._buttonTimerId !== 0) return;
 
         // イベント駆動と併用するため、間隔は長めの400msや1000msで十分です
-        const intervalMs = 400; 
-        
+        const intervalMs = 400;
+
         this._buttonTimerId = GLib.timeout_add(
             GLib.PRIORITY_DEFAULT,
             intervalMs,
@@ -1144,16 +1211,16 @@ export class QuickSettingsManager {
             this._buttonSignalIds.clear();
         }
         for (const [button, originalStyle] of this._styledButtons.entries()) {
-            if (button && typeof button.set_style === 'function') {
+            if (button && button instanceof St.Widget && typeof button.set_style === 'function') {
                 button.set_style(originalStyle || null);
-                delete button._isUpdatingAlpha;
+                // delete button._isUpdatingAlpha;
             }
         }
         this._styledButtons.clear();
     }
 
     // Handles the custom bounce/spring physics when the menu opens or closes
-    _startAnimation(targetValue) {
+    _startAnimation(targetValue: number) {
         // Clear any built-in GNOME transitions that might interfere with our logic
         if (this.animActor) this.animActor.remove_all_transitions();
         if (this.bgActor) this.bgActor.remove_all_transitions();
@@ -1164,7 +1231,7 @@ export class QuickSettingsManager {
         // If an animation loop isn't already running, start a new one
         if (this._tickId === 0) {
             let lastTime = GLib.get_monotonic_time();
-            
+
             // Run at ~60fps (every 16ms)
             this._tickId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 16, () => {
                 if (!this.bgActor || !this.targetActor) {
@@ -1177,23 +1244,23 @@ export class QuickSettingsManager {
                 lastTime = currentTime;
 
                 let isClosing = (this._springScale.target === 0);
-                
+
                 // Cap delta time to prevent physics explosions during severe lag spikes
                 let dt = elapsedMs / 1000;
                 if (dt > 0.033) dt = 0.033;
 
                 let stopped = false;
-                let s, p;
+                let s: number, p: number;
 
                 if (isClosing) {
                     // Use a simple exponential decay for closing (faster, no bounce)
                     let speed = 15.0;
                     this._springScale.value += (0 - this._springScale.value) * (1.0 - Math.exp(-speed * dt));
                     this._springPos.value += (0 - this._springPos.value) * (1.0 - Math.exp(-speed * dt));
-                    
+
                     s = this._springScale.value;
                     p = this._springPos.value;
-                    
+
                     // Stop animation completely when it's virtually invisible
                     if (s < 0.005) {
                         s = 0; p = 0;
@@ -1214,20 +1281,20 @@ export class QuickSettingsManager {
                     }
                 }
 
-                let currentScale;
-                let opacity;
+                let currentScale: number;
+                let opacity: number;
 
                 if (isClosing) {
                     // Clamp to 0.001 because scale = 0 crashes Cogl
-                    currentScale = Math.max(0.001, s); 
-                    
+                    currentScale = Math.max(0.001, s);
+
                     // Fade out opacity faster than the scale shrinks (fades between scale 1.0 and 0.3)
                     opacity = Math.min(255, Math.max(0, (s - 0.3) / 0.7 * 255));
                     // opacity = Math.min(255, Math.max(0, (s / 0.6) * 255));
                     // opacity = 255;
                 } else {
                     // Start opening from scale 0.2 instead of 0.0 so it looks less jarring
-                    currentScale = 0.2 + (s * 0.8); 
+                    currentScale = 0.2 + (s * 0.8);
                     // opacity = Math.min(255, Math.max(0, s * 255));
                     opacity = Math.min(255, Math.max(0, (s / 0.3) * 255));
                 }
@@ -1238,7 +1305,7 @@ export class QuickSettingsManager {
                 // Dynamically adjust the shader's corner radius during the animation.
                 // As the menu shrinks, the absolute radius shrinks too, keeping the corners proportional.
                 if (this.effect && typeof this.effect.setCornerRadius === 'function') {
-                    let baseRadius = this._settings.get_double('quick-settings-corner-radius'); 
+                    let baseRadius = this._settings.get_double('quick-settings-corner-radius');
                     this.effect.setCornerRadius(baseRadius * currentScale);
                     if (typeof this.effect.setAnimationScale === 'function') {
                         this.effect.setAnimationScale(currentScale);
@@ -1255,13 +1322,13 @@ export class QuickSettingsManager {
                 // Cleanup when animation finishes
                 if (stopped) {
                     this._tickId = 0;
-                    
+
                     if (isClosing && this.menu.actor) {
                         this.menu.actor.hide(); // Tell GNOME the menu is officially closed
                         this.bgActor.opacity = 0; // Ensure the background is fully transparent when closed
                         this.animActor.opacity = 0;
                     }
-                    
+
                     if (!isClosing) {
                         // Restore scale to exactly 1.0 to fix font hinting/blurriness issues
                         this.animActor.set_scale(1.0, 1.0);
@@ -1284,28 +1351,26 @@ export class QuickSettingsManager {
         this._stopAdaptiveColorSampling();
         this._clearAdaptiveStyles();
         this._clearButtonStyles();
-        
+
         // Disconnect all event listeners
         for (let sigId of this._signals) {
-            this.menu.disconnect(sigId); 
+            this.menu.disconnect(sigId);
         }
         this._signals = [];
-        
+
         // Stop the render frame loop
         if (this._frameSyncId !== 0) {
             if (global.compositor?.get_laters)
                 global.compositor.get_laters().remove(this._frameSyncId);
-            else if (Meta.later_remove)
-                Meta.later_remove(this._frameSyncId);
             this._frameSyncId = 0;
         }
-        
+
         // Remove transparent CSS overrides
         this.targetActor.remove_style_class_name('liquid-glass-transparent');
         if (this.animActor) {
             this.animActor.remove_style_class_name('liquid-glass-transparent');
             this.animActor.remove_style_class_name('liquid-glass-qs-root');
-            
+
             // Revert UI shifts and forced states
             this.animActor.translation_x = 0;
             this.animActor.translation_y = 0;
@@ -1319,7 +1384,7 @@ export class QuickSettingsManager {
         // this.targetActor.margin_top = 0;
         this.targetActor.set_scale(1.0, 1.0);
         this.targetActor.opacity = 255;
-        
+
         if (this.menu.actor) {
             this.menu.actor.opacity = 255;
             this.menu.actor.translation_x = 0;
@@ -1328,26 +1393,26 @@ export class QuickSettingsManager {
             // If the menu is currently open, forcefully close it 
             // without animations to reset GNOME's internal state
             if (this.menu.isOpen) {
-                this.menu.close(false); 
+                this.menu.close(false);
             }
         }
-        
+
         if (this.effect) {
             this.effect.cleanup();
             this.effect = null;
         }
 
         // Destroy all injected actors and clones
-        if (this.bgActor) { 
-            this.bgActor.destroy(); 
-            this.bgActor = null; 
+        if (this.bgActor) {
+            this.bgActor.destroy();
+            this.bgActor = null;
         }
-        
+
         this.blurEffect = null;
         this.bgClone = null;
         this.fboContainer = null;
         this.windowClonesContainer = null;
-        
+
         this._windowClones.clear();
 
         this._stableBaseW = undefined;
@@ -1362,30 +1427,36 @@ export class QuickSettingsManager {
 
 // A straightforward mathematical implementation of Hooke's Law for spring physics
 class Spring {
-    constructor(stiffness, damping, mass) {
+    private stiffness: number;
+    private damping: number;
+    private mass: number;
+    public value: number;
+    public velocity: number;
+    public target: number;
+    constructor(stiffness: number, damping: number, mass: number) {
         this.stiffness = stiffness; // How rigid the spring is (higher = faster, more snappy)
         this.damping = damping;     // Friction (higher = less bounce, settles quicker)
         this.mass = mass;           // Weight of the object
-        
+
         this.value = 0;             // Current position/scale
         this.velocity = 0;          // Current speed
         this.target = 0;            // Destination value
     }
 
-    update(elapsedMs) {
+    update(elapsedMs: number) {
         // Cap max delta time to prevent the spring from violently exploding during heavy CPU load
         let dt = elapsedMs / 1000;
         if (dt > 0.033) dt = 0.033;
 
         // F = -k * x
         let springForce = -this.stiffness * (this.value - this.target);
-        
+
         // F = -c * v
         let dampingForce = -this.damping * this.velocity;
-        
+
         // a = F / m
         let acceleration = (springForce + dampingForce) / this.mass;
-        
+
         // Update velocity and position using Euler integration
         this.velocity += acceleration * dt;
         this.value += this.velocity * dt;
