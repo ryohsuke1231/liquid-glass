@@ -79,6 +79,7 @@ export class UIManager {
   private _accentColorSignalId: number = 0;
 
   private _dynamicCssFile: Gio.File | null = null;
+  private _cornerRadius: number = 0;
 
   constructor(extensionPath: string, settings: Gio.Settings) {
     this.extensionPath = extensionPath;
@@ -313,7 +314,8 @@ export class UIManager {
 
     connectSetting('menu-corner-radius', () => {
       if (this.effect) {
-        this.effect.setCornerRadius(this._settings.get_int('menu-corner-radius'));
+        this._cornerRadius = this._settings.get_double('menu-corner-radius');
+        this.effect.setCornerRadius(this._cornerRadius);
       }
     });
 
@@ -412,7 +414,7 @@ export class UIManager {
     let blurRadius = this._settings.get_int('menu-blur-radius');
     let tintColorStr = this._settings.get_string('menu-tint-color');
     let tintStrength = this._settings.get_double('menu-tint-strength');
-    let cornerRadius = this._settings.get_int('menu-corner-radius');
+    this._cornerRadius = this._settings.get_double('menu-corner-radius');
 
     // Apply native GNOME blur to the internal clipBox (which contains the clones)
     this.blurEffect = new Shell.BlurEffect({ radius: blurRadius, mode: Shell.BlurMode.ACTOR });
@@ -425,7 +427,7 @@ export class UIManager {
     this.effect.setPadding(SHADER_PADDING);
     this.effect.setTintColor(...this._hexToColorArray(tintColorStr)); // Pure transparent base
     this.effect.setTintStrength(tintStrength); // Subtle tint strength to enhance the glass look without overpowering the background
-    this.effect.setCornerRadius(cornerRadius);
+    this.effect.setCornerRadius(this._cornerRadius);
     this.effect.setIsDock(false);
     this.bgActor.add_effect(this.effect);
 
@@ -550,6 +552,23 @@ export class UIManager {
         this._stopAdaptiveColorSampling();
       }
     }));
+    // メニューの表示状態（mapped）が変わった時のシグナルを監視
+    this._signals.push(this.menu.actor.connect('notify::mapped', () => {
+      // mapped が false になった ＝ 完全に画面から消えた（hideされた）
+      if (!this.menu.actor.mapped) {
+        // ここで初めて描画・同期ループを止める
+        stopFrameSync();
+
+        // 念押しで確実にお掃除しておく
+        if (this.bgActor) {
+          this.bgActor.hide();
+          this.bgActor.opacity = 0;
+        }
+        if (this.animActor) {
+          this.animActor.opacity = 0;
+        }
+      }
+    }));
 
     this._updateResolution();
     if (this.targetActor.mapped) {
@@ -605,6 +624,14 @@ export class UIManager {
     let [inW, inH] = this.animActor.get_size();
     let [outW, outH] = this.targetActor.get_size();
     let [scaleX, scaleY] = this.animActor.get_scale();
+
+    inW = Number.isNaN(inW) || inW <= 0 ? (this._stableBaseW || 1) : inW;
+    inH = Number.isNaN(inH) || inH <= 0 ? (this._stableBaseH || 1) : inH;
+    scaleX = Number.isNaN(scaleX) ? 1.0 : scaleX;
+    scaleY = Number.isNaN(scaleY) ? 1.0 : scaleY;
+
+    scaleX *= this.targetActor.get_scale()[0];
+    scaleY *= this.targetActor.get_scale()[1];
 
     let themeNode = this.animActor.get_theme_node();
     let mL = themeNode ? themeNode.get_margin(St.Side.LEFT) : 0;
@@ -734,6 +761,17 @@ export class UIManager {
 
         this._lastBgW = bgW; this._lastBgH = bgH;
         this._lastBgX = bgX; this._lastBgY = bgY;
+      }
+    }
+
+    if (this.effect) {
+      // 縦横のスケールのうち小さい方を採用し、角丸が潰れないようにする
+      let currentScale = Math.min(scaleX, scaleY);
+      // let baseRadius = this._settings.get_double('menu-corner-radius');
+      this.effect.setCornerRadius(this._cornerRadius * currentScale);
+
+      if (typeof this.effect.setAnimationScale === 'function') {
+        this.effect.setAnimationScale(currentScale);
       }
     }
 
@@ -908,10 +946,9 @@ export class UIManager {
           actor.remove_style_class_name('adaptive-text-transition');
           actor.remove_style_class_name('adaptive-color-light');
           actor.remove_style_class_name('adaptive-color-dark');
+          // 元のスタイル(またはnull)をセット
+          actor.set_style(originalStyle || null);
         } catch (e) { }
-
-        // 元のスタイル(またはnull)をセット
-        actor.set_style(originalStyle || null);
       }
     }
     this._styledActors.clear();
@@ -1128,7 +1165,7 @@ export class UIManager {
         let elapsedMs = (currentTime - lastTime) / 1000;
         lastTime = currentTime;
 
-        // let isClosing = (this._springScale.target === 0);
+        let isClosing = (this._springScale.target === 0);
 
         // Cap delta time to prevent physics explosions during severe lag spikes
         let dt = elapsedMs / 1000;
@@ -1183,6 +1220,7 @@ export class UIManager {
         // Apply the calculated scale to the UI
         this.animActor.set_scale(currentScale, currentScale);
 
+        /* Remove this code (do in _syncGeometry)
         // Dynamically adjust the shader's corner radius during the animation.
         if (this.effect && typeof this.effect.setCornerRadius === 'function') {
           let baseRadius = this._settings.get_double('menu-corner-radius');
@@ -1191,6 +1229,7 @@ export class UIManager {
             this.effect.setAnimationScale(currentScale);
           }
         }
+        */
 
         this.bgActor.opacity = opacity;
         this.animActor.opacity = opacity;
@@ -1231,7 +1270,9 @@ export class UIManager {
 
     // Disconnect all event listeners
     for (let sigId of this._signals) {
-      this.menu.disconnect(sigId);
+      try {
+        if (sigId) this.menu.disconnect(sigId);
+      } catch (e) { }
     }
     this._signals = [];
 

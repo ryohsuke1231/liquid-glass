@@ -90,6 +90,8 @@ export class QuickSettingsManager {
   private _lastBgX: number | undefined;
   private _lastBgY: number | undefined;
 
+  private _cornerRadius: number = 0;
+
   constructor(extensionPath: string, settings: Gio.Settings) {
     this.extensionPath = extensionPath;
     this._settings = settings;
@@ -205,8 +207,8 @@ export class QuickSettingsManager {
       else if (!enabled && this._isEffectActive) this._removeEffect();
     });
 
-    connectSetting('enable-quick-settings-animaion', () => {
-      this._enableAnimation = this._settings.get_boolean('enable-quick-settings-animaion');
+    connectSetting('enable-quick-settings-animation', () => {
+      this._enableAnimation = this._settings.get_boolean('enable-quick-settings-animation');
     });
 
     connectSetting('quick-settings-spring-stiffness', () => {
@@ -245,7 +247,8 @@ export class QuickSettingsManager {
 
     connectSetting('quick-settings-corner-radius', () => {
       if (this.effect) {
-        this.effect.setCornerRadius(this._settings.get_double('quick-settings-corner-radius'));
+        this._cornerRadius = this._settings.get_double('quick-settings-corner-radius');
+        this.effect.setCornerRadius(this._cornerRadius);
       }
     });
 
@@ -343,7 +346,7 @@ export class QuickSettingsManager {
     this.animActor.set_pivot_point(0.5, 0.0); // Scale from top-left to match the background actor's coordinate system
 
     // bgActor scales from the top-left (0.0, 0.0) because we manually sync its exact coordinates
-    this.bgActor.set_pivot_point(0.5, 0.0);
+    this.bgActor.set_pivot_point(0.0, 0.0);
 
     // Insert the custom background *underneath* the actual menu UI
     let menuParent = this.menu.actor.get_parent();
@@ -357,6 +360,7 @@ export class QuickSettingsManager {
     let blurRadius = this._settings.get_int('quick-settings-blur-radius');
     let tintColorStr = this._settings.get_string('quick-settings-tint-color');
     let tintStrength = this._settings.get_double('quick-settings-tint-strength');
+    this._cornerRadius = this._settings.get_double('quick-settings-corner-radius');
 
     // Apply native GNOME blur to the internal clipBox (which contains the clones)
     this.blurEffect = new Shell.BlurEffect({ radius: blurRadius, mode: Shell.BlurMode.ACTOR });
@@ -518,10 +522,28 @@ export class QuickSettingsManager {
       if (!this._hasAutoRefreshed)
         return;
 
-      stopFrameSync();
+      // stopFrameSync();
       this._stopAdaptiveColorSampling();
       this._stopButtonAlphaSampling();
       this._startAnimation(0);
+    }));
+
+    // メニューの表示状態（mapped）が変わった時のシグナルを監視
+    this._signals.push(this.menu.actor.connect('notify::mapped', () => {
+      // mapped が false になった ＝ 完全に画面から消えた（hideされた）
+      if (!this.menu.actor.mapped) {
+        // ここで初めて描画・同期ループを止める
+        stopFrameSync();
+
+        // 念押しで確実にお掃除しておく
+        if (this.bgActor) {
+          this.bgActor.hide();
+          this.bgActor.opacity = 0;
+        }
+        if (this.animActor) {
+          this.animActor.opacity = 0;
+        }
+      }
     }));
 
     this._updateResolution();
@@ -564,12 +586,48 @@ export class QuickSettingsManager {
 
   // Calculates and synchronizes the position/size of the glass background every frame
   _syncGeometry() {
-    if (!this.bgActor || !this.targetActor || !this.targetActor.mapped)
+    if (!this.bgActor || !this.targetActor || !this.targetActor.mapped) {
+      if (this.bgActor && this.bgActor.visible) {
+        this.bgActor.hide();
+      }
       return;
+    }
+
+    if (!this.bgActor.visible) {
+      this.bgActor.show();
+    }
+    if (!this._enableAnimation) {
+      // this.bgActor.opacity = Math.min(this.targetActor.opacity, this.animActor.opacity);
+      if (this.targetActor !== null) this.bgActor.opacity = this.targetActor.get_first_child()?.opacity ?? 255;
+    }
 
     let [inW, inH] = this.animActor.get_size();
     let [outW, outH] = this.targetActor.get_size();
+
+    inW = Number.isNaN(inW) || inW <= 0 ? (this._stableBaseW || 1) : inW;
+    inH = Number.isNaN(inH) || inH <= 0 ? (this._stableBaseH || 1) : inH;
+    // let [scaleX, scaleY] = this.animActor.get_scale();
+
     let [scaleX, scaleY] = this.animActor.get_scale();
+
+    if (!this._enableAnimation) {
+      // GNOMEデフォルトアニメーション時（enableanimation = false）
+      // targetActor(BoxPointer) の直下にある「透明なラッパー(St.Bin)」がアニメーションの実体
+      let gnomeAnimContainer = this.targetActor.get_first_child();
+
+      if (gnomeAnimContainer) {
+        // 真犯人のリアルタイムなスケール値を取得（Clutter.ease によって毎フレーム書き換わっている値）
+        let gnomeScaleX = gnomeAnimContainer.scale_x;
+        let gnomeScaleY = gnomeAnimContainer.scale_y;
+
+        scaleX *= gnomeScaleX;
+        scaleY *= gnomeScaleY;
+      }
+    } else {
+      // 独自アニメーション時は targetActor 自体のスケール（通常は1.0）を掛けるだけ
+      scaleX *= this.targetActor.get_scale()[0];
+      scaleY *= this.targetActor.get_scale()[1];
+    }
 
     let themeNode = this.animActor.get_theme_node();
     let mL = themeNode ? themeNode.get_margin(St.Side.LEFT) : 0;
@@ -690,6 +748,16 @@ export class QuickSettingsManager {
         let fboOffsetY = bgY - monitorY;
         this.fboContainer.set_position(-fboOffsetX, -fboOffsetY);
         this.fboContainer.set_size(monitorW, monitorH);
+      }
+    }
+
+    if (this.effect && typeof this.effect.setCornerRadius === 'function') {
+      // 縦横のスケールのうち小さい方を採用し、角丸が潰れないようにする
+      let currentScale = Math.min(scaleX, scaleY);
+      this.effect.setCornerRadius(this._cornerRadius * currentScale);
+
+      if (typeof this.effect.setAnimationScale === 'function') {
+        this.effect.setAnimationScale(currentScale);
       }
     }
 
@@ -1274,25 +1342,26 @@ export class QuickSettingsManager {
 
   // Handles the custom bounce/spring physics when the menu opens or closes
   _startAnimation(targetValue: number) {
-    let isClosing = (targetValue === 0);
-    /*
     if (this._tickId !== 0) {
       GLib.source_remove(this._tickId);
       this._tickId = 0;
     }
-    */
+
     // If animation is disabled, just hide the menu and exit
     if (!this._enableAnimation) {
       if (this.bgActor) {
         this.bgActor.remove_all_transitions();
+        this.bgActor.opacity = 255;
+        this.bgActor.set_scale(1.0, 1.0);
 
         // 独自アニメーション（スケール変更など）の残骸をリセットし、GNOMEデフォルトの動作に任せる
         if (this.animActor) {
-          this.animActor.remove_all_transitions();
+          // this.animActor.remove_all_transitions();
           this.animActor.set_scale(1.0, 1.0);
           this.animActor.opacity = 255;
         }
       }
+      return;
     }
 
     // Clear any built-in GNOME transitions that might interfere with our logic
@@ -1318,7 +1387,7 @@ export class QuickSettingsManager {
         let elapsedMs = (currentTime - lastTime) / 1000;
         lastTime = currentTime;
 
-        // let isClosing = (this._springScale.target === 0);
+        let isClosing = (this._springScale.target === 0);
 
         // Cap delta time to prevent physics explosions during severe lag spikes
         let dt = elapsedMs / 1000;
@@ -1379,6 +1448,7 @@ export class QuickSettingsManager {
 
         // Dynamically adjust the shader's corner radius during the animation.
         // As the menu shrinks, the absolute radius shrinks too, keeping the corners proportional.
+        /*
         if (this.effect && typeof this.effect.setCornerRadius === 'function') {
           let baseRadius = this._settings.get_double('quick-settings-corner-radius');
           this.effect.setCornerRadius(baseRadius * currentScale);
@@ -1386,6 +1456,7 @@ export class QuickSettingsManager {
             this.effect.setAnimationScale(currentScale);
           }
         }
+        */
 
         this.bgActor.opacity = opacity;
         this.animActor.opacity = opacity;
@@ -1429,8 +1500,11 @@ export class QuickSettingsManager {
 
     // Disconnect all event listeners
     for (let sigId of this._signals) {
-      this.menu.disconnect(sigId);
+      try {
+        if (sigId) this.menu.disconnect(sigId);
+      } catch (e) { }
     }
+
     this._signals = [];
 
     // Stop the render frame loop
