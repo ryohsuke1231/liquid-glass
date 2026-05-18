@@ -267,6 +267,7 @@ export class OsdManager {
         this._osdStates.push(state);
         // クリーンアップの徹底：OSDウィンドウが破棄されたらbgActorも道連れにする
         state._destroyId = osdWindow.connect('destroy', () => {
+            this._osdStates = this._osdStates.filter(s => s !== state);
             if (state.bgActor) {
                 state.bgActor.destroy();
                 // state.bgActor = null;
@@ -700,20 +701,68 @@ export class OsdManager {
         this._osdStates = [];
     }
     _cleanupOsdState(state) {
+        /*
         if (state.osdWindow && state._destroyId) {
-            state.osdWindow.disconnect(state._destroyId);
-            state._destroyId = 0;
+          state.osdWindow.disconnect(state._destroyId);
+          state._destroyId = 0;
         }
+      
         if (state.targetBox) {
-            state.targetBox.remove_style_class_name('liquid-glass-transparent');
-            state.targetBox.translation_y = 0;
+          state.targetBox.remove_style_class_name('liquid-glass-transparent');
+          state.targetBox.translation_y = 0;
+        }
+      
+        if (state.effect) {
+          state.effect.cleanup();
+          state.effect = null;
+        }
+      
+        if (state.bgActor) {
+          state.bgActor.destroy();
+          state.bgActor = null;
+        }
+        */
+        const isDisposed = (obj) => {
+            if (!obj)
+                return true;
+            try {
+                return Object.getOwnPropertyNames(obj).length === 0;
+            }
+            catch (e) {
+                return true;
+            }
+        };
+        // 各処理を独立させ、1つがコケても他が巻き添えを食らわないようにする
+        if (state.osdWindow && !isDisposed(state.osdWindow)) {
+            if (state._destroyId) {
+                try {
+                    state.osdWindow.disconnect(state._destroyId);
+                }
+                catch (e) {
+                    // すでにC側で自動切断されている場合はスルー
+                }
+                state._destroyId = 0;
+            }
+        }
+        if (state.targetBox && !isDisposed(state.targetBox)) {
+            try {
+                state.targetBox.remove_style_class_name('liquid-glass-transparent');
+                state.targetBox.translation_y = 0;
+            }
+            catch (e) { }
         }
         if (state.effect) {
-            state.effect.cleanup();
+            try {
+                state.effect.cleanup();
+            }
+            catch (e) { }
             state.effect = null;
         }
-        if (state.bgActor) {
-            state.bgActor.destroy();
+        if (state.bgActor && !isDisposed(state.bgActor)) {
+            try {
+                state.bgActor.destroy();
+            }
+            catch (e) { }
             state.bgActor = null;
         }
         state.blurEffect = null;

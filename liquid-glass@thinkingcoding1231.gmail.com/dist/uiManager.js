@@ -32,7 +32,9 @@ export class UIManager {
     _overviewClone;
     _appDisplayClone;
     _searchClone;
+    // private _signals: number[];
     _signals;
+    _animSignalId = 0;
     _frameSyncId;
     _glassExpand;
     _menuXoffset;
@@ -107,14 +109,14 @@ export class UIManager {
         this._appDisplayClone = null;
         this._searchClone = null;
         // Listen for the menu opening/closing to trigger our custom physics animation
-        this._signals.push(this.menu.connect('open-state-changed', (menu, isOpen) => {
+        this._animSignalId = this.menu.connect('open-state-changed', (menu, isOpen) => {
             if (isOpen) {
                 this._startAnimation(1); // Target scale: 1.0 (fully open)
             }
             else {
                 this._startAnimation(0); // Target scale: 0.0 (closed)
             }
-        }));
+        });
     }
     setup() {
         if (!this._settings)
@@ -453,33 +455,39 @@ export class UIManager {
         };
         // Clear the cached size whenever the menu opens so it can recalculate 
         // based on any new notifications or calendar events added
-        this._signals.push(this.menu.connect('open-state-changed', (menu, isOpen) => {
-            if (isOpen) {
-                this._stableBaseW = undefined;
-                this._stableBaseH = undefined;
-                startFrameSync();
-                this._startAdaptiveColorSampling(true); // Skip animations on the first open for instant feedback
-            }
-            else {
-                this._stopAdaptiveColorSampling();
-            }
-        }));
+        this._signals.push({
+            target: this.menu,
+            id: this.menu.connect('open-state-changed', (menu, isOpen) => {
+                if (isOpen) {
+                    this._stableBaseW = undefined;
+                    this._stableBaseH = undefined;
+                    startFrameSync();
+                    this._startAdaptiveColorSampling(true); // Skip animations on the first open for instant feedback
+                }
+                else {
+                    this._stopAdaptiveColorSampling();
+                }
+            })
+        });
         // メニューの表示状態（mapped）が変わった時のシグナルを監視
-        this._signals.push(this.menu.actor.connect('notify::mapped', () => {
-            // mapped が false になった ＝ 完全に画面から消えた（hideされた）
-            if (!this.menu.actor.mapped) {
-                // ここで初めて描画・同期ループを止める
-                stopFrameSync();
-                // 念押しで確実にお掃除しておく
-                if (this.bgActor) {
-                    this.bgActor.hide();
-                    this.bgActor.opacity = 0;
+        this._signals.push({
+            target: this.menu.actor,
+            id: this.menu.actor.connect('notify::mapped', () => {
+                // mapped が false になった ＝ 完全に画面から消えた（hideされた）
+                if (!this.menu.actor.mapped) {
+                    // ここで初めて描画・同期ループを止める
+                    stopFrameSync();
+                    // 念押しで確実にお掃除しておく
+                    if (this.bgActor) {
+                        this.bgActor.hide();
+                        this.bgActor.opacity = 0;
+                    }
+                    if (this.animActor) {
+                        this.animActor.opacity = 0;
+                    }
                 }
-                if (this.animActor) {
-                    this.animActor.opacity = 0;
-                }
-            }
-        }));
+            })
+        });
         this._updateResolution();
         if (this.targetActor.mapped) {
             startFrameSync();
@@ -577,7 +585,7 @@ export class UIManager {
                 let buttonActor = Main.panel.statusArea.dateMenu.actor;
                 let [btnX, btnY] = buttonActor.get_transformed_position();
                 let [btnW, btnH] = buttonActor.get_size();
-         
+           
                 if (!Number.isNaN(btnX) && !Number.isNaN(btnY)) {
                     // Assume the menu opens centered directly below the clock button
                     animAbsX = btnX + (btnW / 2) - (w / 2) + this._menuXoffset; // Apply horizontal offset
@@ -797,8 +805,15 @@ export class UIManager {
             return;
         if (!this._styledActors.has(actor)) {
             let origStyle = typeof actor.get_style === 'function' ? actor.get_style() : null;
-            if (origStyle)
-                this._styledActors.set(actor, origStyle);
+            // if (origStyle) this._styledActors.set(actor, origStyle);
+            this._styledActors.set(actor, origStyle || '');
+            actor.connect('destroy', () => {
+                if (actor._colorTweenId) {
+                    GLib.source_remove(actor._colorTweenId);
+                    actor._colorTweenId = undefined;
+                }
+                this._styledActors.delete(actor);
+            });
         }
         let isInsensitive = false;
         if (actor instanceof St.Button) {
@@ -1105,10 +1120,10 @@ export class UIManager {
         this._stopAdaptiveColorSampling();
         this._clearAdaptiveStyles();
         // Disconnect all event listeners
-        for (let sigId of this._signals) {
+        for (let sig of this._signals) {
             try {
-                if (sigId)
-                    this.menu.disconnect(sigId);
+                if (sig && sig.id)
+                    sig.target.disconnect(sig.id);
             }
             catch (e) { }
         }

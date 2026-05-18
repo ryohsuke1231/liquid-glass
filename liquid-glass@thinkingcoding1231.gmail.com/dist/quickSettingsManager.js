@@ -42,6 +42,7 @@ export class QuickSettingsManager {
     _styledButtons;
     _buttonSignalIds;
     _signals;
+    _animSignalId = 0;
     _frameSyncId;
     _glassExpand;
     _menuXoffset;
@@ -406,8 +407,9 @@ export class QuickSettingsManager {
         if (this._hasAutoRefreshed === undefined) {
             this._hasAutoRefreshed = false;
         }
+        this._signals = [];
         // Handle the first open as a plain GNOME quick settings open; apply custom behavior only afterwards.
-        this._signals.push(this.menu.connect('open-state-changed', (menu, isOpen) => {
+        this._animSignalId = this.menu.connect('open-state-changed', (menu, isOpen) => {
             if (isOpen) {
                 if (this.bgActor) {
                     let currentMenuParent = this.targetActor.get_parent();
@@ -438,23 +440,26 @@ export class QuickSettingsManager {
             this._stopAdaptiveColorSampling();
             this._stopButtonAlphaSampling();
             this._startAnimation(0);
-        }));
+        });
         // メニューの表示状態（mapped）が変わった時のシグナルを監視
-        this._signals.push(this.menu.actor.connect('notify::mapped', () => {
-            // mapped が false になった ＝ 完全に画面から消えた（hideされた）
-            if (!this.menu.actor.mapped) {
-                // ここで初めて描画・同期ループを止める
-                stopFrameSync();
-                // 念押しで確実にお掃除しておく
-                if (this.bgActor) {
-                    this.bgActor.hide();
-                    this.bgActor.opacity = 0;
+        this._signals.push({
+            target: this.menu.actor,
+            id: this.menu.actor.connect('notify::mapped', () => {
+                // mapped が false になった ＝ 完全に画面から消えた（hideされた）
+                if (!this.menu.actor.mapped) {
+                    // ここで初めて描画・同期ループを止める
+                    stopFrameSync();
+                    // 念押しで確実にお掃除しておく
+                    if (this.bgActor) {
+                        this.bgActor.hide();
+                        this.bgActor.opacity = 0;
+                    }
+                    if (this.animActor) {
+                        this.animActor.opacity = 0;
+                    }
                 }
-                if (this.animActor) {
-                    this.animActor.opacity = 0;
-                }
-            }
-        }));
+            })
+        });
         this._updateResolution();
         if (this.targetActor.mapped && this._hasAutoRefreshed) {
             startFrameSync();
@@ -569,7 +574,7 @@ export class QuickSettingsManager {
                 let buttonActor = Main.panel.statusArea.quickSettings.actor;
                 let [btnX, btnY] = buttonActor.get_transformed_position();
                 let [btnW, btnH] = buttonActor.get_size();
-         
+           
                 if (!Number.isNaN(btnX) && !Number.isNaN(btnY)) {
                     // Assume the menu opens centered directly below the clock button
                     animAbsX = btnX + (btnW / 2) - (w / 2);
@@ -758,11 +763,11 @@ export class QuickSettingsManager {
     // Simplified target collection to use a single top-down recursive pass.
     _collectAdaptiveTextTargets(actor = this.menu?.actor, inPlaceholder = false, inToday = false, targets = []) {
         if (!actor) return targets;
-    
+     
         // Check if the current element has the target parent class and update the corresponding flag.
         const isPlaceholder = inPlaceholder || this._hasStyleClass(actor, 'message-list-placeholder');
         const isToday = inToday || this._hasStyleClass(actor, 'datemenu-today-button');
-    
+     
         // Check if the actor matches the specified target criteria.
         if (typeof actor.set_style === 'function') {
             if (this._hasStyleClass(actor, 'message-list-clear-button')) {
@@ -773,13 +778,13 @@ export class QuickSettingsManager {
                 targets.push(actor);
             }
         }
-    
+     
         // Recurse through children, passing down the flag indicating which parent context we are currently in.
         const children = actor.get_children?.() ?? [];
         for (let i = 0; i < children.length; i++) {
             this._collectAdaptiveTextTargets(children[i], isPlaceholder, isToday, targets);
         }
-    
+     
         return targets;
     }
     */
@@ -810,8 +815,15 @@ export class QuickSettingsManager {
             return;
         if (!this._styledActors.has(actor)) {
             let origStyle = typeof actor.get_style === 'function' ? actor.get_style() : null;
-            if (origStyle)
-                this._styledActors.set(actor, origStyle);
+            // if (origStyle) this._styledActors.set(actor, origStyle);
+            this._styledActors.set(actor, origStyle || '');
+            actor.connect('destroy', () => {
+                if (actor._colorTweenId) {
+                    GLib.source_remove(actor._colorTweenId);
+                    actor._colorTweenId = undefined;
+                }
+                this._styledActors.delete(actor);
+            });
         }
         let isInsensitive = false;
         if (actor instanceof St.Button) {
@@ -1287,15 +1299,23 @@ export class QuickSettingsManager {
         this._stopAdaptiveColorSampling();
         this._clearAdaptiveStyles();
         this._clearButtonStyles();
-        // Disconnect all event listeners
-        for (let sigId of this._signals) {
+        // Disconnect all event listeners safely
+        for (let sig of this._signals) {
             try {
-                if (sigId)
-                    this.menu.disconnect(sigId);
+                if (sig && sig.id)
+                    sig.target.disconnect(sig.id);
             }
             catch (e) { }
         }
         this._signals = [];
+        // _applyEffect内で登録したアニメーションシグナルも解除する（多重登録防止）
+        if (this._animSignalId) {
+            try {
+                this.menu.disconnect(this._animSignalId);
+            }
+            catch (e) { }
+            this._animSignalId = 0;
+        }
         // Stop the render frame loop
         if (this._frameSyncId !== 0) {
             if (global.compositor?.get_laters)
