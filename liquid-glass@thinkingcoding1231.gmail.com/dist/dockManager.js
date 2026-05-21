@@ -6,6 +6,7 @@ import St from 'gi://St';
 import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import { LiquidEffect } from './liquidEffect.js';
+import { UnpickableClone } from './utils.js';
 // Padding to allow the shader to draw effects (like refraction and blur) outside the actor's strict bounds.
 const SHADER_PADDING = 20;
 // Utility: Convert HEX color string (e.g., "#ffffff") to normalized RGB array [1.0, 1.0, 1.0]
@@ -192,6 +193,7 @@ export class DashManager {
         this.bgActor.set_pivot_point(0.0, 0.0);
         // 動的マージンを適用
         this._applyMargin();
+        this._glassExpand = this._settings.get_int("dock-glass-expand");
         let dockRoot = this.targetActor;
         while (dockRoot && dockRoot.get_parent() !== Main.layoutManager.uiGroup) {
             let p = dockRoot.get_parent();
@@ -235,7 +237,7 @@ export class DashManager {
                 this.windowClonesContainer.destroy();
                 this.windowClonesContainer = null;
             }
-            this.bgClone = new Clutter.Clone({ source: Main.layoutManager._backgroundGroup });
+            this.bgClone = new UnpickableClone({ source: Main.layoutManager._backgroundGroup });
             this.clipBox?.add_child(this.bgClone);
             this.windowClonesContainer = new Clutter.Actor();
             this.clipBox?.add_child(this.windowClonesContainer);
@@ -248,7 +250,7 @@ export class DashManager {
                 let metaWindow = w.get_meta_window();
                 if (!metaWindow || metaWindow.minimized || !w.visible)
                     continue;
-                let clone = new Clutter.Clone({ source: w });
+                let clone = new UnpickableClone({ source: w });
                 clone.set_position(w.x, w.y);
                 this.windowClonesContainer.add_child(clone);
                 this._windowClones.set(w, clone);
@@ -323,19 +325,149 @@ export class DashManager {
             monitorIndex = Main.layoutManager.primaryIndex;
         }
         let monitor = Main.layoutManager.monitors[monitorIndex] || Main.layoutManager.primaryMonitor;
+        let minCenterDist = -1;
+        // let distLeftCenter: number, distRightCenter: number, distTopCenter: number, distBottomCenter: number;
+        let distLeftCenter = 0;
+        let distRightCenter = 0;
+        let distTopCenter = 0;
+        let distBottomCenter = 0;
+        if (monitor) {
+            let dockCenterX = absX + (baseW / 2);
+            let dockCenterY = absY + (baseH / 2);
+            distLeftCenter = dockCenterX - monitor.x;
+            distRightCenter = (monitor.x + monitor.width) - dockCenterX;
+            distTopCenter = dockCenterY - monitor.y;
+            distBottomCenter = (monitor.y + monitor.height) - dockCenterY;
+            minCenterDist = Math.min(distLeftCenter, distRightCenter, distTopCenter, distBottomCenter);
+        }
+        /*
+        let refActor = this._findReferenceActor(this.targetActor);
+        if (refActor && monitor) {
+          let [refW, refH] = refActor.get_size();
+          let [refX, refY] = refActor.get_transformed_position();
+    
+          if (!Number.isNaN(refX) && !Number.isNaN(refY) && refW > 0 && refH > 0) {
+    
+            if (minCenterDist === distBottomCenter) {
+              // ▼ 下ドック ▼ (画面端側の隙間は Bottom、中央側の隙間は Top)
+              let topGap = refY - absY;
+              let bottomGap = (absY + baseH) - (refY + refH);
+              let diff = bottomGap - topGap;
+    
+              if (diff > 0 && diff < baseH / 2) {
+                baseH -= diff; // 下にはみ出た見えない余白をカット
+              }
+    
+            } else if (minCenterDist === distTopCenter) {
+              // ▼ 上ドック ▼ (画面端側の隙間は Top、中央側の隙間は Bottom)
+              let topGap = refY - absY;
+              let bottomGap = (absY + baseH) - (refY + refH);
+              let diff = topGap - bottomGap; // 引く順番が逆になる
+    
+              if (diff > 0 && diff < baseH / 2) {
+                absY += diff;  // 上の見えない余白をカットするため、開始位置を下にズラす
+                baseH -= diff; // 開始位置をズラした分、高さも削る
+              }
+    
+            } else if (minCenterDist === distRightCenter) {
+              // ▼ 右ドック ▼ (画面端側の隙間は Right、中央側の隙間は Left)
+              let leftGap = refX - absX;
+              let rightGap = (absX + baseW) - (refX + refW);
+              let diff = rightGap - leftGap;
+    
+              if (diff > 0 && diff < baseW / 2) {
+                baseW -= diff; // 右にはみ出た見えない余白をカット
+              }
+    
+            } else if (minCenterDist === distLeftCenter) {
+              // ▼ 左ドック ▼ (画面端側の隙間は Left、中央側の隙間は Right)
+              let leftGap = refX - absX;
+              let rightGap = (absX + baseW) - (refX + refW);
+              let diff = leftGap - rightGap; // 引く順番が逆になる
+    
+              if (diff > 0 && diff < baseW / 2) {
+                absX += diff;  // 左の見えない余白をカットするため、開始位置を右にズラす
+                baseW -= diff; // 幅も削る
+              }
+            }
+          }
+        }
+        */
+        let refActor = this._findReferenceActor(this.targetActor);
+        if (refActor) {
+            let [refW, refH] = refActor.get_size();
+            let [refX, refY] = refActor.get_transformed_position();
+            if (!Number.isNaN(refX) && !Number.isNaN(refY) && refW > 0 && refH > 0) {
+                let topGap = refY - absY;
+                let bottomGap = (absY + baseH) - (refY + refH);
+                // let leftGap = refX - absX;
+                // let rightGap = (absX + baseW) - (refX + refW);
+                // For when the dock is upside down
+                if (topGap < 0 || bottomGap < 0) {
+                    // 原点が下端にあるため、真の左上Y座標は refY - refH になる
+                    let trueRefY = refY - refH;
+                    // ギャップを再計算して正常化
+                    topGap = trueRefY - absY;
+                    bottomGap = (absY + baseH) - (trueRefY + refH);
+                }
+                let leftGap = refX - absX;
+                let rightGap = (absX + baseW) - (refX + refW);
+                // ▼ X軸が反転（左右ミラー）しているかの検知と補正（左/右ドック用）
+                if (leftGap < 0 || rightGap < 0) {
+                    let trueRefX = refX - refW;
+                    leftGap = trueRefX - absX;
+                    rightGap = (absX + baseW) - (trueRefX + refW);
+                }
+                if (baseW >= baseH) {
+                    // ▼ 横長ドック（上・下ドック）▼
+                    let diff = Math.abs(bottomGap - topGap);
+                    // 異常値(高さを超えるようなズレ)は無視する安全装置
+                    if (diff > 0 && diff < baseH / 2) {
+                        if (bottomGap > topGap) {
+                            // 下の隙間の方が広い -> 下を削る
+                            baseH -= diff;
+                        }
+                        else {
+                            // 上の隙間の方が広い -> 開始位置(上)を下げて、高さも削る
+                            absY += diff;
+                            baseH -= diff;
+                        }
+                    }
+                }
+                else {
+                    // ▼ 縦長ドック（左・右ドック）▼
+                    let diff = Math.abs(rightGap - leftGap);
+                    if (diff > 0 && diff < baseW / 2) {
+                        if (rightGap > leftGap) {
+                            // 右の隙間の方が広い -> 右を削る
+                            baseW -= diff;
+                        }
+                        else {
+                            // 左の隙間の方が広い -> 開始位置(左)を右にズラして、幅も削る
+                            absX += diff;
+                            baseW -= diff;
+                        }
+                    }
+                }
+            }
+        }
         // --------------------------------------------------------------------
         // --------------------------------------------------------------------
         let marginValue = this._settings.get_int('dock-margin-bottom') || 0;
         if (monitor && marginValue > 0) {
+            /*
             // Dockの中心座標を算出
             let dockCenterX = absX + (baseW / 2);
             let dockCenterY = absY + (baseH / 2);
+      
             // 中心座標から各エッジへの距離を測ることで、全幅・全高Dockでも誤認しない
             let distLeftCenter = dockCenterX - monitor.x;
             let distRightCenter = (monitor.x + monitor.width) - dockCenterX;
             let distTopCenter = dockCenterY - monitor.y;
             let distBottomCenter = (monitor.y + monitor.height) - dockCenterY;
+      
             let minCenterDist = Math.min(distLeftCenter, distRightCenter, distTopCenter, distBottomCenter);
+            */
             // アプリ起動時の微小揺れ（誤動作の元）を完全に無視するため、閾値を大きく設定
             let isMoving = false;
             if (this._lastAbsX !== undefined && this._lastAbsY !== undefined) {
@@ -366,6 +498,8 @@ export class DashManager {
                         let overflow = (absY + baseH) - expectedBottom;
                         baseH -= overflow;
                     }
+                    if (baseH > stableBaseH)
+                        baseH = stableBaseH; // Experimental
                 }
                 else if (minCenterDist === distTopCenter) {
                     // 上ドック
@@ -385,6 +519,8 @@ export class DashManager {
                         let overflow = (absX + baseW) - expectedRight;
                         baseW -= overflow;
                     }
+                    if (baseW > stableBaseW)
+                        baseW = stableBaseW; // Experimental
                 }
                 else {
                     // 左ドック
@@ -471,7 +607,7 @@ export class DashManager {
       
                 let clone;
                 if (!this._windowClones.has(w)) {
-                    clone = new Clutter.Clone({ source: w });
+                    clone = new UnpickableClone({ source: w });
                     this.windowClonesContainer.add_child(clone);
                     this._windowClones.set(w, clone);
                 } else {
@@ -523,7 +659,7 @@ export class DashManager {
                     activeWindows.add(w);
                     let clone;
                     if (!this._windowClones.has(w)) {
-                        clone = new Clutter.Clone({ source: w });
+                        clone = new UnpickableClone({ source: w });
                         this.windowClonesContainer.add_child(clone);
                         this._windowClones.set(w, clone);
                     }
@@ -555,7 +691,7 @@ export class DashManager {
                     // 1. ワークスペースプレビュー（背景含む）のクローン
                     if (controls._workspacesDisplay) {
                         if (!this._overviewClone) {
-                            this._overviewClone = new Clutter.Clone({ source: controls._workspacesDisplay });
+                            this._overviewClone = new UnpickableClone({ source: controls._workspacesDisplay });
                             this.overviewCloneContainer?.add_child(this._overviewClone);
                         }
                         this._syncActorProperties(controls._workspacesDisplay, this._overviewClone);
@@ -563,7 +699,7 @@ export class DashManager {
                     // 2. アプリ一覧 (AppGrid) のクローン
                     if (controls._appDisplay) {
                         if (!this._appDisplayClone) {
-                            this._appDisplayClone = new Clutter.Clone({ source: controls._appDisplay });
+                            this._appDisplayClone = new UnpickableClone({ source: controls._appDisplay });
                             this.overviewCloneContainer?.add_child(this._appDisplayClone);
                         }
                         this._syncActorProperties(controls._appDisplay, this._appDisplayClone);
@@ -571,7 +707,7 @@ export class DashManager {
                     // 3. 検索画面 のクローン
                     if (controls._searchController && controls._searchController.actor) {
                         if (!this._searchClone) {
-                            this._searchClone = new Clutter.Clone({ source: controls._searchController.actor });
+                            this._searchClone = new UnpickableClone({ source: controls._searchController.actor });
                             this.overviewCloneContainer?.add_child(this._searchClone);
                         }
                         this._syncActorProperties(controls._searchController.actor, this._searchClone);
@@ -704,5 +840,27 @@ export class DashManager {
             }
             this._settingsSignals = [];
         }
+    }
+    // ドックの内部から、計算の基準となるアイコンまたはインジケーターを1つ再帰的に探し出す
+    _findReferenceActor(actor) {
+        if (!actor)
+            return null;
+        // 1. 安全性のチェック：オブジェクトが存在しない、または get_children がない場合は終了
+        if (!actor || typeof actor.get_children !== 'function') {
+            return null;
+        }
+        // 2. 判定条件：文字列化して 'IndicatorDrawingArea' が含まれているか
+        if (actor.toString().includes('IndicatorDrawingArea')) {
+            return actor;
+        }
+        // 3. 子要素を再帰的に探索
+        const children = actor.get_children();
+        for (const child of children) {
+            const found = this._findReferenceActor(child);
+            if (found) {
+                return found; // 見つかったら即座に返す（無駄な探索をしない）
+            }
+        }
+        return null; // 見つからなかった場合
     }
 }

@@ -8,6 +8,7 @@ import Meta from 'gi://Meta';
 import Gio from 'gi://Gio';
 import { LiquidEffect } from './liquidEffect.js';
 import { StageContrastSampler, AdaptiveContrastConfig } from './contrastSampler.js';
+import { UnpickableClone, UnpickableActor } from './utils.js';
 
 // ========== Configuration Parameters ==========
 
@@ -75,6 +76,14 @@ export class UIManager {
   private _springDamping: number;
   private _springMass: number;
 
+  // SwiftUI Animation parameters
+  private _swiftAnimation: boolean = false;      // trueにするとSwiftUI風アニメーションを使用
+  private _swiftResponse: number = 0.3;         // 応答時間（小さいほど速い。0.3〜0.6程度がおすすめ）
+  private _swiftDampingFraction: number = 0.65; // 減衰比（0.6〜0.8あたりが心地よいバウンド）
+
+  private _swiftSpringScale: SwiftSpring;
+  private _swiftSpringPos: SwiftSpring;
+
   private _enableAnimation: boolean;
 
   private _interfaceSettings: Gio.Settings | null = null;
@@ -121,6 +130,10 @@ export class UIManager {
     this._springStiffness = 120;
     this._springDamping = 8;
     this._springMass = 1.0;
+
+    // SwiftUI Animation init
+    this._swiftSpringScale = new SwiftSpring(this._swiftResponse, this._swiftDampingFraction);
+    this._swiftSpringPos = new SwiftSpring(this._swiftResponse, this._swiftDampingFraction);
 
     this._enableAnimation = false;
     this._tickId = 0;
@@ -394,7 +407,8 @@ export class UIManager {
     this.bgActor.add_child(this.clipBox);
 
     // 🌟 新規追加: 3. fboContainer (マイナス座標回避用フルスクリーンキャンバス)
-    this.fboContainer = new Clutter.Actor();
+    // this.fboContainer = new Clutter.Actor();
+    this.fboContainer = new UnpickableActor();
     this.clipBox.add_child(this.fboContainer);
 
     // Set pivot points for scaling. 
@@ -476,16 +490,19 @@ export class UIManager {
 
       // 2. CREATION WITH LIFECYCLE TRACKING
       // Clone the desktop background
-      this.bgClone = new Clutter.Clone({ source: Main.layoutManager._backgroundGroup });
+      // this.bgClone = new UnpickableClone({ source: Main.layoutManager._backgroundGroup });
+      this.bgClone = new UnpickableClone({ source: Main.layoutManager._backgroundGroup });
       this.bgClone.connect('destroy', () => { this.bgClone = null; });
       this.fboContainer?.add_child(this.bgClone);
 
-      this.overviewCloneContainer = new Clutter.Actor();
+      // this.overviewCloneContainer = new Clutter.Actor();
+      this.overviewCloneContainer = new UnpickableActor();
       this.overviewCloneContainer.connect('destroy', () => { this.overviewCloneContainer = null; });
       this.fboContainer?.add_child(this.overviewCloneContainer);
 
       // Create a container for the window clones
-      this.windowClonesContainer = new Clutter.Actor();
+      // this.windowClonesContainer = new Clutter.Actor();
+      this.windowClonesContainer = new UnpickableActor();
       this.windowClonesContainer.connect('destroy', () => { this.windowClonesContainer = null; });
       this.fboContainer?.add_child(this.windowClonesContainer);
 
@@ -505,8 +522,14 @@ export class UIManager {
         }
 
         // Clone the active window and place it at its exact screen coordinates
-        let clone = new Clutter.Clone({ source: w });
+        // let clone = new UnpickableClone({ source: w });
+        let clone = new UnpickableClone({ source: w });
         let [parentX, parentY] = this.windowClonesContainer.get_transformed_position();
+        if (Number.isNaN(parentX) || Number.isNaN(parentY)) {
+          // Fallback
+          parentX = 0;
+          parentY = 0;
+        }
 
         // 親の座標分をマイナスすることで、画面上の絶対座標を w.x, w.y に一致させる
         clone.set_position(w.x - parentX, w.y - parentY);
@@ -819,7 +842,8 @@ export class UIManager {
             let clone: Clutter.Clone | undefined;
             if (!this._windowClones.has(w)) {
               // Create a clone for newly opened windows.
-              clone = new Clutter.Clone({ source: w });
+              // clone = new UnpickableClone({ source: w });
+              clone = new UnpickableClone({ source: w });
               this.windowClonesContainer.add_child(clone);
               this._windowClones.set(w, clone);
             } else {
@@ -830,6 +854,11 @@ export class UIManager {
             // Keep the position synchronized with the real window.
             let [parentX, parentY] = this.windowClonesContainer.get_transformed_position();
             if (clone) clone.set_position(w.x - parentX, w.y - parentY);
+            if (Number.isNaN(parentX) || Number.isNaN(parentY)) {
+              // Fallback
+              parentX = 0;
+              parentY = 0;
+            }
 
             // Update the Z-index dynamically to reflect window focus changes.
             if (clone) this.windowClonesContainer.set_child_at_index(clone, zIndex);
@@ -846,21 +875,24 @@ export class UIManager {
         if (controls) {
           if (controls._workspacesDisplay) {
             if (!this._overviewClone) {
-              this._overviewClone = new Clutter.Clone({ source: controls._workspacesDisplay });
+              // this._overviewClone = new UnpickableClone({ source: controls._workspacesDisplay });
+              this._overviewClone = new UnpickableClone({ source: controls._workspacesDisplay });
               this.overviewCloneContainer?.add_child(this._overviewClone);
             }
             this._syncActorProperties(controls._workspacesDisplay, this._overviewClone);
           }
           if (controls._appDisplay) {
             if (!this._appDisplayClone) {
-              this._appDisplayClone = new Clutter.Clone({ source: controls._appDisplay });
+              // this._appDisplayClone = new UnpickableClone({ source: controls._appDisplay });
+              this._appDisplayClone = new UnpickableClone({ source: controls._appDisplay });
               this.overviewCloneContainer?.add_child(this._appDisplayClone);
             }
             this._syncActorProperties(controls._appDisplay, this._appDisplayClone);
           }
           if (controls._searchController && controls._searchController.actor) {
             if (!this._searchClone) {
-              this._searchClone = new Clutter.Clone({ source: controls._searchController.actor });
+              // this._searchClone = new UnpickableClone({ source: controls._searchController.actor });
+              this._searchClone = new UnpickableClone({ source: controls._searchController.actor });
               this.overviewCloneContainer?.add_child(this._searchClone);
             }
             this._syncActorProperties(controls._searchController.actor, this._searchClone);
@@ -1164,8 +1196,18 @@ export class UIManager {
 
     // Update the spring physics parameters
     // this._springScale.updateParams(this._settings.get_double("menu-spring-stiffness"), this._settings.get_double("menu-spring-damping"), this._settings.get_double("menu-spring-mass"));
-    this._springScale.target = targetValue;
-    this._springPos.target = targetValue;
+    if (this._swiftAnimation) {
+      this._swiftSpringScale.updateParams(this._swiftResponse, this._swiftDampingFraction);
+      this._swiftSpringPos.updateParams(this._swiftResponse, this._swiftDampingFraction);
+      this._swiftSpringScale.target = targetValue;
+      this._swiftSpringPos.target = targetValue;
+      // Safety check
+      if (Number.isNaN(this._swiftSpringScale.value)) this._swiftSpringScale.value = 0;
+      if (Number.isNaN(this._swiftSpringPos.value)) this._swiftSpringPos.value = 0;
+    } else {
+      this._springScale.target = targetValue;
+      this._springPos.target = targetValue;
+    }
 
     // If an animation loop isn't already running, start a new one
     if (this._tickId === 0) {
@@ -1182,7 +1224,7 @@ export class UIManager {
         let elapsedMs = (currentTime - lastTime) / 1000;
         lastTime = currentTime;
 
-        let isClosing = (this._springScale.target === 0);
+        let isClosing = this._swiftAnimation ? (this._swiftSpringScale.target === 0) : (this._springScale.target === 0);
 
         // Cap delta time to prevent physics explosions during severe lag spikes
         let dt = elapsedMs / 1000;
@@ -1194,11 +1236,18 @@ export class UIManager {
         if (isClosing) {
           // Use a simple exponential decay for closing (faster, no bounce)
           let speed = 15.0;
-          this._springScale.value += (0 - this._springScale.value) * (1.0 - Math.exp(-speed * dt));
-          this._springPos.value += (0 - this._springPos.value) * (1.0 - Math.exp(-speed * dt));
+          if (this._swiftAnimation) {
+            this._swiftSpringScale.value += (0 - this._swiftSpringScale.value) * (1.0 - Math.exp(-speed * dt));
+            this._swiftSpringPos.value += (0 - this._swiftSpringPos.value) * (1.0 - Math.exp(-speed * dt));
+            s = this._swiftSpringScale.value;
+            p = this._swiftSpringPos.value;
+          } else {
+            this._springScale.value += (0 - this._springScale.value) * (1.0 - Math.exp(-speed * dt));
+            this._springPos.value += (0 - this._springPos.value) * (1.0 - Math.exp(-speed * dt));
 
-          s = this._springScale.value;
-          p = this._springPos.value;
+            s = this._springScale.value;
+            p = this._springPos.value;
+          }
 
           // Stop animation completely when it's virtually invisible
           if (s < 0.005) {
@@ -1207,12 +1256,18 @@ export class UIManager {
           }
         } else {
           // Use Hooke's law spring physics for opening (creates a nice bounce effect)
-          stopped = this._springScale.update(elapsedMs) && this._springPos.update(elapsedMs);
-          s = this._springScale.value;
-          p = this._springPos.value;
+          if (this._swiftAnimation) {
+            stopped = this._swiftSpringScale.update(elapsedMs) && this._swiftSpringPos.update(elapsedMs);
+            s = this._swiftSpringScale.value;
+            p = this._swiftSpringPos.value;
+          } else {
+            stopped = this._springScale.update(elapsedMs) && this._springPos.update(elapsedMs);
+            s = this._springScale.value;
+            p = this._springPos.value;
+          }
 
           // Magnet effect: Snap to exactly 1.0 when the bounce is almost settled.
-          if (Math.abs(1.0 - s) < 0.002 && Math.abs(this._springScale.velocity) < 0.03) {
+          if (Math.abs(1.0 - s) < 0.002 && Math.abs(this._swiftAnimation ? this._swiftSpringScale.velocity : this._springScale.velocity) < 0.03) {
             s = 1.0;
             p = 1.0;
             stopped = true;
@@ -1423,5 +1478,114 @@ class Spring {
 
     // Return true if the spring has virtually stopped moving and reached its destination
     return Math.abs(this.velocity) < 0.01 && Math.abs(this.value - this.target) < 0.001;
+  }
+}
+
+class SwiftSpring {
+  response: number;
+  dampingFraction: number;
+  mass: number;
+
+  value: number;
+  velocity: number;
+  target: number;
+
+  constructor(response: number, dampingFraction: number, mass: number = 1.0) {
+    // 徹底した型チェックとデフォルト値フォールバック
+    this.response = typeof response === 'number' && !isNaN(response) && response > 0.01 ? response : 0.4;
+    this.dampingFraction = typeof dampingFraction === 'number' && !isNaN(dampingFraction) && dampingFraction >= 0 ? dampingFraction : 0.7;
+    this.mass = typeof mass === 'number' && !isNaN(mass) && mass > 0.01 ? mass : 1.0;
+
+    this.value = 0;
+    this.velocity = 0;
+    this.target = 0;
+  }
+
+  updateParams(response: number, dampingFraction: number, mass: number = 1.0) {
+    if (typeof response === 'number' && !isNaN(response) && response > 0.01) this.response = response;
+    if (typeof dampingFraction === 'number' && !isNaN(dampingFraction) && dampingFraction >= 0) this.dampingFraction = dampingFraction;
+    if (typeof mass === 'number' && !isNaN(mass) && mass > 0.01) this.mass = mass;
+  }
+
+  update(elapsedMs: number): boolean {
+    let dt = elapsedMs / 1000;
+
+    if (isNaN(dt) || dt <= 0) return false;
+    if (dt > 0.1) dt = 0.1; // ラグ時のカクつき防止（最大100ms制限）
+
+    // 万が一、現在の状態がすでに NaN 等で壊れていた場合の緊急復帰
+    if (isNaN(this.value) || !isFinite(this.value) || isNaN(this.velocity) || !isFinite(this.velocity)) {
+      this.value = this.target;
+      this.velocity = 0;
+      return true;
+    }
+
+    const x0 = this.value - this.target;
+    const v0 = this.velocity;
+
+    // すでにターゲットに到達している場合は即座に終了
+    if (Math.abs(x0) < 0.001 && Math.abs(v0) < 0.001) {
+      this.value = this.target;
+      this.velocity = 0;
+      return true;
+    }
+
+    const omega0 = (2 * Math.PI) / this.response;
+    const zeta = this.dampingFraction;
+
+    let x_t = 0;
+    let v_t = 0;
+
+    // 数学的な解析解 (Analytical Solution) による1発計算
+    // ループによる近似ではないため、バネがどれだけ硬くても絶対に数値爆発（無限大化）しません
+    if (zeta < 0.999) {
+      // 1. 不足減衰 (Underdamped) - ふわっと跳ねる標準的な動き
+      const omegaD = omega0 * Math.sqrt(1.0 - zeta * zeta);
+      const alpha = zeta * omega0;
+      const exp = Math.exp(-alpha * dt);
+      const cos = Math.cos(omegaD * dt);
+      const sin = Math.sin(omegaD * dt);
+
+      x_t = exp * (x0 * cos + ((v0 + alpha * x0) / omegaD) * sin);
+      v_t = exp * (v0 * cos - ((alpha * v0 + omega0 * omega0 * x0) / omegaD) * sin);
+    } else if (zeta > 1.001) {
+      // 2. 過減衰 (Overdamped) - もっさり粘り気のある動き
+      const beta = omega0 * Math.sqrt(zeta * zeta - 1.0);
+      const gamma1 = -zeta * omega0 + beta;
+      const gamma2 = -zeta * omega0 - beta;
+      const exp1 = Math.exp(gamma1 * dt);
+      const exp2 = Math.exp(gamma2 * dt);
+
+      const c1 = (v0 - gamma2 * x0) / (gamma1 - gamma2);
+      const c2 = x0 - c1;
+
+      x_t = c1 * exp1 + c2 * exp2;
+      v_t = c1 * gamma1 * exp1 + c2 * gamma2 * exp2;
+    } else {
+      // 3. 臨界減衰 (Critically damped) - 最速でピッタリ止まる動き
+      const exp = Math.exp(-omega0 * dt);
+      x_t = exp * (x0 + (v0 + omega0 * x0) * dt);
+      v_t = exp * (v0 - omega0 * (v0 + omega0 * x0) * dt);
+    }
+
+    this.value = x_t + this.target;
+    this.velocity = v_t;
+
+    // 最終出力の安全確認（値を物理的な常識の範囲「-0.5 〜 2.5」に強制クランプ）
+    if (isNaN(this.value) || !isFinite(this.value)) {
+      this.value = this.target;
+      this.velocity = 0;
+      return true;
+    }
+    this.value = Math.max(-0.5, Math.min(2.5, this.value));
+
+    // 停止判定
+    if (Math.abs(this.value - this.target) < 0.001 && Math.abs(this.velocity) < 0.001) {
+      this.value = this.target;
+      this.velocity = 0;
+      return true;
+    }
+
+    return false;
   }
 }

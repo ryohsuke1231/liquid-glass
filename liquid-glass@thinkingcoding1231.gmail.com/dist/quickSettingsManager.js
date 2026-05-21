@@ -7,6 +7,7 @@ import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import { LiquidEffect } from './liquidEffect.js';
 import { StageContrastSampler, AdaptiveContrastConfig } from './contrastSampler.js';
+import { UnpickableClone } from './utils.js';
 // ========== Configuration Parameters ==========
 // Transparent padding outside the glass area. 
 // This prevents the shader distortion or rounded corners from being clipped by the actor bounds.
@@ -351,7 +352,7 @@ export class QuickSettingsManager {
             this.overviewCloneContainer = null;
             // 2. CREATION WITH LIFECYCLE TRACKING
             // Clone the desktop background and track its destruction
-            this.bgClone = new Clutter.Clone({ source: Main.layoutManager._backgroundGroup });
+            this.bgClone = new UnpickableClone({ source: Main.layoutManager._backgroundGroup });
             this.bgClone.connect('destroy', () => { this.bgClone = null; });
             this.fboContainer?.add_child(this.bgClone);
             // Create and track overview clone container
@@ -375,7 +376,7 @@ export class QuickSettingsManager {
                     continue;
                 }
                 // Clone the active window and place it at its exact screen coordinates
-                let clone = new Clutter.Clone({ source: w });
+                let clone = new UnpickableClone({ source: w });
                 let [parentX, parentY] = this.windowClonesContainer.get_transformed_position();
                 clone.set_position(w.x - parentX, w.y - parentY);
                 this.windowClonesContainer.add_child(clone);
@@ -686,7 +687,7 @@ export class QuickSettingsManager {
                         let clone;
                         if (!this._windowClones.has(w)) {
                             // Create a clone for newly opened windows.
-                            clone = new Clutter.Clone({ source: w });
+                            clone = new UnpickableClone({ source: w });
                             this.windowClonesContainer.add_child(clone);
                             this._windowClones.set(w, clone);
                         }
@@ -715,21 +716,21 @@ export class QuickSettingsManager {
                 if (controls) {
                     if (controls._workspacesDisplay) {
                         if (!this._overviewClone) {
-                            this._overviewClone = new Clutter.Clone({ source: controls._workspacesDisplay });
+                            this._overviewClone = new UnpickableClone({ source: controls._workspacesDisplay });
                             this.overviewCloneContainer?.add_child(this._overviewClone);
                         }
                         this._syncActorProperties(controls._workspacesDisplay, this._overviewClone);
                     }
                     if (controls._appDisplay) {
                         if (!this._appDisplayClone) {
-                            this._appDisplayClone = new Clutter.Clone({ source: controls._appDisplay });
+                            this._appDisplayClone = new UnpickableClone({ source: controls._appDisplay });
                             this.overviewCloneContainer?.add_child(this._appDisplayClone);
                         }
                         this._syncActorProperties(controls._appDisplay, this._appDisplayClone);
                     }
                     if (controls._searchController && controls._searchController.actor) {
                         if (!this._searchClone) {
-                            this._searchClone = new Clutter.Clone({ source: controls._searchController.actor });
+                            this._searchClone = new UnpickableClone({ source: controls._searchController.actor });
                             this.overviewCloneContainer?.add_child(this._searchClone);
                         }
                         this._syncActorProperties(controls._searchController.actor, this._searchClone);

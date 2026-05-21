@@ -8,6 +8,7 @@ import Meta from 'gi://Meta';
 import { LiquidEffect } from './liquidEffect.js';
 import { StageContrastSampler, AdaptiveContrastConfig } from './contrastSampler.js';
 import Gio from 'gi://Gio';
+import { UnpickableClone } from './utils.js';
 // ========== Configuration Parameters (Defaults, overridden by settings) ==========
 const SHADER_PADDING = 20;
 const HIDE_SAFETY_MARGIN = 7;
@@ -446,7 +447,7 @@ export class NotificationManager {
 
           let clone: Clutter.Clone | undefined;
           if (!this._windowClones.has(w)) {
-            clone = new Clutter.Clone({ source: w });
+            clone = new UnpickableClone({ source: w });
             this.windowClonesContainer.add_child(clone);
             this._windowClones.set(w, clone);
           } else {
@@ -464,21 +465,21 @@ export class NotificationManager {
         if (controls) {
           if (controls._workspacesDisplay) {
             if (!this._overviewClone) {
-              this._overviewClone = new Clutter.Clone({ source: controls._workspacesDisplay });
+              this._overviewClone = new UnpickableClone({ source: controls._workspacesDisplay });
               this.overviewCloneContainer?.add_child(this._overviewClone);
             }
             this._syncActorProperties(controls._workspacesDisplay, this._overviewClone);
           }
           if (controls._appDisplay) {
             if (!this._appDisplayClone) {
-              this._appDisplayClone = new Clutter.Clone({ source: controls._appDisplay });
+              this._appDisplayClone = new UnpickableClone({ source: controls._appDisplay });
               this.overviewCloneContainer?.add_child(this._appDisplayClone);
             }
             this._syncActorProperties(controls._appDisplay, this._appDisplayClone);
           }
           if (controls._searchController && controls._searchController.actor) {
             if (!this._searchClone) {
-              this._searchClone = new Clutter.Clone({ source: controls._searchController.actor });
+              this._searchClone = new UnpickableClone({ source: controls._searchController.actor });
               this.overviewCloneContainer?.add_child(this._searchClone);
             }
             this._syncActorProperties(controls._searchController.actor, this._searchClone);
@@ -502,7 +503,7 @@ export class NotificationManager {
     if (this.windowClonesContainer) { this.windowClonesContainer.destroy(); this.windowClonesContainer = null; }
     if (this.overviewCloneContainer) { this.overviewCloneContainer.destroy(); this.overviewCloneContainer = null; }
 
-    this.bgClone = new Clutter.Clone({ source: Main.layoutManager._backgroundGroup });
+    this.bgClone = new UnpickableClone({ source: Main.layoutManager._backgroundGroup });
     this.clipBox?.add_child(this.bgClone);
 
     this.overviewCloneContainer = new Clutter.Actor();
@@ -521,7 +522,7 @@ export class NotificationManager {
       let metaWindow = w.get_meta_window();
       if (!metaWindow || metaWindow.minimized || !w.visible) continue;
 
-      let clone = new Clutter.Clone({ source: w });
+      let clone = new UnpickableClone({ source: w });
       clone.set_position(w.x, w.y);
       this.windowClonesContainer.add_child(clone);
 

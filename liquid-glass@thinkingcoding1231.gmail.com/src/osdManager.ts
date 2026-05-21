@@ -8,6 +8,7 @@ import Meta from 'gi://Meta';
 import { LiquidEffect } from './liquidEffect.js';
 import { StageContrastSampler, AdaptiveContrastConfig } from './contrastSampler.js';
 import Gio from 'gi://Gio';
+import { UnpickableClone } from './utils.js';
 
 interface CustomBannerActor extends St.Widget {
   _colorTweenId?: number;
@@ -481,7 +482,7 @@ export class OsdManager {
 
           let clone: Clutter.Clone | undefined;
           if (!state._windowClones.has(w)) {
-            clone = new Clutter.Clone({ source: w });
+            clone = new UnpickableClone({ source: w });
             state.windowClonesContainer.add_child(clone);
             state._windowClones.set(w, clone);
           } else {
@@ -499,21 +500,21 @@ export class OsdManager {
         if (controls) {
           if (controls._workspacesDisplay) {
             if (!state._overviewClone) {
-              state._overviewClone = new Clutter.Clone({ source: controls._workspacesDisplay });
+              state._overviewClone = new UnpickableClone({ source: controls._workspacesDisplay });
               state.overviewCloneContainer?.add_child(state._overviewClone);
             }
             this._syncActorProperties(controls._workspacesDisplay, state._overviewClone);
           }
           if (controls._appDisplay) {
             if (!state._appDisplayClone) {
-              state._appDisplayClone = new Clutter.Clone({ source: controls._appDisplay });
+              state._appDisplayClone = new UnpickableClone({ source: controls._appDisplay });
               state.overviewCloneContainer?.add_child(state._appDisplayClone);
             }
             this._syncActorProperties(controls._appDisplay, state._appDisplayClone);
           }
           if (controls._searchController && controls._searchController.actor) {
             if (!state._searchClone) {
-              state._searchClone = new Clutter.Clone({ source: controls._searchController.actor });
+              state._searchClone = new UnpickableClone({ source: controls._searchController.actor });
               state.overviewCloneContainer?.add_child(state._searchClone);
             }
             this._syncActorProperties(controls._searchController.actor, state._searchClone);
@@ -537,7 +538,7 @@ export class OsdManager {
     if (state.windowClonesContainer) { state.windowClonesContainer.destroy(); state.windowClonesContainer = null; }
     if (state.overviewCloneContainer) { state.overviewCloneContainer.destroy(); state.overviewCloneContainer = null; }
 
-    state.bgClone = new Clutter.Clone({ source: Main.layoutManager._backgroundGroup });
+    state.bgClone = new UnpickableClone({ source: Main.layoutManager._backgroundGroup });
     state.clipBox.add_child(state.bgClone);
 
     state.overviewCloneContainer = new Clutter.Actor();
@@ -556,7 +557,7 @@ export class OsdManager {
       let metaWindow = w.get_meta_window();
       if (!metaWindow || metaWindow.minimized || !w.visible) continue;
 
-      let clone = new Clutter.Clone({ source: w });
+      let clone = new UnpickableClone({ source: w });
       clone.set_position(w.x, w.y);
       state.windowClonesContainer.add_child(clone);
 
