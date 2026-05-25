@@ -5,6 +5,7 @@ import { DashManager } from './dist/dockManager.js';
 import { NotificationManager } from './dist/notificationManager.js';
 import { QuickSettingsManager } from './dist/quickSettingsManager.js';
 import { OsdManager } from './dist/osdManager.js';
+import { ApplicationManager } from './dist/applicationManager.js';
 import GLib from 'gi://GLib';
 
 export default class LiquidGlassExtension extends Extension {

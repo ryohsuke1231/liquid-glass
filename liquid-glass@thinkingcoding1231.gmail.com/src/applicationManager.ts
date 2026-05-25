@@ -5,7 +5,6 @@ import St from 'gi://St';
 import Meta from 'gi://Meta';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { LiquidEffect } from './liquidEffect.js';
-import { StageContrastSampler, AdaptiveContrastConfig } from './contrastSampler.js';
 import Gio from 'gi://Gio';
 import { UnpickableClone } from './utils.js';
 
@@ -21,16 +20,16 @@ interface WindowState {
     clones: Map<Meta.WindowActor, Clutter.Actor>;
 }
 
-export class WindowGlassManager {
-	private extensionPath: string		
-	private _states: Map<Meta.WindowActor, WindowState>;
-	private _settings: Gio.Settings
-	private _frameSyncId: number
-	private _windowCreatedId: number
+export class ApplicationManager {
+    private extensionPath: string;
+    private _states: Map<Meta.WindowActor, WindowState>;
+    private _settings: Gio.Settings;
+    private _frameSyncId: number;
+    private _windowCreatedId: number;
 
     constructor(extensionPath: string, settings: Gio.Settings) {
-    	this.extensionPath = extensionPath;
-    	this._settings = settings;
+        this.extensionPath = extensionPath;
+        this._settings = settings;
         this._states = new Map();
         this._frameSyncId = 0;
         this._windowCreatedId = 0;
@@ -40,9 +39,9 @@ export class WindowGlassManager {
         this._buildForExistingWindows();
 
         this._windowCreatedId = global.display.connect('window-created', (_d, metaWindow) => {
-            let actor = metaWindow.get_compositor_private();
-            if (actor)
-                this._setupWindow(actor);
+            const obj = metaWindow.get_compositor_private();
+            if (!(obj instanceof Meta.WindowActor)) return;
+            this._setupWindow(obj);
         });
 
         this._frameTick();
@@ -74,48 +73,70 @@ export class WindowGlassManager {
         if (!windowActor || this._states.has(windowActor))
             return;
 
+		let surfaceActor = windowActor.get_first_child();
+		if (!surfaceActor) {
+			console.log('[LiquidGlass] surface actor doesn\'t exist');
+			return;
+		}
+		
         let parent = windowActor.get_parent();
         if (!parent)
             return;
 
-        // Background glass actor
+        // Defer until actor has valid dimensions
+        if (windowActor.width <= 0 || windowActor.height <= 0) {
+            let id = windowActor.connect('notify::allocation', () => {
+                if (windowActor.width > 0 && windowActor.height > 0) {
+                    windowActor.disconnect(id);
+                    this._setupWindow(windowActor);
+                }
+            });
+            return;
+        }
+
         let bgActor = new St.Widget({
             reactive: false,
             clip_to_allocation: false,
+            visible: false, // hidden until first valid sync
         });
 
         let clipBox = new St.Widget({
             clip_to_allocation: true,
             reactive: false,
         });
-
         bgActor.add_child(clipBox);
 
-        // Blur
         let blurEffect = new Shell.BlurEffect({
             radius: 30,
             mode: Shell.BlurMode.ACTOR,
         });
         clipBox.add_effect(blurEffect);
 
-        // Wallpaper clone
+        // Size the clone to cover the full screen so the wallpaper fills correctly
+        let monitor = Main.layoutManager.primaryMonitor;
         let bgClone = new UnpickableClone({
             source: Main.layoutManager._backgroundGroup,
         });
+		if (monitor) {
+        	bgClone.set_size(monitor.width, monitor.height);
+		}
         clipBox.add_child(bgClone);
 
-    	let effect = new LiquidEffect({ extensionPath: this.extensionPath, settints: this._settings } as any);
-    	effect.setPadding(SHADER_PADDING);
-    	effect.setIsDock(false)
-    	bgActor.add_effect(effect);
+        let effect = new LiquidEffect({
+            extensionPath: this.extensionPath,
+            settings: this._settings,
+        } as any);
+        effect.setPadding(SHADER_PADDING);
+        effect.setIsDock(false);
+        bgActor.add_effect(effect);
 
-        // Window clones (other windows)
         let windowsContainer = new Clutter.Actor();
         clipBox.add_child(windowsContainer);
 
-        parent.insert_child_below(bgActor, windowActor);
+		// Insert bgActor below the surface, inside windowActor
+		windowActor.insert_child_below(bgActor, surfaceActor);
 
-        let state = {
+        let state: WindowState = {
             windowActor,
             bgActor,
             clipBox,
@@ -124,6 +145,12 @@ export class WindowGlassManager {
             windowsContainer,
             clones: new Map(),
         };
+
+		console.log('[LiquidGlass] bgActor parent:', state.bgActor.get_parent()?.toString());
+		console.log('[LiquidGlass] bgActor z index:', windowActor.get_child_at_index(0) === state.bgActor);
+		console.log('[LiquidGlass] clipBox children:', state.clipBox.get_n_children());
+		console.log('[LiquidGlass] bgClone source:', state.bgClone.source?.toString());
+		console.log('[LiquidGlass] windowsContainer added:', state.windowsContainer.get_parent()?.toString());
 
         this._states.set(windowActor, state);
         this._rebuildWindowClones(state);
@@ -134,7 +161,7 @@ export class WindowGlassManager {
         });
     }
 
-    _rebuildWindowClones(state) {
+    _rebuildWindowClones(state: WindowState) {
         state.clones.forEach(clone => clone.destroy());
         state.clones.clear();
         state.windowsContainer.remove_all_children();
@@ -149,24 +176,32 @@ export class WindowGlassManager {
         }
     }
 
-    _syncState(state) {
-        let actor = state.windowActor;
-        if (!actor)
-            return;
+    _syncState(state: WindowState) {
+		let actor = state.windowActor;
+    	if (!actor || !actor.get_stage())
+    	    return;
 
-        let [x, y] = actor.get_transformed_position();
-        let [w, h] = actor.get_size();
+    	const rect = actor.get_meta_window()?.get_frame_rect();
+    	if (!rect) {
+    	    console.log('[LiquidGlass] no rect for', actor.get_meta_window()?.get_title());
+    	    return;
+    	}
 
-        if (w <= 0 || h <= 0)
-            return;
+    	const { x, y, width: w, height: h } = rect;
 
-        state.bgActor.set_position(x, y);
-        state.bgActor.set_size(w, h);
+    	if (w <= 0 || h <= 0) {
+    	    console.log('[LiquidGlass] zero size, hiding');
+    	    state.bgActor.visible = false;
+    	    return;
+    	}
 
-        state.clipBox.set_position(0, 0);
-        state.clipBox.set_size(w, h);
+		state.bgActor.set_position(0, 0);
+		state.bgActor.set_size(w, h);
+		
+		state.clipBox.set_position(0, 0);
+		state.clipBox.set_size(w, h);
 
-        // Shift clones so the clipped region lines up with screen coords
+        // Offset so the clipped region lines up with screen coords
         state.bgClone.set_position(-x, -y);
         state.windowsContainer.set_position(-x, -y);
 
@@ -175,19 +210,24 @@ export class WindowGlassManager {
                 clone.hide();
                 continue;
             }
-
             clone.show();
             clone.set_position(src.x, src.y);
             clone.set_size(src.width, src.height);
         }
-
-        state.bgActor.visible = actor.visible;
-        state.bgActor.opacity = actor.opacity;
+		console.log('[LiquidGlass] bgActor size:', state.bgActor.get_width(), state.bgActor.get_height());
+		console.log('[LiquidGlass] bgActor pos:', state.bgActor.get_x(), state.bgActor.get_y());
+		console.log('[LiquidGlass] clipBox size:', state.clipBox.get_width(), state.clipBox.get_height());
+		console.log('[LiquidGlass] bgClone pos:', state.bgClone.get_x(), state.bgClone.get_y());
+		console.log('[LiquidGlass] bgClone size:', state.bgClone.get_width(), state.bgClone.get_height());
+		console.log('[LiquidGlass] surfaceActor:', actor.get_first_child()?.toString());
     }
 
     _frameTick() {
-        for (let state of this._states.values())
-            this._syncState(state);
+        for (let state of this._states.values()) {
+            try {
+                this._syncState(state);
+            } catch (_e) {}
+        }
 
         this._frameSyncId = global.compositor.get_laters().add(
             Meta.LaterType.BEFORE_REDRAW,
@@ -198,9 +238,8 @@ export class WindowGlassManager {
         );
     }
 
-    _cleanupState(state) {
-        if (!state)
-            return;
+    _cleanupState(state: WindowState) {
+        if (!state) return;
 
         state.clones.forEach(clone => clone.destroy());
         state.clones.clear();
