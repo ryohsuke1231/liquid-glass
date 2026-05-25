@@ -21,12 +21,10 @@ export const UnpickableActor = GObject.registerClass({
         // No-op: 子要素も含めてヒットテストをスルーする
     }
 });
-/**
- * A simple shader effect to provide rounded corners for any actor.
- */
-export const RoundingEffect = GObject.registerClass({
-    GTypeName: 'LiquidGlassRoundingEffect',
-}, class RoundingEffect extends Clutter.ShaderEffect {
+//Inverse rounded corners by overlaying the window corners with background actors
+export const InverseCornerEffect = GObject.registerClass({
+    GTypeName: 'LiquidGlassInverseCornerEffect',
+}, class InverseCornerEffect extends Clutter.ShaderEffect {
     _radius = 0;
     setRadius(radius) {
         this._radius = radius;
@@ -51,7 +49,11 @@ export const RoundingEffect = GObject.registerClass({
                     vec2 b = resolution * 0.5;
                     
                     float d = sdRoundRect(p, b, radius);
-                    float alpha = smoothstep(0.5, -0.5, d);
+                    
+                    // INVERTED LOGIC: 
+                    // alpha is 1.0 (visible) when OUTSIDE the rounded rect (d > 0)
+                    // alpha is 0.0 (transparent) when INSIDE the rounded rect (d < 0)
+                    float alpha = smoothstep(-0.5, 0.5, d);
                     
                     cogl_color_out = texture2D(cogl_sampler, st) * alpha * cogl_color_in;
                 }

@@ -6,7 +6,7 @@ import Meta from 'gi://Meta';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { LiquidEffect } from './liquidEffect.js';
 import GLib from 'gi://GLib';
-import { UnpickableClone, RoundingEffect } from './utils.js';
+import { UnpickableClone, InverseCornerEffect } from './utils.js';
 const SHADER_PADDING = 20;
 export class ApplicationManager {
     extensionPath;
@@ -78,20 +78,19 @@ export class ApplicationManager {
             this._setupWindow(actor);
     }
     _setupWindow(windowActor) {
-        if (!windowActor || this._states.has(windowActor))
+        if (!windowActor || !(windowActor instanceof Meta.WindowActor) || this._states.has(windowActor))
             return;
         let surfaceActor = windowActor.get_first_child();
         if (!surfaceActor) {
-            console.log('[LiquidGlass] surface actor doesn\'t exist');
             return;
         }
         let parent = windowActor.get_parent();
         if (!parent)
             return;
-        // Defer until actor has valid dimensions
-        if (windowActor.width <= 0 || windowActor.height <= 0) {
+        // Defer until actor has valid dimensions and allocation
+        if (windowActor.width <= 0 || windowActor.height <= 0 || !windowActor.has_allocation()) {
             let id = windowActor.connect('notify::allocation', () => {
-                if (windowActor.width > 0 && windowActor.height > 0) {
+                if (windowActor.width > 0 && windowActor.height > 0 && windowActor.has_allocation()) {
                     windowActor.disconnect(id);
                     this._setupWindow(windowActor);
                 }
@@ -159,11 +158,11 @@ export class ApplicationManager {
         bgActor.add_effect(effect);
         let windowsContainer = new Clutter.Actor();
         clipBox.add_child(windowsContainer);
-        // --- Added: Rounding effect for the window surface itself ---
-        let roundingEffect = new RoundingEffect();
+        let cornerOverlay = new UnpickableClone({ source: baseActor });
+        let roundingEffect = new InverseCornerEffect();
         roundingEffect.setRadius(cornerRadius);
-        surfaceActor.add_effect(roundingEffect);
-        // -------------------------------------------------------------
+        cornerOverlay.add_effect(roundingEffect);
+        parent.insert_child_above(cornerOverlay, windowActor);
         let state = {
             windowActor,
             bgActor,
@@ -178,11 +177,17 @@ export class ApplicationManager {
             baseWindowsContainer,
             baseClones: new Map(),
             roundingEffect,
+            cornerOverlay
         };
         this._states.set(windowActor, state);
         this._rebuildWindowClones(state);
-        // Initial sync to prevent uninitialized black frames
-        this._syncState(state);
+        // Use a later to ensure the initial sync happens after actors are properly added to stage
+        global.compositor.get_laters().add(Meta.LaterType.IDLE, () => {
+            if (this._states.has(windowActor)) {
+                this._syncState(state);
+            }
+            return false;
+        });
         windowActor.connect('destroy', () => {
             this._cleanupState(state);
             this._states.delete(windowActor);
@@ -210,6 +215,8 @@ export class ApplicationManager {
             // This ensures we ONLY render what is actually BEHIND the app.
             if (actor === state.windowActor)
                 break;
+            if (!(actor instanceof Meta.WindowActor))
+                continue;
             let clone = new UnpickableClone({ source: actor });
             state.windowsContainer.add_child(clone);
             state.clones.set(actor, clone);
@@ -218,6 +225,26 @@ export class ApplicationManager {
             state.baseClones.set(actor, baseClone);
         }
     }
+    _syncCornerOverlay(state) {
+        let actor = state.windowActor;
+        if (!actor || !actor.mapped || !state.cornerOverlay) {
+            if (state.cornerOverlay && state.cornerOverlay.visible) {
+                state.cornerOverlay.hide();
+            }
+            return;
+        }
+        const metaWin = actor.get_meta_window();
+        if (!metaWin)
+            return;
+        const rect = metaWin.get_frame_rect();
+        if (!rect || rect.width <= 0 || rect.height <= 0)
+            return;
+        if (!state.cornerOverlay.visible) {
+            state.cornerOverlay.show();
+        }
+        state.cornerOverlay.set_position(rect.x, rect.y);
+        state.cornerOverlay.set_size(rect.width, rect.height);
+    }
     _syncState(state) {
         let actor = state.windowActor;
         if (!actor || !actor.get_stage() || !actor.mapped || !actor.has_allocation()) {
@@ -225,12 +252,14 @@ export class ApplicationManager {
                 state.bgActor.visible = false;
             if (state.baseActor.visible)
                 state.baseActor.visible = false;
+            if (state.cornerOverlay.visible)
+                state.cornerOverlay.visible = false;
             return;
         }
         const metaWin = actor.get_meta_window();
         if (!metaWin)
             return;
-        // CRITICAL PERFORMANCE: Only sync windows on the current active workspace.
+        // PERFORMANCE: Only sync windows on the current active workspace.
         const workspaceManager = global.workspace_manager;
         const activeWorkspace = workspaceManager.get_active_workspace();
         const winWorkspace = metaWin.get_workspace();
@@ -239,6 +268,8 @@ export class ApplicationManager {
                 state.bgActor.visible = false;
             if (state.baseActor.visible)
                 state.baseActor.visible = false;
+            if (state.cornerOverlay.visible)
+                state.cornerOverlay.visible = false;
             return;
         }
         const rect = metaWin.get_frame_rect();
@@ -248,6 +279,8 @@ export class ApplicationManager {
                 state.bgActor.visible = false;
             if (state.baseActor.visible)
                 state.baseActor.visible = false;
+            if (state.cornerOverlay.visible)
+                state.cornerOverlay.visible = false;
             return;
         }
         if (!state.bgActor.visible)
@@ -273,18 +306,19 @@ export class ApplicationManager {
         if (state.effect) {
             state.effect.setResolution(bgW, bgH);
         }
-        // Offset the background content so it stays fixed to screen coordinates.
-        let [absX, absY] = state.bgActor.get_transformed_position();
+        // Use absolute screen coordinates for wallpaper fix
+        const absX = rect.x - SHADER_PADDING;
+        const absY = rect.y - SHADER_PADDING;
         // Offset for the clipped (blurred) content
-        state.bgClone.set_position(-absX + SHADER_PADDING, -absY + SHADER_PADDING);
-        state.windowsContainer.set_position(-absX + SHADER_PADDING, -absY + SHADER_PADDING);
+        state.bgClone.set_position(-absX, -absY);
+        state.windowsContainer.set_position(-absX, -absY);
         // Offset for the base (unblurred) content
         // baseActor is at rect.x, rect.y in screen space
         state.baseClone.set_position(-rect.x, -rect.y);
         state.baseWindowsContainer.set_position(-rect.x, -rect.y);
         // Sync blurred clones
         for (let [src, clone] of state.clones.entries()) {
-            if (!src || !src.visible || !src.mapped) {
+            if (!src || !src.visible || !src.mapped || !src.has_allocation()) {
                 if (clone.visible)
                     clone.hide();
                 continue;
@@ -298,7 +332,7 @@ export class ApplicationManager {
         }
         // Sync base clones (unblurred)
         for (let [src, clone] of state.baseClones.entries()) {
-            if (!src || !src.visible || !src.mapped) {
+            if (!src || !src.visible || !src.mapped || !src.has_allocation()) {
                 if (clone.visible)
                     clone.hide();
                 continue;
@@ -310,6 +344,7 @@ export class ApplicationManager {
             clone.set_scale(src.scale_x, src.scale_y);
             clone.opacity = src.opacity;
         }
+        this._syncCornerOverlay(state);
     }
     _frameTick() {
         for (let state of this._states.values()) {
@@ -334,10 +369,10 @@ export class ApplicationManager {
             state.bgActor.destroy();
         if (state.baseActor)
             state.baseActor.destroy();
+        if (state.cornerOverlay)
+            state.cornerOverlay.destroy();
         if (state.roundingEffect) {
-            let child = state.windowActor.get_first_child();
-            if (child)
-                child.remove_effect(state.roundingEffect);
+            // No need to manually remove from cornerOverlay as it's destroyed
         }
     }
 }
