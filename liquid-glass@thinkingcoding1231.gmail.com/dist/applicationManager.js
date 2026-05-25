@@ -8,6 +8,7 @@ import { LiquidEffect } from './liquidEffect.js';
 import GLib from 'gi://GLib';
 import { UnpickableClone, InverseCornerEffect } from './utils.js';
 const SHADER_PADDING = 20;
+const CORNER_PADDING = 1;
 export class ApplicationManager {
     extensionPath;
     _states;
@@ -124,7 +125,6 @@ export class ApplicationManager {
         clipBox.add_effect(blurEffect);
         // Size the clone to cover the full screen so the wallpaper fills correctly
         let monitor = Main.layoutManager.primaryMonitor;
-        // --- Added: Unblurred base background for corners ---
         let baseClone = new UnpickableClone({
             source: Main.layoutManager._backgroundGroup,
         });
@@ -134,7 +134,6 @@ export class ApplicationManager {
         baseActor.add_child(baseClone);
         let baseWindowsContainer = new Clutter.Actor();
         baseActor.add_child(baseWindowsContainer);
-        // ---------------------------------------------------
         let bgClone = new UnpickableClone({
             source: Main.layoutManager._backgroundGroup,
         });
@@ -186,6 +185,12 @@ export class ApplicationManager {
         state.signals.push({
             obj: windowActor,
             id: windowActor.connect('notify::allocation', () => this._syncState(state))
+        });
+        state.signals.push({
+            obj: global,
+            id: global.display.connect('restacked', () => {
+                this._syncCornerOverlay(state);
+            })
         });
         const metaWin = windowActor.get_meta_window();
         if (metaWin) {
@@ -258,18 +263,22 @@ export class ApplicationManager {
         if (!state.cornerOverlay.visible) {
             state.cornerOverlay.show();
         }
-        state.cornerOverlay.set_position(rect.x, rect.y);
-        state.cornerOverlay.set_size(rect.width, rect.height);
+        state.cornerOverlay.set_position(rect.x - CORNER_PADDING, rect.y - CORNER_PADDING);
+        state.cornerOverlay.set_size(rect.width + (CORNER_PADDING * 2), rect.height + (CORNER_PADDING * 2));
+        const parent = state.cornerOverlay.get_parent();
+        if (parent) {
+            parent.set_child_above_sibling(state.cornerOverlay, state.windowActor);
+        }
     }
     _syncState(state) {
         let actor = state.windowActor;
-        if (!actor || !actor.get_stage() || !actor.mapped || !actor.has_allocation()) {
-            if (state.bgActor.visible)
-                state.bgActor.visible = false;
-            if (state.baseActor.visible)
-                state.baseActor.visible = false;
-            if (state.cornerOverlay.visible)
-                state.cornerOverlay.visible = false;
+        if (!actor || !actor.get_stage() || !actor.mapped) {
+            state.bgActor.visible = false;
+            state.baseActor.visible = false;
+            state.cornerOverlay.visible = false;
+            return;
+        }
+        if (!actor.has_allocation()) {
             return;
         }
         const metaWin = actor.get_meta_window();
@@ -307,8 +316,8 @@ export class ApplicationManager {
         const frameLocalX = rect.x - bufferRect.x;
         const frameLocalY = rect.y - bufferRect.y;
         // Base background (unblurred) matches the window size exactly.
-        state.baseActor.set_position(frameLocalX, frameLocalY);
-        state.baseActor.set_size(rect.width, rect.height);
+        state.baseActor.set_position(frameLocalX - CORNER_PADDING, frameLocalY - CORNER_PADDING);
+        state.baseActor.set_size(rect.width + (CORNER_PADDING * 2), rect.height + (CORNER_PADDING * 2));
         // Glass background (blurred) expanded by padding.
         const bgW = rect.width + (SHADER_PADDING * 2);
         const bgH = rect.height + (SHADER_PADDING * 2);
