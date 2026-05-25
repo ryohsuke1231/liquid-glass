@@ -36,7 +36,7 @@ export class WindowGlassManager {
         this._windowCreatedId = 0;
     }
 
-    enable() {
+    setup() {
         this._buildForExistingWindows();
 
         this._windowCreatedId = global.display.connect('window-created', (_d, metaWindow) => {
@@ -48,7 +48,7 @@ export class WindowGlassManager {
         this._frameTick();
     }
 
-    disable() {
+    cleanup() {
         if (this._windowCreatedId) {
             global.display.disconnect(this._windowCreatedId);
             this._windowCreatedId = 0;

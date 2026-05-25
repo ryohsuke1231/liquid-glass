@@ -20,7 +20,7 @@ export class WindowGlassManager {
         this._frameSyncId = 0;
         this._windowCreatedId = 0;
     }
-    enable() {
+    setup() {
         this._buildForExistingWindows();
         this._windowCreatedId = global.display.connect('window-created', (_d, metaWindow) => {
             let actor = metaWindow.get_compositor_private();
@@ -29,7 +29,7 @@ export class WindowGlassManager {
         });
         this._frameTick();
     }
-    disable() {
+    cleanup() {
         if (this._windowCreatedId) {
             global.display.disconnect(this._windowCreatedId);
             this._windowCreatedId = 0;

@@ -26,6 +26,10 @@ export default class LiquidGlassExtension extends Extension {
     this._osdManager = new OsdManager(this.dir.get_path(), this._settings);
     this._osdManager.setup();
 
+    // Initialize Application Manager to apply effects on transparent applications 
+    this._applicationManager = new ApplicationManager(this.dir.get_path(), this._settings);
+    this._applicationManager.setup();
+
     this._quickSettingsTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 1500, () => {
       this._quickSettingsManager = new QuickSettingsManager(this.dir.get_path(), this._settings);
       this._quickSettingsManager.setup();
@@ -172,6 +176,11 @@ export default class LiquidGlassExtension extends Extension {
     if (this._osdManager) {
       this._osdManager.cleanup();
       this._osdManager = null;
+    }
+
+    if (this._applicationManager) {
+      this._applicationManager.cleanup();
+      this._applicationManager = null;
     }
   }
 }
