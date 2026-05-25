@@ -8,7 +8,7 @@ import Meta from 'gi://Meta';
 import Gio from 'gi://Gio';
 import { LiquidEffect } from './liquidEffect.js';
 import { StageContrastSampler, AdaptiveContrastConfig } from './contrastSampler.js';
-import { UnpickableClone, UnpickableActor } from './utils.js';
+import { UnpickableClone, UnpickableActor, UILayerSampler } from './utils.js';
 
 // ========== Configuration Parameters ==========
 
@@ -93,6 +93,7 @@ export class UIManager {
   private _cornerRadius: number = 0;
 
   private _animationInterval: number = 16;
+  private _uiSampler: UILayerSampler | null = null;
 
   constructor(extensionPath: string, settings: Gio.Settings) {
     this.extensionPath = extensionPath;
@@ -424,7 +425,7 @@ export class UIManager {
 
     // bgActor scales from the top-left (0.0, 0.0) because we manually sync its exact coordinates
     this.bgActor.set_pivot_point(0.0, 0.0);
-
+    /*
     // Insert the custom background *underneath* the actual menu UI
     let menuParent = this.menu.actor.get_parent();
     if (menuParent) {
@@ -433,6 +434,21 @@ export class UIManager {
       // Fallback: If it has no parent yet, add it directly to the UI group
       Main.layoutManager.uiGroup.add_child(this.bgActor);
     }
+    */
+    let menuRoot: Clutter.Actor = this.menu.actor;
+    while (menuRoot.get_parent() && menuRoot.get_parent() !== Main.layoutManager.uiGroup) {
+      const p = menuRoot.get_parent();
+      if (!p) break;
+      menuRoot = p;
+    }
+
+    // bgActor を uiGroup の直接の子として挿入（再帰クローンを完全に防ぐ）
+    if (menuRoot.get_parent() === Main.layoutManager.uiGroup) {
+      Main.layoutManager.uiGroup.insert_child_below(this.bgActor, menuRoot);
+    } else {
+      Main.layoutManager.uiGroup.add_child(this.bgActor);
+    }
+    this._uiSampler = new UILayerSampler(this.bgActor, this.fboContainer, [menuRoot]);
 
     let blurRadius = this._settings.get_int('menu-blur-radius');
     let tintColorStr = this._settings.get_string('menu-tint-color');
@@ -507,11 +523,15 @@ export class UIManager {
       this.overviewCloneContainer.connect('destroy', () => { this.overviewCloneContainer = null; });
       this.fboContainer?.add_child(this.overviewCloneContainer);
 
+
       // Create a container for the window clones
       // this.windowClonesContainer = new Clutter.Actor();
       this.windowClonesContainer = new UnpickableActor();
       this.windowClonesContainer.connect('destroy', () => { this.windowClonesContainer = null; });
       this.fboContainer?.add_child(this.windowClonesContainer);
+
+      this._uiSampler?.rebindSelf();
+      this._uiSampler?.refresh();
 
       this._windowClones.clear();
       this._overviewClone = null;
@@ -837,6 +857,8 @@ export class UIManager {
         if (this._searchClone) { this._searchClone.destroy(); this._searchClone = null; }
 
         this.bgClone.show();
+        this._uiSampler?.refresh();
+        this._uiSampler?.sync();
 
 
         for (let w of windows) {
@@ -877,6 +899,9 @@ export class UIManager {
       } else {
         // --- Overview時 ---
         this.bgClone.show();
+        this._uiSampler?.refresh();
+        this._uiSampler?.sync();
+
         let controls = Main.overview._overview?._controls;
 
         if (controls) {
@@ -1429,6 +1454,9 @@ export class UIManager {
     this.windowClonesContainer = null;
 
     this._windowClones.clear();
+
+    this._uiSampler?.destroy();
+    this._uiSampler = null;
 
     this._stableBaseW = undefined;
     this._stableBaseH = undefined;

@@ -6,7 +6,7 @@ import St from 'gi://St';
 import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import { LiquidEffect } from './liquidEffect.js';
-import { UnpickableClone } from './utils.js';
+import { UnpickableClone, UILayerSampler } from './utils.js';
 // Padding to allow the shader to draw effects (like refraction and blur) outside the actor's strict bounds.
 const SHADER_PADDING = 20;
 // Utility: Convert HEX color string (e.g., "#ffffff") to normalized RGB array [1.0, 1.0, 1.0]
@@ -57,6 +57,7 @@ export class DashManager {
     _lastBaseH;
     _outputLogs = false;
     _marginValue = 0;
+    _uiSampler = null;
     // コンストラクタに settings を追加
     constructor(extensionPath, targetActor, settings) {
         this.extensionPath = extensionPath;
@@ -217,6 +218,7 @@ export class DashManager {
         else {
             Main.layoutManager.uiGroup.add_child(this.bgActor);
         }
+        this._uiSampler = new UILayerSampler(this.bgActor, this.clipBox, [dockRoot]);
         // 設定から初期値を読み込み
         let blurRadius = this._settings.get_int('dock-blur-radius');
         let tintColorStr = this._settings.get_string('dock-tint-color');
@@ -253,6 +255,8 @@ export class DashManager {
             this.clipBox?.add_child(this.windowClonesContainer);
             this.overviewCloneContainer = new Clutter.Actor();
             this.clipBox?.add_child(this.overviewCloneContainer);
+            this._uiSampler?.rebindSelf();
+            this._uiSampler?.refresh();
             this._windowClones.clear();
             this._overviewClone = null;
             let windows = global.get_window_actors();
@@ -478,8 +482,6 @@ export class DashManager {
                     isMoving = true;
                 }
             }
-            // Override isMoving to false
-            isMoving = false;
             this._lastAbsX = absX;
             this._lastAbsY = absY;
             let [tW, tH] = this.targetActor.get_size();
@@ -656,6 +658,8 @@ export class DashManager {
                     this._searchClone = null;
                 }
                 this.bgClone.show(); // 通常の壁紙クローンを表示
+                this._uiSampler?.refresh();
+                this._uiSampler?.sync();
                 // 既存のウィンドウクローン同期ロジック
                 for (let w of windows) {
                     let metaWindow = w.get_meta_window();
@@ -688,6 +692,8 @@ export class DashManager {
                 // ワークスペースプレビュー自体に壁紙が含まれるため、通常の壁紙クローンは隠す
                 // this.bgClone.hide();
                 this.bgClone.show();
+                this._uiSampler?.refresh();
+                this._uiSampler?.sync();
                 // Dockを含まない、ワークスペース（背景＋プレビュー）だけのActorをピンポイント取得
                 // ※ GNOME 40以降で安全にアクセスできるよう Optional Chaining (?.) を使用
                 // Overview内の主要UIを管理しているcontrolsを取得

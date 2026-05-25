@@ -7,7 +7,7 @@ import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import { LiquidEffect } from './liquidEffect.js';
 import Gio from 'gi://Gio';
-import { UnpickableClone } from './utils.js';
+import { UnpickableClone, UILayerSampler } from './utils.js';
 
 // Padding to allow the shader to draw effects (like refraction and blur) outside the actor's strict bounds.
 const SHADER_PADDING = 20;
@@ -71,6 +71,8 @@ export class DashManager {
   private _outputLogs: boolean = false;
 
   private _marginValue: number = 0;
+
+  private _uiSampler: UILayerSampler | null = null;
 
   // コンストラクタに settings を追加
   constructor(extensionPath: string, targetActor: St.Widget, settings: Gio.Settings) {
@@ -256,6 +258,8 @@ export class DashManager {
       Main.layoutManager.uiGroup.add_child(this.bgActor);
     }
 
+    this._uiSampler = new UILayerSampler(this.bgActor, this.clipBox, [dockRoot]);
+
     // 設定から初期値を読み込み
     let blurRadius = this._settings.get_int('dock-blur-radius');
     let tintColorStr = this._settings.get_string('dock-tint-color');
@@ -296,6 +300,9 @@ export class DashManager {
 
       this.overviewCloneContainer = new Clutter.Actor();
       this.clipBox?.add_child(this.overviewCloneContainer);
+
+      this._uiSampler?.rebindSelf();
+      this._uiSampler?.refresh();
 
       this._windowClones.clear();
       this._overviewClone = null;
@@ -529,9 +536,6 @@ export class DashManager {
           isMoving = true;
         }
       }
-
-      // Override isMoving to false
-      isMoving = false;
       this._lastAbsX = absX;
       this._lastAbsY = absY;
 
@@ -705,6 +709,9 @@ export class DashManager {
 
         this.bgClone.show(); // 通常の壁紙クローンを表示
 
+        this._uiSampler?.refresh();
+        this._uiSampler?.sync();
+
         // 既存のウィンドウクローン同期ロジック
         for (let w of windows) {
           let metaWindow = w.get_meta_window();
@@ -740,6 +747,9 @@ export class DashManager {
         // ワークスペースプレビュー自体に壁紙が含まれるため、通常の壁紙クローンは隠す
         // this.bgClone.hide();
         this.bgClone.show();
+
+        this._uiSampler?.refresh();
+        this._uiSampler?.sync();
 
         // Dockを含まない、ワークスペース（背景＋プレビュー）だけのActorをピンポイント取得
         // ※ GNOME 40以降で安全にアクセスできるよう Optional Chaining (?.) を使用

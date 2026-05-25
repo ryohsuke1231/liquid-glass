@@ -8,7 +8,7 @@ import Meta from 'gi://Meta';
 import Gio from 'gi://Gio';
 import { LiquidEffect } from './liquidEffect.js';
 import { StageContrastSampler, AdaptiveContrastConfig } from './contrastSampler.js';
-import { UnpickableClone, UnpickableActor } from './utils.js';
+import { UnpickableClone, UnpickableActor, UILayerSampler } from './utils.js';
 // ========== Configuration Parameters ==========
 // Transparent padding outside the glass area. 
 // This prevents the shader distortion or rounded corners from being clipped by the actor bounds.
@@ -75,6 +75,7 @@ export class UIManager {
     _dynamicCssFile = null;
     _cornerRadius = 0;
     _animationInterval = 16;
+    _uiSampler = null;
     constructor(extensionPath, settings) {
         this.extensionPath = extensionPath;
         this._settings = settings;
@@ -355,15 +356,31 @@ export class UIManager {
         this.animActor.set_pivot_point(0.5, 0.0);
         // bgActor scales from the top-left (0.0, 0.0) because we manually sync its exact coordinates
         this.bgActor.set_pivot_point(0.0, 0.0);
+        /*
         // Insert the custom background *underneath* the actual menu UI
         let menuParent = this.menu.actor.get_parent();
         if (menuParent) {
-            menuParent.insert_child_below(this.bgActor, this.menu.actor);
+          menuParent.insert_child_below(this.bgActor, this.menu.actor);
+        } else {
+          // Fallback: If it has no parent yet, add it directly to the UI group
+          Main.layoutManager.uiGroup.add_child(this.bgActor);
+        }
+        */
+        let menuRoot = this.menu.actor;
+        while (menuRoot.get_parent() && menuRoot.get_parent() !== Main.layoutManager.uiGroup) {
+            const p = menuRoot.get_parent();
+            if (!p)
+                break;
+            menuRoot = p;
+        }
+        // bgActor を uiGroup の直接の子として挿入（再帰クローンを完全に防ぐ）
+        if (menuRoot.get_parent() === Main.layoutManager.uiGroup) {
+            Main.layoutManager.uiGroup.insert_child_below(this.bgActor, menuRoot);
         }
         else {
-            // Fallback: If it has no parent yet, add it directly to the UI group
             Main.layoutManager.uiGroup.add_child(this.bgActor);
         }
+        this._uiSampler = new UILayerSampler(this.bgActor, this.fboContainer, [menuRoot]);
         let blurRadius = this._settings.get_int('menu-blur-radius');
         let tintColorStr = this._settings.get_string('menu-tint-color');
         let tintStrength = this._settings.get_double('menu-tint-strength');
@@ -429,6 +446,8 @@ export class UIManager {
             this.windowClonesContainer = new UnpickableActor();
             this.windowClonesContainer.connect('destroy', () => { this.windowClonesContainer = null; });
             this.fboContainer?.add_child(this.windowClonesContainer);
+            this._uiSampler?.rebindSelf();
+            this._uiSampler?.refresh();
             this._windowClones.clear();
             this._overviewClone = null;
             this._appDisplayClone = null;
@@ -721,6 +740,8 @@ export class UIManager {
                     this._searchClone = null;
                 }
                 this.bgClone.show();
+                this._uiSampler?.refresh();
+                this._uiSampler?.sync();
                 for (let w of windows) {
                     try {
                         let metaWindow = w.get_meta_window();
@@ -761,6 +782,8 @@ export class UIManager {
             else {
                 // --- Overview時 ---
                 this.bgClone.show();
+                this._uiSampler?.refresh();
+                this._uiSampler?.sync();
                 let controls = Main.overview._overview?._controls;
                 if (controls) {
                     if (controls._workspacesDisplay) {
@@ -1253,6 +1276,8 @@ export class UIManager {
         this.bgClone = null;
         this.windowClonesContainer = null;
         this._windowClones.clear();
+        this._uiSampler?.destroy();
+        this._uiSampler = null;
         this._stableBaseW = undefined;
         this._stableBaseH = undefined;
     }
