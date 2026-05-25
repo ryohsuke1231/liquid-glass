@@ -5,7 +5,8 @@ import St from 'gi://St';
 import Meta from 'gi://Meta';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { LiquidEffect } from './liquidEffect.js';
-import { UnpickableClone } from './utils.js';
+import GLib from 'gi://GLib';
+import { UnpickableClone, RoundingEffect } from './utils.js';
 const SHADER_PADDING = 20;
 export class ApplicationManager {
     extensionPath;
@@ -13,12 +14,15 @@ export class ApplicationManager {
     _settings;
     _frameSyncId;
     _windowCreatedId;
+    _restackedId = 0;
+    _rebuildQueued = false;
     constructor(extensionPath, settings) {
         this.extensionPath = extensionPath;
         this._settings = settings;
         this._states = new Map();
         this._frameSyncId = 0;
         this._windowCreatedId = 0;
+        this._restackedId = 0;
     }
     setup() {
         this._buildForExistingWindows();
@@ -27,6 +31,10 @@ export class ApplicationManager {
             if (!(obj instanceof Meta.WindowActor))
                 return;
             this._setupWindow(obj);
+            this._rebuildAllClones();
+        });
+        this._restackedId = global.display.connect('restacked', () => {
+            this._rebuildAllClones();
         });
         this._frameTick();
     }
@@ -35,6 +43,10 @@ export class ApplicationManager {
             global.display.disconnect(this._windowCreatedId);
             this._windowCreatedId = 0;
         }
+        if (this._restackedId) {
+            global.display.disconnect(this._restackedId);
+            this._restackedId = 0;
+        }
         if (this._frameSyncId) {
             global.compositor.get_laters().remove(this._frameSyncId);
             this._frameSyncId = 0;
@@ -42,6 +54,24 @@ export class ApplicationManager {
         for (let state of this._states.values())
             this._cleanupState(state);
         this._states.clear();
+        this._rebuildQueued = false;
+    }
+    _rebuildAllClones() {
+        if (this._rebuildQueued)
+            return;
+        this._rebuildQueued = true;
+        // Debounce to next idle to avoid crashing during rapid restacking/creation
+        GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+            if (this._states.size === 0) {
+                this._rebuildQueued = false;
+                return GLib.SOURCE_REMOVE;
+            }
+            for (let state of this._states.values()) {
+                this._rebuildWindowClones(state);
+            }
+            this._rebuildQueued = false;
+            return GLib.SOURCE_REMOVE;
+        });
     }
     _buildForExistingWindows() {
         for (let actor of global.get_window_actors())
@@ -68,23 +98,44 @@ export class ApplicationManager {
             });
             return;
         }
+        let baseActor = new St.Widget({
+            style_class: 'liquid-glass-base-actor',
+            reactive: false,
+            clip_to_allocation: true,
+            visible: true,
+        });
+        windowActor.insert_child_below(baseActor, surfaceActor);
         let bgActor = new St.Widget({
+            style_class: 'liquid-glass-bg-actor',
             reactive: false,
             clip_to_allocation: false,
-            visible: false, // hidden until first valid sync
+            visible: true,
         });
+        windowActor.insert_child_above(bgActor, baseActor);
         let clipBox = new St.Widget({
             clip_to_allocation: true,
             reactive: false,
         });
         bgActor.add_child(clipBox);
+        let blurRadius = this._settings.get_int('menu-blur-radius');
         let blurEffect = new Shell.BlurEffect({
-            radius: 30,
+            radius: blurRadius,
             mode: Shell.BlurMode.ACTOR,
         });
         clipBox.add_effect(blurEffect);
         // Size the clone to cover the full screen so the wallpaper fills correctly
         let monitor = Main.layoutManager.primaryMonitor;
+        // --- Added: Unblurred base background for corners ---
+        let baseClone = new UnpickableClone({
+            source: Main.layoutManager._backgroundGroup,
+        });
+        if (monitor) {
+            baseClone.set_size(monitor.width, monitor.height);
+        }
+        baseActor.add_child(baseClone);
+        let baseWindowsContainer = new Clutter.Actor();
+        baseActor.add_child(baseWindowsContainer);
+        // ---------------------------------------------------
         let bgClone = new UnpickableClone({
             source: Main.layoutManager._backgroundGroup,
         });
@@ -96,13 +147,23 @@ export class ApplicationManager {
             extensionPath: this.extensionPath,
             settings: this._settings,
         });
+        let tintColorStr = this._settings.get_string('menu-tint-color');
+        let tintStrength = this._settings.get_double('menu-tint-strength');
+        // Rounded corners for the glass effect as requested
+        let cornerRadius = 30;
         effect.setPadding(SHADER_PADDING);
+        effect.setTintColor(...this._hexToColorArray(tintColorStr));
+        effect.setTintStrength(tintStrength);
+        effect.setCornerRadius(cornerRadius);
         effect.setIsDock(false);
         bgActor.add_effect(effect);
         let windowsContainer = new Clutter.Actor();
         clipBox.add_child(windowsContainer);
-        // Insert bgActor below the surface, inside windowActor
-        windowActor.insert_child_below(bgActor, surfaceActor);
+        // --- Added: Rounding effect for the window surface itself ---
+        let roundingEffect = new RoundingEffect();
+        roundingEffect.setRadius(cornerRadius);
+        surfaceActor.add_effect(roundingEffect);
+        // -------------------------------------------------------------
         let state = {
             windowActor,
             bgActor,
@@ -111,68 +172,144 @@ export class ApplicationManager {
             bgClone,
             windowsContainer,
             clones: new Map(),
+            effect,
+            baseActor,
+            baseClone,
+            baseWindowsContainer,
+            baseClones: new Map(),
+            roundingEffect,
         };
-        console.log('[LiquidGlass] bgActor parent:', state.bgActor.get_parent()?.toString());
-        console.log('[LiquidGlass] bgActor z index:', windowActor.get_child_at_index(0) === state.bgActor);
-        console.log('[LiquidGlass] clipBox children:', state.clipBox.get_n_children());
-        console.log('[LiquidGlass] bgClone source:', state.bgClone.source?.toString());
-        console.log('[LiquidGlass] windowsContainer added:', state.windowsContainer.get_parent()?.toString());
         this._states.set(windowActor, state);
         this._rebuildWindowClones(state);
+        // Initial sync to prevent uninitialized black frames
+        this._syncState(state);
         windowActor.connect('destroy', () => {
             this._cleanupState(state);
             this._states.delete(windowActor);
+            this._rebuildAllClones();
         });
+    }
+    _hexToColorArray(hex) {
+        if (!hex || typeof hex !== 'string' || !hex.startsWith('#') || hex.length !== 7)
+            return [1.0, 1.0, 1.0];
+        let r = parseInt(hex.slice(1, 3), 16) / 255.0;
+        let g = parseInt(hex.slice(3, 5), 16) / 255.0;
+        let b = parseInt(hex.slice(5, 7), 16) / 255.0;
+        return [r, g, b];
     }
     _rebuildWindowClones(state) {
         state.clones.forEach(clone => clone.destroy());
         state.clones.clear();
         state.windowsContainer.remove_all_children();
+        state.baseClones.forEach(clone => clone.destroy());
+        state.baseClones.clear();
+        state.baseWindowsContainer.remove_all_children();
+        // Get windows in stacking order (bottom to top)
         for (let actor of global.get_window_actors()) {
+            // STOP iterating once we reach our own window.
+            // This ensures we ONLY render what is actually BEHIND the app.
             if (actor === state.windowActor)
-                continue;
+                break;
             let clone = new UnpickableClone({ source: actor });
             state.windowsContainer.add_child(clone);
             state.clones.set(actor, clone);
+            let baseClone = new UnpickableClone({ source: actor });
+            state.baseWindowsContainer.add_child(baseClone);
+            state.baseClones.set(actor, baseClone);
         }
     }
     _syncState(state) {
         let actor = state.windowActor;
-        if (!actor || !actor.get_stage())
-            return;
-        const rect = actor.get_meta_window()?.get_frame_rect();
-        if (!rect) {
-            console.log('[LiquidGlass] no rect for', actor.get_meta_window()?.get_title());
-            return;
-        }
-        const { x, y, width: w, height: h } = rect;
-        if (w <= 0 || h <= 0) {
-            console.log('[LiquidGlass] zero size, hiding');
-            state.bgActor.visible = false;
+        if (!actor || !actor.get_stage() || !actor.mapped || !actor.has_allocation()) {
+            if (state.bgActor.visible)
+                state.bgActor.visible = false;
+            if (state.baseActor.visible)
+                state.baseActor.visible = false;
             return;
         }
-        state.bgActor.set_position(0, 0);
-        state.bgActor.set_size(w, h);
+        const metaWin = actor.get_meta_window();
+        if (!metaWin)
+            return;
+        // CRITICAL PERFORMANCE: Only sync windows on the current active workspace.
+        const workspaceManager = global.workspace_manager;
+        const activeWorkspace = workspaceManager.get_active_workspace();
+        const winWorkspace = metaWin.get_workspace();
+        if (winWorkspace && winWorkspace !== activeWorkspace) {
+            if (state.bgActor.visible)
+                state.bgActor.visible = false;
+            if (state.baseActor.visible)
+                state.baseActor.visible = false;
+            return;
+        }
+        const rect = metaWin.get_frame_rect();
+        const bufferRect = metaWin.get_buffer_rect();
+        if (!rect || !bufferRect || rect.width <= 0 || rect.height <= 0) {
+            if (state.bgActor.visible)
+                state.bgActor.visible = false;
+            if (state.baseActor.visible)
+                state.baseActor.visible = false;
+            return;
+        }
+        if (!state.bgActor.visible)
+            state.bgActor.visible = true;
+        if (!state.baseActor.visible)
+            state.baseActor.visible = true;
+        // Local offset of the visible frame within the window actor's full buffer.
+        const frameLocalX = rect.x - bufferRect.x;
+        const frameLocalY = rect.y - bufferRect.y;
+        // Base background (unblurred) matches the window size exactly.
+        state.baseActor.set_position(frameLocalX, frameLocalY);
+        state.baseActor.set_size(rect.width, rect.height);
+        // Glass background (blurred) expanded by padding.
+        const bgW = rect.width + (SHADER_PADDING * 2);
+        const bgH = rect.height + (SHADER_PADDING * 2);
+        const localX = frameLocalX - SHADER_PADDING;
+        const localY = frameLocalY - SHADER_PADDING;
+        state.bgActor.set_position(localX, localY);
+        state.bgActor.set_size(bgW, bgH);
         state.clipBox.set_position(0, 0);
-        state.clipBox.set_size(w, h);
-        // Offset so the clipped region lines up with screen coords
-        state.bgClone.set_position(-x, -y);
-        state.windowsContainer.set_position(-x, -y);
+        state.clipBox.set_size(bgW, bgH);
+        // Update shader resolution with the expanded bounds
+        if (state.effect) {
+            state.effect.setResolution(bgW, bgH);
+        }
+        // Offset the background content so it stays fixed to screen coordinates.
+        let [absX, absY] = state.bgActor.get_transformed_position();
+        // Offset for the clipped (blurred) content
+        state.bgClone.set_position(-absX + SHADER_PADDING, -absY + SHADER_PADDING);
+        state.windowsContainer.set_position(-absX + SHADER_PADDING, -absY + SHADER_PADDING);
+        // Offset for the base (unblurred) content
+        // baseActor is at rect.x, rect.y in screen space
+        state.baseClone.set_position(-rect.x, -rect.y);
+        state.baseWindowsContainer.set_position(-rect.x, -rect.y);
+        // Sync blurred clones
         for (let [src, clone] of state.clones.entries()) {
-            if (!src || !src.visible) {
-                clone.hide();
+            if (!src || !src.visible || !src.mapped) {
+                if (clone.visible)
+                    clone.hide();
                 continue;
             }
-            clone.show();
+            if (!clone.visible)
+                clone.show();
             clone.set_position(src.x, src.y);
             clone.set_size(src.width, src.height);
+            clone.set_scale(src.scale_x, src.scale_y);
+            clone.opacity = src.opacity;
         }
-        console.log('[LiquidGlass] bgActor size:', state.bgActor.get_width(), state.bgActor.get_height());
-        console.log('[LiquidGlass] bgActor pos:', state.bgActor.get_x(), state.bgActor.get_y());
-        console.log('[LiquidGlass] clipBox size:', state.clipBox.get_width(), state.clipBox.get_height());
-        console.log('[LiquidGlass] bgClone pos:', state.bgClone.get_x(), state.bgClone.get_y());
-        console.log('[LiquidGlass] bgClone size:', state.bgClone.get_width(), state.bgClone.get_height());
-        console.log('[LiquidGlass] surfaceActor:', actor.get_first_child()?.toString());
+        // Sync base clones (unblurred)
+        for (let [src, clone] of state.baseClones.entries()) {
+            if (!src || !src.visible || !src.mapped) {
+                if (clone.visible)
+                    clone.hide();
+                continue;
+            }
+            if (!clone.visible)
+                clone.show();
+            clone.set_position(src.x, src.y);
+            clone.set_size(src.width, src.height);
+            clone.set_scale(src.scale_x, src.scale_y);
+            clone.opacity = src.opacity;
+        }
     }
     _frameTick() {
         for (let state of this._states.values()) {
@@ -191,7 +328,16 @@ export class ApplicationManager {
             return;
         state.clones.forEach(clone => clone.destroy());
         state.clones.clear();
+        state.baseClones.forEach(clone => clone.destroy());
+        state.baseClones.clear();
         if (state.bgActor)
             state.bgActor.destroy();
+        if (state.baseActor)
+            state.baseActor.destroy();
+        if (state.roundingEffect) {
+            let child = state.windowActor.get_first_child();
+            if (child)
+                child.remove_effect(state.roundingEffect);
+        }
     }
 }
