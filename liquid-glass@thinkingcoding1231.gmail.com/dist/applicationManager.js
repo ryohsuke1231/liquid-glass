@@ -177,10 +177,26 @@ export class ApplicationManager {
             baseWindowsContainer,
             baseClones: new Map(),
             roundingEffect,
-            cornerOverlay
+            cornerOverlay,
+            signals: []
         };
         this._states.set(windowActor, state);
         this._rebuildWindowClones(state);
+        // Immediate sync connections for resize/move using allocation property
+        state.signals.push({
+            obj: windowActor,
+            id: windowActor.connect('notify::allocation', () => this._syncState(state))
+        });
+        const metaWin = windowActor.get_meta_window();
+        if (metaWin) {
+            state.signals.push({
+                obj: metaWin,
+                id: metaWin.connect('size-changed', () => {
+                    this._rebuildWindowClones(state);
+                    this._syncState(state);
+                })
+            });
+        }
         // Use a later to ensure the initial sync happens after actors are properly added to stage
         global.compositor.get_laters().add(Meta.LaterType.IDLE, () => {
             if (this._states.has(windowActor)) {
@@ -361,6 +377,15 @@ export class ApplicationManager {
     _cleanupState(state) {
         if (!state)
             return;
+        if (state.signals) {
+            state.signals.forEach(sig => {
+                try {
+                    sig.obj.disconnect(sig.id);
+                }
+                catch (e) { }
+            });
+            state.signals = [];
+        }
         state.clones.forEach(clone => clone.destroy());
         state.clones.clear();
         state.baseClones.forEach(clone => clone.destroy());

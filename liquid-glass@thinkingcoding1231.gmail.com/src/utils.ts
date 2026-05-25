@@ -75,7 +75,13 @@ export const InverseCornerEffect = GObject.registerClass(
         }
 
         _updateUniforms() {
-            let [w, h] = (this as any).get_actor()?.get_size() || [0, 0];
+            let actor = (this as any).get_actor();
+            if (!actor) return;
+            
+            let w = actor.width;
+            let h = actor.height;
+
+            if (Number.isNaN(w) || Number.isNaN(h) || w <= 0 || h <= 0) return;
             
             let gval_r = new GObject.Value();
             gval_r.init(GObject.TYPE_FLOAT);
