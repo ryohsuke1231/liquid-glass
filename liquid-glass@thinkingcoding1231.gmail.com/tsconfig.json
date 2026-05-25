@@ -1,0 +1,53 @@
+{
+  "compilerOptions": {
+    "target": "ES2022", // GNOME 45+ (GJS 1.7x) は ES2022 をサポート
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true, // TSの恩恵を最大化するために有効化
+    "noImplicitAny": false, // 移行期はfalseでもOK
+    "allowJs": true, // .jsと.tsを混ぜて開発可能
+    "checkJs": true, // .jsファイルも型チェックする
+    "outDir": "dist", // コンパイル後のJSを出力するディレクトリ
+    "rootDir": "src", // ソースのルート
+    // "baseUrl": ".",
+    "paths": {
+      "gi://Clutter*": [
+        "./node_modules/@girs/clutter-18"
+      ],
+      "gi://St*": [
+        "./node_modules/@girs/st-18"
+      ],
+      "gi://Meta*": [
+        "./node_modules/@girs/meta-18"
+      ],
+      "gi://Shell*": [
+        "./node_modules/@girs/shell-18"
+      ],
+      "gi://GLib*": [
+        "./node_modules/@girs/glib-2.0"
+      ],
+      "resource:///org/gnome/shell/*": [
+        "./node_modules/@girs/gnome-shell/dist/*"
+      ],
+      "gi://Gio*": [
+        "./node_modules/@girs/gio-2.0/*"
+      ],
+    },
+    "typeRoots": [
+      "./node_modules/@girs",
+      "./node_modules/@types"
+    ]
+  },
+  "include": [
+    "src/*.ts",
+    "src/*.js",
+    "global.d.ts",
+    "tests/uiManager-final.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "sandbox-threejs",
+    "tests"
+  ]
+}
