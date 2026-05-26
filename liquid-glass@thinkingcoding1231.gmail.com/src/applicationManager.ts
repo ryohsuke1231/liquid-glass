@@ -440,7 +440,7 @@ export class ApplicationManager {
 
     _syncCornerOverlay(state: WindowState) {
 		let actor = state.windowActor;
-		if (!actor || !actor.get_stage() || !actor.mapped) {
+		if (!actor || !actor.get_stage() || !actor.mapped || !state.cornerOverlay) {
 		    state.bgActor.visible = false;
 		    state.baseActor.visible = false;
 		    state.cornerOverlay.visible = false;
@@ -588,10 +588,10 @@ export class ApplicationManager {
     }
 
     _frameTick() {
-        if (!this._isEffectEnabled() || this._states.size === 0) {
-            this._frameSyncId = 0;
-            return;
-        }
+        //if (!this._isEffectEnabled() || this._states.size === 0) {
+        //    this._frameSyncId = 0;
+        //    return;
+        //}
 
         for (let state of this._states.values()) {
             try {

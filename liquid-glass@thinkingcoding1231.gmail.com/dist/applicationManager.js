@@ -284,28 +284,27 @@ export class ApplicationManager {
         };
         this._states.set(windowActor, state);
         this._rebuildWindowClones(state);
+        // Immediate sync connections for resize/move using allocation property
+        state.signals.push({
+            obj: windowActor,
+            id: windowActor.connect('notify::allocation', () => this._syncState(state))
+        });
         state.signals.push({
             obj: global,
             id: global.display.connect('restacked', () => {
                 this._syncCornerOverlay(state);
             })
         });
-        windowActor.connect('notify::allocation', () => {
-            GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
-                this._syncState(state);
-                return GLib.SOURCE_REMOVE;
+        const metaWin = windowActor.get_meta_window();
+        if (metaWin) {
+            state.signals.push({
+                obj: metaWin,
+                id: metaWin.connect('size-changed', () => {
+                    this._rebuildWindowClones(state);
+                    this._syncState(state);
+                })
             });
-        });
-        //const metaWin = windowActor.get_meta_window();
-        //if (metaWin) {
-        //    state.signals.push({
-        //        obj: metaWin,
-        //        id: metaWin.connect('size-changed', () => {
-        //            this._rebuildWindowClones(state);
-        //            this._syncState(state);
-        //        })
-        //    });
-        //}
+        }
         // Use a later to ensure the initial sync happens after actors are properly added to stage
         global.compositor.get_laters().add(Meta.LaterType.IDLE, () => {
             if (this._states.has(windowActor)) {
@@ -352,7 +351,7 @@ export class ApplicationManager {
     }
     _syncCornerOverlay(state) {
         let actor = state.windowActor;
-        if (!actor || !actor.get_stage() || !actor.mapped) {
+        if (!actor || !actor.get_stage() || !actor.mapped || !state.cornerOverlay) {
             state.bgActor.visible = false;
             state.baseActor.visible = false;
             state.cornerOverlay.visible = false;
@@ -481,10 +480,10 @@ export class ApplicationManager {
         this._syncCornerOverlay(state);
     }
     _frameTick() {
-        if (!this._isEffectEnabled() || this._states.size === 0) {
-            this._frameSyncId = 0;
-            return;
-        }
+        //if (!this._isEffectEnabled() || this._states.size === 0) {
+        //    this._frameSyncId = 0;
+        //    return;
+        //}
         for (let state of this._states.values()) {
             try {
                 this._syncState(state);
