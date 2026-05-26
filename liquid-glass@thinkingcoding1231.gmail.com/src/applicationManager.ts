@@ -9,10 +9,9 @@ import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import { UnpickableClone, UnpickableActor, InverseCornerEffect } from './utils.js';
 
-const SHADER_PADDING = 20;
+const SHADER_PADDING = 10;
+// Inward padding for corner rounding
 const CORNER_PADDING = 3;
-/** Extra outward extent for cornerOverlay beyond baseActor's CORNER_PADDING. */
-const CORNER_OVERLAY_OUTER_PADDING = 10;
 
 interface WindowState {
     windowActor: Meta.WindowActor;
@@ -204,13 +203,13 @@ export class ApplicationManager {
             state.effect.setTintStrength(tintStrength);
             state.effect.setCornerRadius(cornerRadius);
             state.blurEffect.radius = blurRadius;
-            state.roundingEffect.setRadius(cornerRadius + (CORNER_PADDING * CORNER_PADDING));
+            state.roundingEffect.setRadius(cornerRadius + CORNER_PADDING);
             state.roundingEffect.setInset(this._cornerOverlayInset());
         }
     }
 
     _cornerOverlayInset(): number {
-        return CORNER_PADDING + CORNER_OVERLAY_OUTER_PADDING;
+        return SHADER_PADDING + CORNER_PADDING;
     }
 
     _startFrameSync() {
@@ -341,16 +340,15 @@ export class ApplicationManager {
         let windowsContainer = new Clutter.Actor();
         clipBox.add_child(windowsContainer);
 
-        let cornerOverlay = new St.Widget({
+        let cornerOverlay = new UnpickableActor({
             clip_to_allocation: true,
             reactive: false,
         });
         let cornerOverlayClone = new UnpickableClone({ source: baseActor });
         cornerOverlay.add_child(cornerOverlayClone);
-		windowActor.set_property('no-shadow', true);
 
         let roundingEffect = new InverseCornerEffect();
-        roundingEffect.setRadius(cornerRadius + (CORNER_PADDING * CORNER_PADDING));
+        roundingEffect.setRadius(cornerRadius + CORNER_PADDING);
         roundingEffect.setInset(this._cornerOverlayInset());
 
         cornerOverlay.add_effect(roundingEffect);
@@ -486,14 +484,14 @@ export class ApplicationManager {
 
         if (!state.bgActor.visible) state.bgActor.visible = true;
         if (!state.baseActor.visible) state.baseActor.visible = true;
-
+        
         // Local offset of the visible frame within the window actor's full buffer.
         const frameLocalX = rect.x - bufferRect.x;
         const frameLocalY = rect.y - bufferRect.y;
 
-        // Base background (unblurred) matches the window size exactly.
-        state.baseActor.set_position(frameLocalX - CORNER_PADDING, frameLocalY - CORNER_PADDING);
-        state.baseActor.set_size(rect.width + (CORNER_PADDING * 2), rect.height + (CORNER_PADDING * 2));
+        // Base background (unblurred) expanded by expansion margin.
+        state.baseActor.set_position(frameLocalX - SHADER_PADDING, frameLocalY - SHADER_PADDING);
+        state.baseActor.set_size(rect.width + (SHADER_PADDING * 2), rect.height + (SHADER_PADDING * 2));
 
         // Glass background (blurred) expanded by padding.
         const bgW = rect.width + (SHADER_PADDING * 2);
@@ -520,9 +518,9 @@ export class ApplicationManager {
         state.bgClone.set_position(-absX, -absY);
         state.windowsContainer.set_position(-absX, -absY);
 
-        // Offset for the base (unblurred) content (baseActor is inset by CORNER_PADDING).
-        const baseScreenX = rect.x - CORNER_PADDING;
-        const baseScreenY = rect.y - CORNER_PADDING;
+        // Offset for the base (unblurred) content (baseActor is inset by SHADER_PADDING).
+        const baseScreenX = rect.x - SHADER_PADDING;
+        const baseScreenY = rect.y - SHADER_PADDING;
         state.baseClone.set_position(-baseScreenX, -baseScreenY);
         state.baseWindowsContainer.set_position(-baseScreenX, -baseScreenY);
 
@@ -558,23 +556,16 @@ export class ApplicationManager {
             state.cornerOverlay.show();
         }
 
-        const overlayInset = this._cornerOverlayInset();
-        const baseW = rect.width + (CORNER_PADDING * 2);
-        const baseH = rect.height + (CORNER_PADDING * 2);
+        const baseW = rect.width + (SHADER_PADDING * 2);
+        const baseH = rect.height + (SHADER_PADDING * 2);
 
         state.cornerOverlay.set_position(
-            frameLocalX - overlayInset,
-            frameLocalY - overlayInset,
+            frameLocalX - SHADER_PADDING,
+            frameLocalY - SHADER_PADDING,
         );
-        state.cornerOverlay.set_size(
-            rect.width + (overlayInset * 2),
-            rect.height + (overlayInset * 2),
-        );
-        // Align clone with baseActor while the container extends further outward.
-        state.cornerOverlayClone.set_position(
-            CORNER_OVERLAY_OUTER_PADDING,
-            CORNER_OVERLAY_OUTER_PADDING,
-        );
+        state.cornerOverlay.set_size(baseW, baseH);
+        
+        state.cornerOverlayClone.set_position(0, 0);
         state.cornerOverlayClone.set_size(baseW, baseH);
     }
 

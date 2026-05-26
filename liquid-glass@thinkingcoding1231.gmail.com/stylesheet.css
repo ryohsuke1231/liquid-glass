@@ -12,7 +12,8 @@
 }
 
 /* Base class for our custom background actor that renders the glass effect */
-.liquid-glass-bg-actor {
+.liquid-glass-bg-actor,
+.liquid-glass-base-actor {
     background-color: transparent !important;
 }
 

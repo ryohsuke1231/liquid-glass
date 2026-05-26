@@ -69,8 +69,14 @@ export const InverseCornerEffect = GObject.registerClass(
 
                     float d = sdRoundRect(p, innerHalf, radius);
 
-                    // INVERTED LOGIC: visible outside the inner rounded rect (frame).
-                    float alpha = smoothstep(-1.0, 1.0, d);
+                    // Sharper transition for the corner cut to avoid dark fringes
+                    float alpha = smoothstep(-0.5, 0.5, d);
+                    
+                    // Fade out at the very edges of the overlay actor to ensure it blends seamlessly
+                    // with the background and hides any potential window shadow cutoff.
+                    vec2 edgeDist = min(st, 1.0 - st) * resolution;
+                    float edgeFade = smoothstep(0.0, 10.0, min(edgeDist.x, edgeDist.y));
+                    alpha *= edgeFade;
 
                     cogl_color_out = texture2D(cogl_sampler, st) * alpha * cogl_color_in;
                 }
