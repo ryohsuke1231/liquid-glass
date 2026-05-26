@@ -8,7 +8,7 @@ import { LiquidEffect } from './liquidEffect.js';
 import GLib from 'gi://GLib';
 import { UnpickableClone, InverseCornerEffect } from './utils.js';
 const SHADER_PADDING = 20;
-const CORNER_PADDING = 1;
+const CORNER_PADDING = 3;
 export class ApplicationManager {
     extensionPath;
     _states;
@@ -159,7 +159,7 @@ export class ApplicationManager {
         clipBox.add_child(windowsContainer);
         let cornerOverlay = new UnpickableClone({ source: baseActor });
         let roundingEffect = new InverseCornerEffect();
-        roundingEffect.setRadius(cornerRadius);
+        roundingEffect.setRadius(cornerRadius + (CORNER_PADDING * CORNER_PADDING));
         cornerOverlay.add_effect(roundingEffect);
         parent.insert_child_above(cornerOverlay, windowActor);
         let state = {
