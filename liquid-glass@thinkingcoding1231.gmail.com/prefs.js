@@ -145,6 +145,26 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
     this._addSpinRow(osdGroup, settings, 'osd-blur-radius', 'Blur Radius', 'Background blur intensity', 0, 100, 1);
     this._addSpinRow(osdGroup, settings, 'osd-corner-radius', 'Corner Radius', 'Roundness of the corners', 0, 200, 1);
 
+    // --- Applications タブ ---
+    const appPage = new Adw.PreferencesPage({
+      title: 'Applications',
+      icon_name: 'applications-system-symbolic',
+    });
+    window.add(appPage);
+
+    const appGroup = new Adw.PreferencesGroup({
+      title: 'Application Window Settings',
+      description: 'Apply the liquid glass effect only to whitelisted application windows',
+    });
+    appPage.add(appGroup);
+
+    this._addSwitchRow(appGroup, settings, 'enable-application-glass', 'Enable Glass Effect', 'Apply to whitelisted application windows');
+    this._addWhitelistEditor(appPage, settings, 'application-window-whitelist');
+    this._addColorRow(appGroup, settings, 'application-tint-color', 'Tint Color', 'Color of the glass tint');
+    this._addSpinRow(appGroup, settings, 'application-tint-strength', 'Tint Strength', 'Intensity of the color tint', 0.0, 1.0, 0.01);
+    this._addSpinRow(appGroup, settings, 'application-blur-radius', 'Blur Radius', 'Background blur intensity', 0, 100, 1);
+    this._addSpinRow(appGroup, settings, 'application-corner-radius', 'Corner Radius', 'Roundness of the corners', 0, 200, 1);
+
     // --- Glass Properties タブ ---
     const shaderPage = new Adw.PreferencesPage({
       title: 'Advanced Glass',
@@ -206,6 +226,79 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
     group.add(row);
     settings.bind(key, row, 'value', Gio.SettingsBindFlags.DEFAULT);
     return row;
+  }
+
+  _addWhitelistEditor(page, settings, key) {
+    const listGroup = new Adw.PreferencesGroup({
+      title: 'Whitelisted Windows',
+      description: 'WM_CLASS values (run: xprop WM_CLASS on a window). Matching is case-insensitive.',
+    });
+    page.add(listGroup);
+
+    const listBox = new Gtk.ListBox({
+      selection_mode: Gtk.SelectionMode.NONE,
+    });
+    listBox.add_css_class('boxed-list');
+
+    const refreshList = () => {
+      let child = listBox.get_first_child();
+      while (child) {
+        const next = child.get_next_sibling();
+        listBox.remove(child);
+        child = next;
+      }
+
+      const items = settings.get_strv(key);
+      for (const item of items) {
+        const row = new Adw.ActionRow({ title: item });
+        const removeButton = new Gtk.Button({
+          icon_name: 'user-trash-symbolic',
+          valign: Gtk.Align.CENTER,
+          css_classes: ['flat', 'error'],
+        });
+        removeButton.connect('clicked', () => {
+          const current = settings.get_strv(key).filter((v) => v !== item);
+          settings.set_strv(key, current);
+          refreshList();
+        });
+        row.add_suffix(removeButton);
+        listBox.append(row);
+      }
+
+      if (items.length === 0) {
+        const emptyRow = new Adw.ActionRow({
+          title: 'No windows whitelisted',
+          subtitle: 'Add a WM_CLASS below to enable the effect on that application',
+        });
+        emptyRow.add_css_class('dim-label');
+        listBox.append(emptyRow);
+      }
+    };
+
+    settings.connect(`changed::${key}`, refreshList);
+    refreshList();
+
+    listGroup.add(listBox);
+
+    const entryGroup = new Adw.PreferencesGroup({ title: 'Add Window Class' });
+    page.add(entryGroup);
+
+    const entryRow = new Adw.EntryRow({
+      title: 'WM_CLASS',
+      show_apply_button: true,
+    });
+    entryRow.connect('apply', () => {
+      const value = entryRow.get_text().trim();
+      if (!value) return;
+
+      const normalized = value.toLowerCase();
+      const items = settings.get_strv(key);
+      if (!items.some((v) => v.toLowerCase() === normalized)) {
+        settings.set_strv(key, [...items, value.trim()]);
+      }
+      entryRow.set_text('');
+    });
+    entryGroup.add(entryRow);
   }
 
   // 色選択

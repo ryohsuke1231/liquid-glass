@@ -36,6 +36,7 @@ export class ApplicationManager {
     private extensionPath: string;
     private _states: Map<Meta.WindowActor, WindowState>;
     private _settings: Gio.Settings;
+    private _settingsSignals: number[];
     private _frameSyncId: number;
     private _windowCreatedId: number;
     private _restackedId: number = 0;
@@ -46,26 +47,32 @@ export class ApplicationManager {
         this.extensionPath = extensionPath;
         this._settings = settings;
         this._states = new Map();
+        this._settingsSignals = [];
         this._frameSyncId = 0;
         this._windowCreatedId = 0;
         this._restackedId = 0;
     }
 
     setup() {
-        this._buildForExistingWindows();
+        this._bindSettings();
 
         this._windowCreatedId = global.display.connect('window-created', (_d, metaWindow) => {
             const obj = metaWindow.get_compositor_private();
             if (!(obj instanceof Meta.WindowActor)) return;
-            this._setupWindow(obj);
-            this._rebuildAllClones();
+			obj.connect('first-frame', () => {
+            	if (this._shouldApplyToWindow(obj)) {
+            	    this._setupWindow(obj);
+            	    this._rebuildAllClones();
+            	}
+    		});
         });
 
         this._restackedId = global.display.connect('restacked', () => {
             this._rebuildAllClones();
         });
 
-        this._frameTick();
+        if (this._isEffectEnabled())
+            this._applyEffects();
     }
 
     cleanup() {
@@ -79,6 +86,77 @@ export class ApplicationManager {
             this._restackedId = 0;
         }
 
+        this._settingsSignals.forEach(id => this._settings.disconnect(id));
+        this._settingsSignals = [];
+
+        this._removeAllEffects();
+    }
+
+    _bindSettings() {
+        const connectSetting = (key: string, callback: () => void) => {
+            let id = this._settings.connect(`changed::${key}`, callback);
+            this._settingsSignals.push(id);
+        };
+
+        connectSetting('enable-application-glass', () => {
+            if (this._isEffectEnabled())
+                this._applyEffects();
+            else
+                this._removeAllEffects();
+        });
+
+        connectSetting('application-window-whitelist', () => this._syncWhitelist());
+        connectSetting('application-tint-color', () => this._updateEffectParams());
+        connectSetting('application-tint-strength', () => this._updateEffectParams());
+        connectSetting('application-blur-radius', () => this._updateEffectParams());
+        connectSetting('application-corner-radius', () => this._updateEffectParams());
+    }
+
+    _isEffectEnabled(): boolean {
+        return this._settings.get_boolean('enable-application-glass');
+    }
+
+    _getWhitelist(): string[] {
+        let whitelist = this._settings.get_strv('application-window-whitelist');
+		return whitelist
+    }
+
+    _windowMatchesWhitelist(metaWindow: Meta.Window): boolean {
+        const whitelist = this._getWhitelist();
+        if (whitelist.length === 0)
+            return false;
+
+		const appName = metaWindow.get_wm_class()
+		let ret = !!appName && whitelist.includes(appName)
+		if (!ret) {
+			console.log("[Liquid Glass] window is not in whitelist. name = " + appName)
+		} else {
+			console.log("[Liquid Glass] window is n whitelist. name = " + appName)
+		}
+		return ret
+    }
+
+    _shouldApplyToWindow(windowActor: Meta.WindowActor): boolean {
+        if (!this._isEffectEnabled()) {
+			console.log("[Liquid Glass] effect for windows is not enabled, skipping...")
+            return false;
+		}
+
+        const metaWindow = windowActor.get_meta_window();
+        if (!metaWindow) {
+			console.log("[Liquid Glass] could not get metaWindow")
+            return false;
+		}
+
+        return this._windowMatchesWhitelist(metaWindow);
+    }
+
+    _applyEffects() {
+        this._buildForExistingWindows();
+        this._startFrameSync();
+    }
+
+    _removeAllEffects() {
         if (this._frameSyncId) {
             global.compositor.get_laters().remove(this._frameSyncId);
             this._frameSyncId = 0;
@@ -89,6 +167,47 @@ export class ApplicationManager {
 
         this._states.clear();
         this._rebuildQueued = false;
+    }
+
+    _syncWhitelist() {
+        if (!this._isEffectEnabled()) {
+            this._removeAllEffects();
+            return;
+        }
+
+        for (let [actor, state] of [...this._states.entries()]) {
+            if (!this._shouldApplyToWindow(actor)) {
+                this._cleanupState(state);
+                this._states.delete(actor);
+            }
+        }
+
+        for (let actor of global.get_window_actors()) {
+            if (this._shouldApplyToWindow(actor) && !this._states.has(actor))
+                this._setupWindow(actor);
+        }
+
+        this._rebuildAllClones();
+    }
+
+    _updateEffectParams() {
+        let tintColorStr = this._settings.get_string('application-tint-color');
+        let tintStrength = this._settings.get_double('application-tint-strength');
+        let blurRadius = this._settings.get_int('application-blur-radius');
+        let cornerRadius = this._settings.get_double('application-corner-radius');
+
+        for (let state of this._states.values()) {
+            state.effect.setTintColor(...this._hexToColorArray(tintColorStr));
+            state.effect.setTintStrength(tintStrength);
+            state.effect.setCornerRadius(cornerRadius);
+            state.blurEffect.radius = blurRadius;
+            state.roundingEffect.setRadius(cornerRadius + (CORNER_PADDING * CORNER_PADDING));
+        }
+    }
+
+    _startFrameSync() {
+        if (this._frameSyncId === 0)
+            this._frameTick();
     }
 
     _rebuildAllClones() {
@@ -110,12 +229,17 @@ export class ApplicationManager {
     }
 
     _buildForExistingWindows() {
-        for (let actor of global.get_window_actors())
-            this._setupWindow(actor);
+        for (let actor of global.get_window_actors()) {
+            if (this._shouldApplyToWindow(actor))
+                this._setupWindow(actor);
+        }
     }
 
     _setupWindow(windowActor: any) {
         if (!windowActor || !(windowActor instanceof Meta.WindowActor) || this._states.has(windowActor))
+            return;
+
+        if (!this._shouldApplyToWindow(windowActor))
             return;
 
 		let surfaceActor = windowActor.get_first_child();
@@ -160,7 +284,7 @@ export class ApplicationManager {
         });
         bgActor.add_child(clipBox);
 
-        let blurRadius = this._settings.get_int('menu-blur-radius');
+        let blurRadius = this._settings.get_int('application-blur-radius');
         let blurEffect = new Shell.BlurEffect({
             radius: blurRadius,
             mode: Shell.BlurMode.ACTOR,
@@ -195,11 +319,9 @@ export class ApplicationManager {
         } as any);
 
 
-        let tintColorStr = this._settings.get_string('menu-tint-color');
-        let tintStrength = this._settings.get_double('menu-tint-strength');
-        
-        // Rounded corners for the glass effect as requested
-        let cornerRadius = 30;
+        let tintColorStr = this._settings.get_string('application-tint-color');
+        let tintStrength = this._settings.get_double('application-tint-strength');
+        let cornerRadius = this._settings.get_double('application-corner-radius');
 
         effect.setPadding(SHADER_PADDING);
         effect.setTintColor(...this._hexToColorArray(tintColorStr));
@@ -317,13 +439,17 @@ export class ApplicationManager {
     }
 
     _syncCornerOverlay(state: WindowState) {
-        let actor = state.windowActor;
-        if (!actor || !actor.mapped || !state.cornerOverlay) {
-            if (state.cornerOverlay && state.cornerOverlay.visible) {
-                state.cornerOverlay.hide();
-            }
-            return;
-        }
+		let actor = state.windowActor;
+		if (!actor || !actor.get_stage() || !actor.mapped) {
+		    state.bgActor.visible = false;
+		    state.baseActor.visible = false;
+		    state.cornerOverlay.visible = false;
+		    return;
+		}
+
+		if (!actor.has_allocation()) {
+		    return; 		
+		}
 
         const metaWin = actor.get_meta_window();
         if (!metaWin) return;
@@ -337,10 +463,19 @@ export class ApplicationManager {
 
         state.cornerOverlay.set_position(rect.x - CORNER_PADDING, rect.y - CORNER_PADDING);
         state.cornerOverlay.set_size(rect.width + (CORNER_PADDING * 2), rect.height + (CORNER_PADDING * 2));
+
 		const parent = state.cornerOverlay.get_parent();
-	    if (parent) {
-	        parent.set_child_above_sibling(state.cornerOverlay, state.windowActor);
-	    }
+		
+		if (
+		    parent &&
+		    state.windowActor.get_parent() === parent &&
+		    state.cornerOverlay.get_parent() === parent
+		) {
+		    parent.set_child_above_sibling(
+		        state.cornerOverlay,
+		        state.windowActor
+		    );
+		}
     }
 
     _syncState(state: WindowState) {
@@ -453,6 +588,11 @@ export class ApplicationManager {
     }
 
     _frameTick() {
+        if (!this._isEffectEnabled() || this._states.size === 0) {
+            this._frameSyncId = 0;
+            return;
+        }
+
         for (let state of this._states.values()) {
             try {
                 this._syncState(state);
