@@ -7,10 +7,12 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { LiquidEffect } from './liquidEffect.js';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
-import { UnpickableClone, InverseCornerEffect } from './utils.js';
+import { UnpickableClone, UnpickableActor, InverseCornerEffect } from './utils.js';
 
 const SHADER_PADDING = 20;
 const CORNER_PADDING = 3;
+/** Extra outward extent for cornerOverlay beyond baseActor's CORNER_PADDING. */
+const CORNER_OVERLAY_OUTER_PADDING = 10;
 
 interface WindowState {
     windowActor: Meta.WindowActor;
@@ -28,7 +30,8 @@ interface WindowState {
     baseClones: Map<Meta.WindowActor, Clutter.Actor>;
     // To cut window corners
     roundingEffect: InstanceType<typeof InverseCornerEffect>;
-	cornerOverlay: InstanceType<typeof UnpickableClone>;
+    cornerOverlay: InstanceType<typeof UnpickableActor>;
+    cornerOverlayClone: InstanceType<typeof UnpickableClone>;
     signals: { obj: any, id: number }[];
 }
 
@@ -202,7 +205,12 @@ export class ApplicationManager {
             state.effect.setCornerRadius(cornerRadius);
             state.blurEffect.radius = blurRadius;
             state.roundingEffect.setRadius(cornerRadius + (CORNER_PADDING * CORNER_PADDING));
+            state.roundingEffect.setInset(this._cornerOverlayInset());
         }
+    }
+
+    _cornerOverlayInset(): number {
+        return CORNER_PADDING + CORNER_OVERLAY_OUTER_PADDING;
     }
 
     _startFrameSync() {
@@ -252,15 +260,15 @@ export class ApplicationManager {
             return;
 
         // Defer until actor has valid dimensions and allocation
-        if (windowActor.width <= 0 || windowActor.height <= 0 || !windowActor.has_allocation()) {
-            let id = windowActor.connect('notify::allocation', () => {
-                if (windowActor.width > 0 && windowActor.height > 0 && windowActor.has_allocation()) {
-                    windowActor.disconnect(id);
-                    this._setupWindow(windowActor);
-                }
-            });
-            return;
-        }
+        //if (windowActor.width <= 0 || windowActor.height <= 0 || !windowActor.has_allocation()) {
+        //    let id = windowActor.connect('notify::allocation', () => {
+        //        if (windowActor.width > 0 && windowActor.height > 0 && windowActor.has_allocation()) {
+        //            windowActor.disconnect(id);
+        //            this._setupWindow(windowActor);
+        //        }
+        //    });
+        //    return;
+        //}
 
         let baseActor = new St.Widget({
             style_class: 'liquid-glass-base-actor',
@@ -333,13 +341,20 @@ export class ApplicationManager {
         let windowsContainer = new Clutter.Actor();
         clipBox.add_child(windowsContainer);
 
-		let cornerOverlay = new UnpickableClone({ source: baseActor });
+        let cornerOverlay = new St.Widget({
+            clip_to_allocation: true,
+            reactive: false,
+        });
+        let cornerOverlayClone = new UnpickableClone({ source: baseActor });
+        cornerOverlay.add_child(cornerOverlayClone);
+		windowActor.set_property('no-shadow', true);
 
         let roundingEffect = new InverseCornerEffect();
         roundingEffect.setRadius(cornerRadius + (CORNER_PADDING * CORNER_PADDING));
+        roundingEffect.setInset(this._cornerOverlayInset());
 
-    	cornerOverlay.add_effect(roundingEffect);
-		windowActor.add_child(cornerOverlay);
+        cornerOverlay.add_effect(roundingEffect);
+        windowActor.add_child(cornerOverlay);
 
         let state: WindowState = {
             windowActor,
@@ -355,7 +370,8 @@ export class ApplicationManager {
             baseWindowsContainer,
             baseClones: new Map(),
             roundingEffect,
-			cornerOverlay,
+            cornerOverlay,
+            cornerOverlayClone,
             signals: []
         };
 
@@ -504,10 +520,11 @@ export class ApplicationManager {
         state.bgClone.set_position(-absX, -absY);
         state.windowsContainer.set_position(-absX, -absY);
 
-        // Offset for the base (unblurred) content
-        // baseActor is at rect.x, rect.y in screen space
-        state.baseClone.set_position(-rect.x, -rect.y);
-        state.baseWindowsContainer.set_position(-rect.x, -rect.y);
+        // Offset for the base (unblurred) content (baseActor is inset by CORNER_PADDING).
+        const baseScreenX = rect.x - CORNER_PADDING;
+        const baseScreenY = rect.y - CORNER_PADDING;
+        state.baseClone.set_position(-baseScreenX, -baseScreenY);
+        state.baseWindowsContainer.set_position(-baseScreenX, -baseScreenY);
 
         // Sync blurred clones
         for (let [src, clone] of state.clones.entries()) {
@@ -541,8 +558,24 @@ export class ApplicationManager {
             state.cornerOverlay.show();
         }
 
-        state.cornerOverlay.set_position(frameLocalX - CORNER_PADDING, frameLocalY - CORNER_PADDING);
-        state.cornerOverlay.set_size(rect.width + (CORNER_PADDING * 2), rect.height + (CORNER_PADDING * 2));
+        const overlayInset = this._cornerOverlayInset();
+        const baseW = rect.width + (CORNER_PADDING * 2);
+        const baseH = rect.height + (CORNER_PADDING * 2);
+
+        state.cornerOverlay.set_position(
+            frameLocalX - overlayInset,
+            frameLocalY - overlayInset,
+        );
+        state.cornerOverlay.set_size(
+            rect.width + (overlayInset * 2),
+            rect.height + (overlayInset * 2),
+        );
+        // Align clone with baseActor while the container extends further outward.
+        state.cornerOverlayClone.set_position(
+            CORNER_OVERLAY_OUTER_PADDING,
+            CORNER_OVERLAY_OUTER_PADDING,
+        );
+        state.cornerOverlayClone.set_size(baseW, baseH);
     }
 
     _frameTick() {
