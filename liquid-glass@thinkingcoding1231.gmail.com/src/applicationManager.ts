@@ -339,7 +339,7 @@ export class ApplicationManager {
         roundingEffect.setRadius(cornerRadius + (CORNER_PADDING * CORNER_PADDING));
 
     	cornerOverlay.add_effect(roundingEffect);
-    	parent.insert_child_above(cornerOverlay, windowActor);
+		windowActor.add_child(cornerOverlay);
 
         let state: WindowState = {
             windowActor,
@@ -367,13 +367,6 @@ export class ApplicationManager {
             obj: windowActor,
             id: windowActor.connect('notify::allocation', () => this._syncState(state))
         });
-
-		state.signals.push({
-			obj: global,
-			id: global.display.connect('restacked', () => {
-		    	this._syncCornerOverlay(state);
-			})
-		})
 
         const metaWin = windowActor.get_meta_window();
         if (metaWin) {
@@ -436,46 +429,6 @@ export class ApplicationManager {
             state.baseWindowsContainer.add_child(baseClone);
             state.baseClones.set(actor, baseClone);
         }
-    }
-
-    _syncCornerOverlay(state: WindowState) {
-		let actor = state.windowActor;
-		if (!actor || !actor.get_stage() || !actor.mapped || !state.cornerOverlay) {
-		    state.bgActor.visible = false;
-		    state.baseActor.visible = false;
-		    state.cornerOverlay.visible = false;
-		    return;
-		}
-
-		if (!actor.has_allocation()) {
-		    return; 		
-		}
-
-        const metaWin = actor.get_meta_window();
-        if (!metaWin) return;
-
-        const rect = metaWin.get_frame_rect();
-        if (!rect || rect.width <= 0 || rect.height <= 0) return;
-
-        if (!state.cornerOverlay.visible) {
-            state.cornerOverlay.show();
-        }
-
-        state.cornerOverlay.set_position(rect.x - CORNER_PADDING, rect.y - CORNER_PADDING);
-        state.cornerOverlay.set_size(rect.width + (CORNER_PADDING * 2), rect.height + (CORNER_PADDING * 2));
-
-		const parent = state.cornerOverlay.get_parent();
-		
-		if (
-		    parent &&
-		    state.windowActor.get_parent() === parent &&
-		    state.cornerOverlay.get_parent() === parent
-		) {
-		    parent.set_child_above_sibling(
-		        state.cornerOverlay,
-		        state.windowActor
-		    );
-		}
     }
 
     _syncState(state: WindowState) {
@@ -584,7 +537,12 @@ export class ApplicationManager {
             clone.opacity = src.opacity;
         }
 
-		this._syncCornerOverlay(state)
+        if (!state.cornerOverlay.visible) {
+            state.cornerOverlay.show();
+        }
+
+        state.cornerOverlay.set_position(frameLocalX - CORNER_PADDING, frameLocalY - CORNER_PADDING);
+        state.cornerOverlay.set_size(rect.width + (CORNER_PADDING * 2), rect.height + (CORNER_PADDING * 2));
     }
 
     _frameTick() {
