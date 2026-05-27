@@ -5,6 +5,7 @@ import { DashManager } from './dist/dockManager.js';
 import { NotificationManager } from './dist/notificationManager.js';
 import { QuickSettingsManager } from './dist/quickSettingsManager.js';
 import { OsdManager } from './dist/osdManager.js';
+import { ApplicationManager } from './dist/applicationManager.js';
 import GLib from 'gi://GLib';
 
 export default class LiquidGlassExtension extends Extension {
@@ -25,6 +26,10 @@ export default class LiquidGlassExtension extends Extension {
     // Initialize the OSD manager to apply effects to on-screen displays (like volume changes)
     this._osdManager = new OsdManager(this.dir.get_path(), this._settings);
     this._osdManager.setup();
+
+    // Initialize Application Manager to apply effects on transparent applications 
+    this._applicationManager = new ApplicationManager(this.dir.get_path(), this._settings);
+    this._applicationManager.setup();
 
     this._quickSettingsTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 1500, () => {
       this._quickSettingsManager = new QuickSettingsManager(this.dir.get_path(), this._settings);
@@ -172,6 +177,11 @@ export default class LiquidGlassExtension extends Extension {
     if (this._osdManager) {
       this._osdManager.cleanup();
       this._osdManager = null;
+    }
+
+    if (this._applicationManager) {
+      this._applicationManager.cleanup();
+      this._applicationManager = null;
     }
   }
 }

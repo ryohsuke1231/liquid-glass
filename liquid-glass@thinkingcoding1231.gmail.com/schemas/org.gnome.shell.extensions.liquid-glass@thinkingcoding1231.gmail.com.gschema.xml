@@ -243,6 +243,32 @@
       <summary>Y offset</summary>
     </key>
 
+    <key name="enable-application-glass" type="b">
+      <default>false</default>
+      <summary>Enable glass effect for application windows</summary>
+      <description>Apply the liquid glass effect to whitelisted application windows.</description>
+    </key>
+    <key name="application-window-whitelist" type="as">
+      <default>[]</default>
+      <summary>Whitelisted window classes</summary>
+      <description>WM_CLASS names (from xprop) that receive the glass effect. Only listed windows are affected.</description>
+    </key>
+    <key name="application-tint-color" type="s">
+      <default>"#ffffff"</default>
+      <summary>Tint color (Hex)</summary>
+    </key>
+    <key name="application-tint-strength" type="d">
+      <default>0.20</default>
+      <summary>Tint strength</summary>
+    </key>
+    <key name="application-blur-radius" type="i">
+      <default>8</default>
+      <summary>Blur radius</summary>
+    </key>
+    <key name="application-corner-radius" type="d">
+      <default>30.0</default>
+      <summary>Corner radius</summary>
+    </key>
 
     <key name="glass-max-z" type="d">
       <default>25.0</default>
