@@ -530,8 +530,8 @@ export class DashManager {
         }
       }
 
-      // Override isMoving to false
-      isMoving = false;
+      // Fix hiding animation bug
+      // isMoving = false;
       this._lastAbsX = absX;
       this._lastAbsY = absY;
 
@@ -766,12 +766,17 @@ export class DashManager {
           }
 
           // 3. 検索画面 のクローン
-          if (controls._searchController && controls._searchController.actor) {
+          // NOTE: In GNOME 45+, SearchController extends St.Widget directly,
+          // so the controller itself IS the actor. The previous `.actor` getter
+          // is deprecated (logs "Usage of object.actor is deprecated for
+          // SearchController" on every frame). Use the controller directly.
+          if (controls._searchController) {
+            const searchActor = controls._searchController;
             if (!this._searchClone) {
-              this._searchClone = new UnpickableClone({ source: controls._searchController.actor });
+              this._searchClone = new UnpickableClone({ source: searchActor });
               this.overviewCloneContainer?.add_child(this._searchClone);
             }
-            this._syncActorProperties(controls._searchController.actor, this._searchClone);
+            this._syncActorProperties(searchActor, this._searchClone);
           }
         }
 

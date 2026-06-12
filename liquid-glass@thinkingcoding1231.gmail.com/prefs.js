@@ -175,6 +175,15 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
     this._addSpinRow(lightGroup, settings, 'glass-sheen-intensity', 'Sheen Intensity', 'Background sheen across surface', 0.0, 2.0, 0.01);
     this._addSpinRow(lightGroup, settings, 'glass-light-angle-deg', 'Light Angle (Deg)', 'Directional angle of light source', 0.0, 360.0, 1.0);
 
+    const shadowGroup = new Adw.PreferencesGroup({
+      title: 'Drop Shadow',
+      description: 'Anchors the glass on light backgrounds (e.g. white wallpapers) so it does not visually disappear.'
+    });
+    shaderPage.add(shadowGroup);
+
+    this._addSpinRow(shadowGroup, settings, 'shadow-radius', 'Shadow Radius (px)', 'How far the shadow extends past the glass edge. Set to 0 to disable.', 0.0, 100.0, 1.0);
+    this._addSpinRow(shadowGroup, settings, 'shadow-intensity', 'Shadow Intensity', 'How dark the shadow is. 0 = invisible, 1 = pure black.', 0.0, 1.0, 0.01);
+
     const debugGroup = new Adw.PreferencesGroup({ title: 'Debug' });
     shaderPage.add(debugGroup);
 
