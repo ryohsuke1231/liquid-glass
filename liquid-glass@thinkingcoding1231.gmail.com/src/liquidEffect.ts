@@ -82,6 +82,8 @@ export const LiquidEffect = GObject.registerClass({
       // settingsがない場合のデフォルトフォールバック
       this._setFloat('max_z', 25.0);
       this._setFloat('displacement_scale', 78.5);
+      this._setFloat('shadow_radius', 8.0);
+      this._setFloat('shadow_intensity', 0.55);
     }
   }
 
@@ -102,7 +104,10 @@ export const LiquidEffect = GObject.registerClass({
       { key: 'glass-rim-power', uniform: 'rim_power' },
       { key: 'glass-rim-light-color-intensity', uniform: 'rim_light_color_intensity' },
       { key: 'glass-sheen-intensity', uniform: 'sheen_intensity' },
-      { key: 'glass-light-angle-deg', uniform: 'light_angle_deg' }
+      { key: 'glass-light-angle-deg', uniform: 'light_angle_deg' },
+      // Drop shadow (anchors the glass on light backgrounds)
+      { key: 'shadow-radius', uniform: 'shadow_radius' },
+      { key: 'shadow-intensity', uniform: 'shadow_intensity' },
     ];
 
     const settings = this._settings;

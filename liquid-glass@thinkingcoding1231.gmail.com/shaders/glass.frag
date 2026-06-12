@@ -179,7 +179,73 @@ void main() {
     // Inside = 1.0, Outside = 0.0.
     float insideMask = smoothstep(edgeFeather, -edgeFeather, d);
     float outsideMask = 1.0 - insideMask;
-    
+
+    // ------------------------------------------------------------------
+    // Realistic drop shadow (anchors the glass on light backgrounds).
+    //
+    // Real shadows from a glass object have:
+    //   * UMBRA   - a tight, dark core where the glass fully blocks the
+    //               light source. Sharpest right at the edge.
+    //   * PENUMBRA - a wider, softer halo where the glass partially blocks
+    //                the light. Decays slowly with distance.
+    //   * DIRECTIONAL EXTENSION - the shadow extends slightly further on
+    //                the side opposite the light source (governed by
+    //                light_angle_deg), not symmetrically in all directions.
+    //   * COLOR TINT - real shadows are never pure black. They pick up
+    //                ambient light (cool/blue cast for typical lighting).
+    //
+    // Composited via the Cogl premultiplied-alpha pipeline: a tinted-dark
+    // color with alpha `s` darkens the destination by (1 - s) -> drop shadow.
+    // ------------------------------------------------------------------
+
+    // 1) Compute the 2D shadow direction in screen space (y points down).
+    float lightAngleRad = radians(light_angle_deg);
+    vec2 lightDir2D = vec2(cos(lightAngleRad), -sin(lightAngleRad));
+    vec2 shadowDir   = -lightDir2D;   // shadow falls away from the light
+
+    // 2) Outward direction from the glass center to this pixel. (Small
+    //    epsilon avoids NaN at the exact center where local_pos == 0.)
+    vec2 outwardDir = normalize(local_pos + vec2(1e-4));
+
+    // 3) How much this pixel "faces" the shadow side. 0 = on the lit side,
+    //    1 = directly opposite the light. max() clamps the lit side to 0.
+    float lightAlignment = max(dot(outwardDir, shadowDir), 0.0);
+
+    // 4) Subtle directional factor: 85% on the lit side, 100% on the shadow
+    //    side. Gentle so the shadow still feels symmetric on bottom docks
+    //    (where there's no room for it to extend "down" anyway).
+    float dirRadius    = 0.85 + lightAlignment * 0.15;
+    float dirIntensity = 0.85 + lightAlignment * 0.15;
+
+    // 5) Clamp the effective radius to the bgActor's padded area so the
+    //    shadow's penumbra cannot get hard-clipped at the actor boundary.
+    //    (padding is the bgActor's expansion beyond the glass shape.)
+    float maxRadius = max(padding - 2.0, 5.0);
+    float effectiveRadius    = min(shadow_radius * dirRadius, maxRadius);
+    float effectiveIntensity = shadow_intensity * dirIntensity;
+
+    // 6) UMBRA: tight, dark core. Linear decay over 0.4 * effectiveRadius.
+    //    This is the "contact shadow" band - very close to the glass.
+    float umbra_t = clamp(d / max(effectiveRadius * 0.40, 0.5), 0.0, 1.0);
+    float umbra  = (1.0 - umbra_t) * 0.80;
+
+    // 7) PENUMBRA: wider, softer halo. Squared falloff gives a natural
+    //    convex curve: sharper near the umbra edge, long faint tail.
+    float penumbra_t = clamp(d / effectiveRadius, 0.0, 1.0);
+    float penumbra   = (1.0 - penumbra_t) * (1.0 - penumbra_t) * 0.55;
+
+    // 8) Combined shadow alpha, applied only OUTSIDE the glass shape.
+    float shadowAlpha = clamp(
+        (umbra + penumbra) * outsideMask * effectiveIntensity,
+        0.0, 1.0
+    );
+
+    // 9) Shadow color: dark with a subtle cool/blue cast. Suggests ambient
+    //    sky light bleeding into the shadow (a hallmark of realistic
+    //    outdoor / window-lit shadow rendering). Avoids the "painted-on
+    //    pure black" look.
+    vec3 shadowColor = vec3(0.03, 0.04, 0.08);
+
     vec4 source = texture2D(cogl_sampler, uv);
 
     vec2 gradH = heightGradient(local_pos, box_size, corner_radius, max_z, resolution);
@@ -244,7 +310,45 @@ void main() {
 
     vec3 baseColor = insideBaseColor * insideMask;
 
-    float lightAngleRad = radians(light_angle_deg);
+    // ------------------------------------------------------------------
+    // Inner depth effects — make the glass look 3D on LIGHT backgrounds
+    // where refraction and rim alone are not visible.
+    //
+    // A curved glass body has two visual cues that read as "3D" even
+    // when the refracted background is invisible (e.g. on a white wall):
+    //   (a) AMBIENT OCCLUSION near the inside edge — the glass body
+    //       itself blocks light, so the inside edge is darker than
+    //       the center. (This is the "shadow under the glass" the user
+    //       asked about.)
+    //   (b) A FOCAL HIGHLIGHT where light converges through the curved
+    //       surface, biased slightly toward the light source.
+    //
+    // These are baked into the base color BEFORE the screen-blend
+    // lighting pass, so they interact correctly with the rim / sheen
+    // / specular that follow.
+    // ------------------------------------------------------------------
+
+    // (a) Inner shadow: dark band just inside the glass edge.
+    //     aoMask = 1 at d=0 (right at the edge), fading to 0 at
+    //     d = -rim_width*1.5 (about 1.5 rim widths inward). Multiplied
+    //     by 0.25 for a subtle but visible darkening on white bgs.
+    float aoMask = 1.0 - smoothstep(0.0, max(rim_width * 1.5, 1.0), -d);
+    baseColor *= (1.0 - aoMask * 0.25);
+
+    // (b) Center focal highlight: bright spot offset slightly toward
+    //     the light source, simulating where the curved glass focuses
+    //     light. Uses lightDir2D (computed in the shadow block earlier
+    //     in main()) so it tracks the user's light-angle setting.
+    //     `-lightDir2D` because the focal point sits on the same side
+    //     as the light, not the shadow side.
+    vec2 focalOffset = -lightDir2D * box_size.x * 0.15;
+    vec2 fromFocal  = (local_pos - focalOffset) / box_size;
+    float radialDist = length(fromFocal);
+    float focalHighlight = (1.0 - smoothstep(0.0, 0.85, radialDist)) * 0.20;
+    baseColor += vec3(focalHighlight);
+
+    // lightAngleRad was declared earlier in main() (in the shadow block) and
+    // is reused here for the 3D lighting direction.
     vec3 lightDir = normalize(vec3(cos(lightAngleRad), sin(lightAngleRad), 0.38));
     vec3 viewDir = vec3(0.0, 0.0, 1.0);
     vec3 reflectDir = reflect(-lightDir, normal);
@@ -295,6 +399,26 @@ void main() {
     // 3. Final safety clamp to absolutely prevent illegal HDR values.
     litColor = clamp(litColor, 0.0, 1.0);
 
+    // Composite the glass OVER the shadow, in PREMULTIPLIED-alpha space.
+    //
+    // Cogl/Clutter blends with `out = src.rgb + dst.rgb * (1 - src.a)`, which
+    // adds src.rgb directly — independent of src.a. Therefore the emitted RGB
+    // must already be multiplied by its coverage, otherwise any non-zero color
+    // at zero coverage leaks as a constant tint across the whole actor.
+    //
+    // That leak is exactly what produced the dark rectangle behind the dock:
+    // outside the shape `shadowColor` (a non-zero navy) was emitted even where
+    // `shadowAlpha` had decayed to 0, painting the entire bgActor rectangle.
+    //
+    // Premultiplied "A over B":
+    //   rgb = A.rgb*A.a + B.rgb*B.a*(1 - A.a)
+    //   a   = A.a       + B.a*(1 - A.a)
+    // with A = glass (litColor, alpha), B = shadow (shadowColor, shadowAlpha).
+    // At zero total coverage this is exactly vec4(0) -> no rectangle.
+    float shadowContribution = shadowAlpha * (1.0 - alpha);
+    vec3 finalRgb   = litColor * alpha + shadowColor * shadowContribution;
+    float finalAlpha = alpha + shadowContribution;
+
     // Output with premultiplied alpha format, required by Clutter/Cogl pipeline.
-    cogl_color_out = vec4(litColor, alpha) * cogl_color_in;
+    cogl_color_out = vec4(finalRgb, finalAlpha) * cogl_color_in;
 }

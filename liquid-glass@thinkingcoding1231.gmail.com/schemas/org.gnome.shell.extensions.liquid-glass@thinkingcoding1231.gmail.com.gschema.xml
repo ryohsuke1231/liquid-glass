@@ -334,6 +334,18 @@
       <description>The directional angle of the virtual light source illuminating the glass.</description>
     </key>
 
+    <key name="shadow-radius" type="d">
+      <default>30.0</default>
+      <summary>Drop shadow radius (px)</summary>
+      <description>How far the drop shadow extends past the glass edge. Helps the glass stay visible on light backgrounds (e.g. white). Set to 0 to disable.</description>
+    </key>
+
+    <key name="shadow-intensity" type="d">
+      <default>0.55</default>
+      <summary>Drop shadow intensity</summary>
+      <description>How dark the drop shadow is. 0.0 = invisible, 1.0 = maximum darkness. Helps the glass stay visible on light backgrounds (e.g. white).</description>
+    </key>
+
     <key name="output-logs" type="b">
       <default>false</default>
       <summary>Output logs</summary>

@@ -512,6 +512,9 @@ export class DashManager {
           isMoving = true;
         }
       }
+
+      // Fix hiding animation bug
+      // isMoving = false;
       this._lastAbsX = absX;
       this._lastAbsY = absY;
 
@@ -640,6 +643,7 @@ export class DashManager {
     this._uiSampler?.sync(bgX, bgY, bgW, bgH);
 
     this._windowCloneManager?.sync();
+
   }
 
   _syncActorProperties(source, clone) {

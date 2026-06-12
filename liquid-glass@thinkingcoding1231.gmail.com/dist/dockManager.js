@@ -454,6 +454,8 @@ export class DashManager {
                     isMoving = true;
                 }
             }
+            // Fix hiding animation bug
+            // isMoving = false;
             this._lastAbsX = absX;
             this._lastAbsY = absY;
             let [tW, tH] = this.targetActor.get_size();
