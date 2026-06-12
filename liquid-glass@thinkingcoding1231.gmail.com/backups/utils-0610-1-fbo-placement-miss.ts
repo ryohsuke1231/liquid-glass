@@ -52,28 +52,16 @@ export class UILayerSampler {
 
   private _selfRoot: Clutter.Actor | null = null;
   private _clones: Map<Clutter.Actor, Clutter.Actor> = new Map();
-  // WindowCloneManager に見習った単一のクローン格納用コンテナ
-  private _uiClonesContainer: Clutter.Actor;
 
   constructor(
     selfActor: Clutter.Actor,
     container: Clutter.Actor,
-    extraExclusions: Clutter.Actor[] = [],
-    cloneContainer: Clutter.Actor | null = null
+    extraExclusions: Clutter.Actor[] = []
   ) {
     this._selfActor = selfActor;
     this._container = container;
     this._extraExclusions = new Set(extraExclusions);
     this._selfRoot = this._findUiGroupAncestor(selfActor);
-
-    // 絶対座標 0,0 起点のコンテナを作成して追加
-    if (!cloneContainer) {
-      this._uiClonesContainer = new UnpickableActor();
-      this._container.add_child(this._uiClonesContainer);
-    } else {
-      this._uiClonesContainer = cloneContainer;
-    }
-    // this._uiClonesContainer.set_offscreen_redirect(Clutter.OffscreenRedirect.ALWAYS);
   }
 
   private _findUiGroupAncestor(actor: Clutter.Actor): Clutter.Actor | null {
@@ -105,38 +93,57 @@ export class UILayerSampler {
 
       seen.add(child);
       if (!this._clones.has(child)) {
-        // clipper は廃止し、直接コンテナに UnpickableClone を追加する
+        const clipper = new UnpickableActor();
+        clipper.set_clip_to_allocation(true);
+        clipper.set_name(`${child.name}-clipper`);
+
+        // sourceClone を直接 clipper に追加する
         const sourceClone = new UnpickableClone({ source: child });
+        clipper.add_child(sourceClone);
         sourceClone.set_name(`${child.name}-sourceClone`);
 
-        sourceClone.connect('destroy', () => {
+        (clipper as any)._sourceClone = sourceClone;
+
+        clipper.connect('destroy', () => {
           this._clones.delete(child);
         });
 
-        this._uiClonesContainer.add_child(sourceClone);
-        this._clones.set(child, sourceClone);
+        this._container.add_child(clipper);
+        this._clones.set(child, clipper);
       }
     }
 
-    for (const [actor, sourceClone] of this._clones) {
+    for (const [actor, clipper] of this._clones) {
       if (!seen.has(actor)) {
-        try { sourceClone.destroy(); } catch (_) { }
+        try { clipper.destroy(); } catch (_) { }
       }
     }
   }
 
+
+  /**
+   * ステージ座標 (stageX, stageY) をアクター actor のローカル座標に変換する。
+   *
+   * Clutter.Actor.transform_stage_point() を優先して使用する。
+   * これはスケール・回転・平行移動を含むすべての祖先トランスフォームを正しく考慮する。
+   * API が利用できない場合は get_transformed_position() による単純引き算にフォールバックする
+   * （コンテナに変換がない場合のみ正確）。
+   */
   private static _stageToLocal(
     actor: Clutter.Actor,
     stageX: number,
     stageY: number
   ): [number, number] {
     try {
+      // transform_stage_point: ステージ座標 → actor ローカル座標（全トランスフォーム考慮）
       const res = (actor as any).transform_stage_point(stageX, stageY);
+      // GJS binding: [ok: boolean, x: number, y: number]
       if (Array.isArray(res) && res[0] === true) {
         return [res[1] as number, res[2] as number];
       }
     } catch (_) { }
 
+    // フォールバック: 平行移動のみのコンテナで有効
     try {
       const [cx, cy] = actor.get_transformed_position();
       return [
@@ -150,43 +157,53 @@ export class UILayerSampler {
 
   syncProperties(
     source: Clutter.Actor,
-    sourceClone: Clutter.Actor,
+    clipper: Clutter.Actor,
+    container: Clutter.Actor,
     containerW: number,
     containerH: number,
     cX: number,
     cY: number
   ) {
-    if (!source || !sourceClone) return;
+    if (!source || !clipper || !container) return;
     try {
       const [absX, absY] = source.get_transformed_position();
       const [w, h] = source.get_size();
 
       if (Number.isNaN(absX) || Number.isNaN(absY) || w <= 0 || h <= 0) {
-        sourceClone.visible = false;
+        clipper.visible = false;
         return;
       }
 
       const scaleX = source.scale_x;
       const scaleY = source.scale_y;
 
-      // クローンは元の絶対座標（absX, absY）にそのまま配置
-      sourceClone.set_position(absX, absY);
-      sourceClone.translation_x = 0;
-      sourceClone.translation_y = 0;
-
-      sourceClone.set_size(w, h);
-      sourceClone.set_scale(scaleX, scaleY);
-
-      const pX = source.pivot_point?.x ?? 0;
-      const pY = source.pivot_point?.y ?? 0;
-      sourceClone.set_pivot_point(pX, pY);
-
-      sourceClone.opacity = source.opacity;
-
-      // 交差判定（既存ロジックの維持）
+      // get_transformed_position() 等の1フレーム遅延する関数を捨て、
+      // 渡された最新のコンテナ絶対座標からの純粋な引き算でローカル座標を算出
       const localX = absX - cX;
       const localY = absY - cY;
 
+      // clipper はコンテナの左上原点(0, 0)に配置し、サイズをコンテナに合わせる
+      clipper.set_position(0, 0);
+      clipper.set_size(containerW, containerH);
+      clipper.opacity = source.opacity;
+
+      const sourceClone = (clipper as any)._sourceClone as Clutter.Clone;
+
+      if (sourceClone) {
+        // ハックを全廃止し、純粋なローカル座標に配置する
+        sourceClone.set_position(localX, localY);
+        sourceClone.translation_x = 0;
+        sourceClone.translation_y = 0;
+
+        sourceClone.set_size(w, h);
+        sourceClone.set_scale(scaleX, scaleY);
+
+        const pX = source.pivot_point?.x ?? 0;
+        const pY = source.pivot_point?.y ?? 0;
+        sourceClone.set_pivot_point(pX, pY);
+      }
+
+      // 交差判定（カリング）
       const scaledW = w * scaleX;
       const scaledH = h * scaleY;
       const isVisible = source.visible && source.mapped;
@@ -198,9 +215,9 @@ export class UILayerSampler {
           localY < containerH &&
           (localY + scaledH) > 0;
 
-        sourceClone.visible = isIntersecting;
+        clipper.visible = isIntersecting;
       } else {
-        sourceClone.visible = isVisible;
+        clipper.visible = isVisible;
       }
 
     } catch (_) { }
@@ -213,6 +230,7 @@ export class UILayerSampler {
     let contAbsX = cX ?? 0;
     let contAbsY = cY ?? 0;
 
+    // 引数が渡されなかった場合のフォールバック
     if (cX === undefined || cY === undefined) {
       try {
         const [cw, ch] = this._container.get_size();
@@ -224,27 +242,21 @@ export class UILayerSampler {
         contAbsY = Number.isNaN(ty) ? 0 : ty;
       } catch (_) { }
     }
-    if (this._uiClonesContainer.get_parent() === this._container) {
-      this._container.set_child_above_sibling(this._uiClonesContainer, null);
-    }
-    // WindowCloneManager の setOffset(x, y) と正負が逆の cX, cY が渡るため、
-    // ここでマイナスにしてコンテナの位置を設定する
-    this._uiClonesContainer.set_position(-contAbsX, -contAbsY);
 
-    for (const [actor, sourceClone] of this._clones) {
-      this.syncProperties(actor, sourceClone, contW, contH, contAbsX, contAbsY);
+    for (const [actor, clipper] of this._clones) {
+      this.syncProperties(actor, clipper, this._container, contW, contH, contAbsX, contAbsY);
     }
   }
 
+
   destroy() {
-    if (this._uiClonesContainer) {
-      try { this._uiClonesContainer.destroy(); } catch (_) { }
+    for (const [, clipper] of this._clones) {
+      try { clipper.destroy(); } catch (_) { }
     }
     this._clones.clear();
     this._selfRoot = null;
   }
 }
-
 
 export class WindowCloneManager {
   private windowClonesContainer: Clutter.Actor | null = null;
@@ -252,20 +264,17 @@ export class WindowCloneManager {
   private bgClone: Clutter.Clone | null = null;
 
   private container: Clutter.Actor | null = null;
-  private cloneContainer: Clutter.Actor | null = null;
 
-  constructor(container: Clutter.Actor, cloneContainer: Clutter.Actor | null = null) {
+  constructor(container: Clutter.Actor) {
     this.container = container;
     this._windowClones = new Map();
 
     this.bgClone = new UnpickableClone({ source: Main.layoutManager._backgroundGroup });
     this.windowClonesContainer = new UnpickableActor();
-    this.cloneContainer = cloneContainer;
-    this.cloneContainer?.add_child(this.windowClonesContainer);
 
     // 【修正点】bgClone（壁紙）を「先」に、windowClonesContainer（ウィンドウ群）を「後」に追加する
-    this.container.insert_child_at_index(this.bgClone, 0);
-    this.container.insert_child_at_index(this.windowClonesContainer, 1);
+    this.container.add_child(this.bgClone);
+    this.container.add_child(this.windowClonesContainer);
   }
 
   rebuildClones() {
@@ -277,8 +286,8 @@ export class WindowCloneManager {
     this.bgClone = new UnpickableClone({ source: Main.layoutManager._backgroundGroup });
     this.windowClonesContainer = new UnpickableActor();
 
-    this.container.insert_child_at_index(this.bgClone, 0);
-    this.container.insert_child_at_index(this.windowClonesContainer, 1);
+    this.container.add_child(this.bgClone);
+    this.container.add_child(this.windowClonesContainer);
 
     this._windowClones.clear();
 

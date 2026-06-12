@@ -8,7 +8,7 @@ import Meta from 'gi://Meta';
 import { LiquidEffect } from './liquidEffect.js';
 import { StageContrastSampler, AdaptiveContrastConfig } from './contrastSampler.js';
 import Gio from 'gi://Gio';
-import { UnpickableClone } from './utils.js';
+import { UnpickableClone, UnpickableActor, UILayerSampler, UnpickableWidget } from './utils.js';
 
 interface CustomBannerActor extends St.Widget {
   _colorTweenId?: number;
@@ -263,7 +263,7 @@ export class OsdManager {
     targetBox.add_style_class_name('liquid-glass-transparent');
     targetBox.translation_y = -this._osdYOffset;
 
-    let bgActor = new St.Widget({
+    let bgActor = new UnpickableWidget({
       style_class: 'liquid-glass-bg-actor',
       clip_to_allocation: false,
       reactive: false
@@ -271,7 +271,7 @@ export class OsdManager {
     bgActor.set_size(1.0, 1.0);
     bgActor.set_pivot_point(0.0, 0.0);
 
-    let clipBox = new St.Widget({ clip_to_allocation: true });
+    let clipBox = new UnpickableWidget({ clip_to_allocation: true });
     bgActor.add_child(clipBox);
 
     // OSD内部のレイアウトマネージャーの干渉を防ぐため、
@@ -541,10 +541,10 @@ export class OsdManager {
     state.bgClone = new UnpickableClone({ source: Main.layoutManager._backgroundGroup });
     state.clipBox.add_child(state.bgClone);
 
-    state.overviewCloneContainer = new Clutter.Actor();
+    state.overviewCloneContainer = new UnpickableActor();
     state.clipBox.add_child(state.overviewCloneContainer);
 
-    state.windowClonesContainer = new Clutter.Actor();
+    state.windowClonesContainer = new UnpickableActor();
     state.clipBox.add_child(state.windowClonesContainer);
 
     state._windowClones.clear();

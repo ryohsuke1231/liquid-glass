@@ -7,7 +7,7 @@ import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import { LiquidEffect } from './liquidEffect.js';
 import { StageContrastSampler, AdaptiveContrastConfig } from './contrastSampler.js';
-import { UnpickableClone } from './utils.js';
+import { UnpickableClone, UnpickableActor, UnpickableWidget } from './utils.js';
 // ========== Configuration Parameters ==========
 // Transparent padding outside the glass area. 
 // This prevents the shader distortion or rounded corners from being clipped by the actor bounds.
@@ -74,6 +74,7 @@ export class QuickSettingsManager {
     _lastBgY;
     _cornerRadius = 0;
     _animationInterval = 16;
+    _enableSubmenuFix = false; // サブメニューを強制的にtranslation_x, translation_yで移動するかどうかのフラグ
     constructor(extensionPath, settings) {
         this.extensionPath = extensionPath;
         this._settings = settings;
@@ -120,6 +121,7 @@ export class QuickSettingsManager {
         this._buttonTimerId = 0;
         this._styledButtons = new Map();
         this._buttonSignalIds = new Map();
+        this._enableSubmenuFix = true;
     }
     setup() {
         if (!this._settings)
@@ -151,7 +153,7 @@ export class QuickSettingsManager {
         return Main.layoutManager.monitors[monitorIndex] || Main.layoutManager.primaryMonitor;
     }
     _applyMenuOffsets() {
-        if (!this.targetActor || !this._hasAutoRefreshed)
+        if (!this.targetActor)
             return;
         this.targetActor.translation_y = this._menuYoffset;
         this.targetActor.translation_x = this._menuXoffset;
@@ -273,7 +275,7 @@ export class QuickSettingsManager {
         };
         // Create the main background actor that will hold the glass effect
         // clip_to_allocation is false so the shader can draw outside the strict bounds if needed
-        this.bgActor = new St.Widget({
+        this.bgActor = new UnpickableWidget({
             style_class: 'liquid-glass-bg-actor',
             clip_to_allocation: false,
             reactive: false
@@ -282,11 +284,11 @@ export class QuickSettingsManager {
         // while applying a shader will immediately crash the GNOME Shell.
         this.bgActor.set_size(1.0, 1.0);
         // Internal box to hold the desktop/window clones and clip them perfectly
-        this.clipBox = new St.Widget({
+        this.clipBox = new UnpickableWidget({
             clip_to_allocation: true
         });
         this.bgActor.add_child(this.clipBox);
-        this.fboContainer = new Clutter.Actor();
+        this.fboContainer = new UnpickableActor();
         this.clipBox.add_child(this.fboContainer);
         // Set pivot points for scaling. 
         // The menu scales from the top-center (0.5, 0.0)
@@ -361,11 +363,11 @@ export class QuickSettingsManager {
             this.bgClone.connect('destroy', () => { this.bgClone = null; });
             this.fboContainer?.add_child(this.bgClone);
             // Create and track overview clone container
-            this.overviewCloneContainer = new Clutter.Actor();
+            this.overviewCloneContainer = new UnpickableActor();
             this.overviewCloneContainer.connect('destroy', () => { this.overviewCloneContainer = null; });
             this.fboContainer?.add_child(this.overviewCloneContainer);
             // Create and track window clones container
-            this.windowClonesContainer = new Clutter.Actor();
+            this.windowClonesContainer = new UnpickableActor();
             this.windowClonesContainer.connect('destroy', () => { this.windowClonesContainer = null; });
             this.fboContainer?.add_child(this.windowClonesContainer);
             this._windowClones.clear();
@@ -428,8 +430,10 @@ export class QuickSettingsManager {
                 }
                 if (!this._hasAutoRefreshed) {
                     this._hasAutoRefreshed = true;
-                    return;
+                    // return;
                 }
+                this._applyClassStyles();
+                this._applyMenuOffsets();
                 this._stableBaseW = undefined;
                 this._stableBaseH = undefined;
                 startFrameSync();
@@ -440,8 +444,8 @@ export class QuickSettingsManager {
             }
             this._applyClassStyles();
             this._applyMenuOffsets();
-            if (!this._hasAutoRefreshed)
-                return;
+            // if (!this._hasAutoRefreshed)
+            // return;
             // stopFrameSync();
             this._stopAdaptiveColorSampling();
             this._stopButtonAlphaSampling();
@@ -467,7 +471,7 @@ export class QuickSettingsManager {
             })
         });
         this._updateResolution();
-        if (this.targetActor.mapped && this._hasAutoRefreshed) {
+        if (this.targetActor.mapped) {
             startFrameSync();
         }
     }
@@ -750,6 +754,7 @@ export class QuickSettingsManager {
                 }
             }
         }
+        this._adjustSubmenuPositions();
     }
     // Updates the shader resolution based on the current background actor size
     _updateResolution() {
@@ -1298,6 +1303,137 @@ export class QuickSettingsManager {
             });
         }
     }
+    // 追加: サブメニューの位置を親メニューの中央に強制補正する
+    _adjustSubmenuPositions() {
+        if (!this._enableSubmenuFix || !this.menu?.isOpen || !this.animActor)
+            return;
+        let foundMenus = [];
+        let deepScan = (actor) => {
+            if (!actor)
+                return;
+            if (actor instanceof St.Widget) {
+                let css = actor.get_style_class_name ? actor.get_style_class_name() : "";
+                if (css && css.split(' ').includes('quick-toggle-menu')) {
+                    foundMenus.push(actor);
+                }
+            }
+            let children = typeof actor.get_children === 'function' ? actor.get_children() : [];
+            for (let child of children) {
+                deepScan(child);
+            }
+        };
+        deepScan(this.menu.actor);
+        if (foundMenus.length === 0)
+            return;
+        // 親の基準となる絶対座標とサイズを取得 (animActor = メニューの見た目の枠である box)
+        let [parentAbsX, parentAbsY] = this.animActor.get_transformed_position();
+        let [parentW, parentH] = this.animActor.get_size();
+        if (Number.isNaN(parentAbsX) || Number.isNaN(parentAbsY) || Number.isNaN(parentW) || Number.isNaN(parentH) || parentW <= 0 || parentH <= 0)
+            return;
+        for (let submenu of foundMenus) {
+            if (!submenu.mapped || !submenu.visible)
+                continue;
+            let [subAbsX, subAbsY] = submenu.get_transformed_position();
+            let [subW, subH] = submenu.get_size();
+            if (Number.isNaN(subAbsX) || Number.isNaN(subAbsY) || Number.isNaN(subW) || Number.isNaN(subH) || subW <= 0 || subH <= 0)
+                continue;
+            // ==========================================
+            // 1. 横方向 (X座標) の中央補正
+            // ==========================================
+            let currentTranslationX = submenu.translation_x || 0;
+            let baseRelativeX = subAbsX - parentAbsX - currentTranslationX;
+            let targetRelativeX = (parentW - subW) / 2;
+            let newTranslationX = targetRelativeX - baseRelativeX;
+            if (Math.abs(currentTranslationX - newTranslationX) > 0.5) {
+                submenu.translation_x = newTranslationX;
+            }
+            // ==========================================
+            // 2. 縦方向 (Y座標) の隙間中央補正
+            // ==========================================
+            let currentTranslationY = submenu.translation_y || 0;
+            // 現在の translation_y を差し引いた「本来のベースとなる絶対Y座標」を逆算
+            let baseAbsY = subAbsY - currentTranslationY;
+            // サブメニューがベース位置（補正なし）のときの中心Y座標
+            let subCenterY = baseAbsY + (subH / 2);
+            // 上下の境界の初期値（親ボックスの最上端と最下端）
+            let aboveMaxY = parentAbsY;
+            let belowMinY = parentAbsY + parentH;
+            // 周辺のUI要素を走査して、サブメニューの真上・真下にある要素の境界線を特定する
+            let findBoundaries = (n) => {
+                if (!n || !n.visible || !n.mapped || n === submenu)
+                    return;
+                // 自身がサブメニューを内包しているコンテナ（上位レイヤーなど）の場合は中身を直接掘る
+                if (typeof n.contains === 'function' && n.contains(submenu)) {
+                    let children = typeof n.get_children === 'function' ? n.get_children() : [];
+                    for (let child of children) {
+                        findBoundaries(child);
+                    }
+                    return;
+                }
+                let [, nodeY] = n.get_transformed_position();
+                let [nodeW, nodeH] = n.get_size();
+                if (Number.isNaN(nodeY) || Number.isNaN(nodeW) || Number.isNaN(nodeH) || nodeH <= 5 || nodeW <= 5)
+                    return;
+                // サブメニューの「中心点」を基準に、上側と下側の要素を完全に分離して判定
+                if (nodeY + (nodeH / 2) < subCenterY) {
+                    // 上側にある要素：その下端(nodeY + nodeH)がサブメニュー中心を跨がず、かつ最も下にあるもの
+                    if (nodeY + nodeH <= subCenterY && nodeY + nodeH > aboveMaxY) {
+                        aboveMaxY = nodeY + nodeH;
+                    }
+                }
+                else {
+                    // 下側にある要素：その上端(nodeY)がサブメニュー中心を跨がず、かつ最も上にあるもの
+                    if (nodeY >= subCenterY && nodeY < belowMinY) {
+                        belowMinY = nodeY;
+                    }
+                }
+                let children = typeof n.get_children === 'function' ? n.get_children() : [];
+                for (let child of children) {
+                    findBoundaries(child);
+                }
+            };
+            // box(親コンテナ) の直下の子要素から順に境界探索を実行
+            let parentChildren = typeof this.animActor.get_children === 'function' ? this.animActor.get_children() : [];
+            for (let child of parentChildren) {
+                findBoundaries(child);
+            }
+            // 特定した上下の隙間の中央にサブメニューを配置するための目標値を計算
+            let targetTranslationY = (aboveMaxY + (belowMinY - aboveMaxY) / 2) - (subH / 2) - baseAbsY;
+            // チャタリング防止（現在の移動量と0.5px以上の差がある場合のみ適用して描画を安定させる）
+            if (Math.abs(currentTranslationY - targetTranslationY) > 0.5) {
+                submenu.translation_y = targetTranslationY;
+            }
+        }
+    }
+    // 追加: サブメニューの強制オフセットを元に戻す
+    _clearSubmenuFix() {
+        let foundMenus = [];
+        let deepScan = (actor) => {
+            if (!actor)
+                return;
+            if (actor instanceof St.Widget) {
+                let css = actor.get_style_class_name ? actor.get_style_class_name() : "";
+                if (css && css.split(' ').includes('quick-toggle-menu')) {
+                    foundMenus.push(actor);
+                }
+            }
+            let children = typeof actor.get_children === 'function' ? actor.get_children() : [];
+            for (let child of children) {
+                deepScan(child);
+            }
+        };
+        if (this.menu?.actor) {
+            deepScan(this.menu.actor);
+        }
+        for (let submenu of foundMenus) {
+            try {
+                submenu.translation_x = 0;
+            }
+            catch (e) {
+                // すでに破棄されている場合などの安全弁
+            }
+        }
+    }
     _removeEffect() {
         if (!this._isEffectActive)
             return;
@@ -1305,6 +1441,7 @@ export class QuickSettingsManager {
         this._stopAdaptiveColorSampling();
         this._clearAdaptiveStyles();
         this._clearButtonStyles();
+        this._clearSubmenuFix();
         // Disconnect all event listeners safely
         for (let sig of this._signals) {
             try {

@@ -7,7 +7,7 @@ import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import { LiquidEffect } from './liquidEffect.js';
 import { StageContrastSampler, AdaptiveContrastConfig } from './contrastSampler.js';
-import { UnpickableClone } from './utils.js';
+import { UnpickableClone, UnpickableActor, UnpickableWidget } from './utils.js';
 // ========== Configuration Parameters (Defaults, overridden by settings) ==========
 const SHADER_PADDING = 20;
 const HIDE_SAFETY_MARGIN = 7;
@@ -208,14 +208,14 @@ export class NotificationManager {
             // @ts-expect-error
             this.tray._bannerBin.translation_y = this._settings.get_int('notification-y-offset');
         }
-        this.bgActor = new St.Widget({
+        this.bgActor = new UnpickableWidget({
             style_class: 'liquid-glass-bg-actor',
             clip_to_allocation: false,
             reactive: false
         });
         this.bgActor.set_size(1.0, 1.0);
         this.bgActor.set_pivot_point(0.0, 0.0);
-        this.clipBox = new St.Widget({ clip_to_allocation: true });
+        this.clipBox = new UnpickableWidget({ clip_to_allocation: true });
         this.bgActor.add_child(this.clipBox);
         // @ts-expect-error
         let bannerBin = this.tray._bannerBin;
@@ -446,9 +446,9 @@ export class NotificationManager {
         }
         this.bgClone = new UnpickableClone({ source: Main.layoutManager._backgroundGroup });
         this.clipBox?.add_child(this.bgClone);
-        this.overviewCloneContainer = new Clutter.Actor();
+        this.overviewCloneContainer = new UnpickableActor();
         this.clipBox?.add_child(this.overviewCloneContainer);
-        this.windowClonesContainer = new Clutter.Actor();
+        this.windowClonesContainer = new UnpickableActor();
         this.clipBox?.add_child(this.windowClonesContainer);
         this._windowClones.clear();
         this._overviewClone = null;

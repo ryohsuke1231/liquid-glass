@@ -7,7 +7,7 @@ import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import { LiquidEffect } from './liquidEffect.js';
 import Gio from 'gi://Gio';
-import { UnpickableClone, UILayerSampler } from './utils.js';
+import { UnpickableClone, UnpickableActor, UILayerSampler, UnpickableWidget, WindowCloneManager } from './utils.js';
 
 // Padding to allow the shader to draw effects (like refraction and blur) outside the actor's strict bounds.
 const SHADER_PADDING = 20;
@@ -35,13 +35,6 @@ export class DashManager {
 
   private _glassExpand: number;
 
-  private bgClone: Clutter.Clone | null = null;
-  private windowClonesContainer: Clutter.Actor | null = null;
-  private overviewCloneContainer: Clutter.Actor | null = null;
-  private _windowClones: Map<Clutter.Actor, Clutter.Clone>;
-  private _overviewClone: Clutter.Clone | null = null;
-  private _appDisplayClone: Clutter.Clone | null = null;
-  private _searchClone: Clutter.Clone | null = null;
 
   private _signals: number[];
   private _settingsSignals: number[]; // GSettingsのイベントリスナーを管理
@@ -53,6 +46,8 @@ export class DashManager {
   private _dockParent: St.Widget | null = null;
 
   private clipBox: St.Widget | null = null;
+
+  private _cloneContainer: Clutter.Actor | null = null;
 
   private _lastAbsX: number | undefined;
   private _lastAbsY: number | undefined;
@@ -73,6 +68,7 @@ export class DashManager {
   private _marginValue: number = 0;
 
   private _uiSampler: UILayerSampler | null = null;
+  private _windowCloneManager: WindowCloneManager | null = null;
 
   // コンストラクタに settings を追加
   constructor(extensionPath: string, targetActor: St.Widget, settings: Gio.Settings) {
@@ -89,7 +85,6 @@ export class DashManager {
     // this.bgClone = null;
     // this.windowClonesContainer = null;
 
-    this._windowClones = new Map();
 
     this._signals = [];
     this._settingsSignals = []; // GSettingsのイベントリスナーを管理
@@ -224,7 +219,7 @@ export class DashManager {
       this._dockParent.add_style_class_name('liquid-glass-transparent');
     }
 
-    this.bgActor = new St.Widget({
+    this.bgActor = new UnpickableWidget({
       style_class: 'liquid-glass-bg-actor',
       clip_to_allocation: false,
       reactive: false
@@ -232,12 +227,16 @@ export class DashManager {
 
     this.bgActor.set_size(1.0, 1.0);
 
-    this.clipBox = new St.Widget({ clip_to_allocation: true });
+    this.clipBox = new UnpickableWidget({ clip_to_allocation: true });
     this.clipBox.set_size(1.0, 1.0);
     this.bgActor.add_child(this.clipBox);
 
     this.targetActor.set_pivot_point(0.5, 0.5);
     this.bgActor.set_pivot_point(0.0, 0.0);
+
+    this._cloneContainer = new UnpickableActor();
+    this._cloneContainer.set_name("clone-container");
+    this.clipBox.add_child(this._cloneContainer);
 
     // 動的マージンを適用
     this._applyMargin();
@@ -258,8 +257,6 @@ export class DashManager {
       Main.layoutManager.uiGroup.add_child(this.bgActor);
     }
 
-    this._uiSampler = new UILayerSampler(this.bgActor, this.clipBox, [dockRoot]);
-
     // 設定から初期値を読み込み
     let blurRadius = this._settings.get_int('dock-blur-radius');
     let tintColorStr = this._settings.get_string('dock-tint-color');
@@ -278,6 +275,10 @@ export class DashManager {
     this.effect.setIsDock(true);
     this.bgActor.add_effect(this.effect);
 
+    // UILayerSamplerがwindow_groupをサンプリングしないように除外リストに追加
+    this._windowCloneManager = new WindowCloneManager(this.clipBox, this._cloneContainer);
+    this._uiSampler = new UILayerSampler(this.bgActor, this.clipBox, [dockRoot, global.windowGroup, global.window_group], this._cloneContainer);
+
     this.bgActor.show();
 
     const laterAdd = (laterType: Meta.LaterType, callback: GLib.SourceFunc) => {
@@ -289,35 +290,10 @@ export class DashManager {
     let buildClones = () => {
       if (!this.bgActor) return;
 
-      if (this.bgClone) { this.bgClone.destroy(); this.bgClone = null; }
-      if (this.windowClonesContainer) { this.windowClonesContainer.destroy(); this.windowClonesContainer = null; }
-
-      this.bgClone = new UnpickableClone({ source: Main.layoutManager._backgroundGroup });
-      this.clipBox?.add_child(this.bgClone);
-
-      this.windowClonesContainer = new Clutter.Actor();
-      this.clipBox?.add_child(this.windowClonesContainer);
-
-      this.overviewCloneContainer = new Clutter.Actor();
-      this.clipBox?.add_child(this.overviewCloneContainer);
-
+      this._windowCloneManager?.rebuildClones();
       this._uiSampler?.rebindSelf();
       this._uiSampler?.refresh();
 
-      this._windowClones.clear();
-      this._overviewClone = null;
-
-      let windows = global.get_window_actors();
-      for (let w of windows) {
-        let metaWindow = w.get_meta_window();
-
-        if (!metaWindow || metaWindow.minimized || !w.visible) continue;
-
-        let clone = new UnpickableClone({ source: w });
-        clone.set_position(w.x, w.y);
-        this.windowClonesContainer.add_child(clone);
-        this._windowClones.set(w, clone);
-      }
     };
 
     let frameTick = () => {
@@ -635,9 +611,13 @@ export class DashManager {
     let bgY = absY - SHADER_PADDING - this._glassExpand;
 
     if (this._lastBgW !== bgW || this._lastBgH !== bgH || this._lastBgX !== bgX || this._lastBgY !== bgY) {
+      this.bgActor.remove_transition('size');
+      this.bgActor.remove_transition('position');
       this.bgActor.set_size(bgW, bgH);
       this.bgActor.set_position(bgX, bgY);
 
+      this.clipBox?.remove_transition('size');
+      this.clipBox?.remove_transition('position');
       this.clipBox?.set_size(bgW, bgH);
       this.clipBox?.set_position(0, 0);
 
@@ -647,156 +627,19 @@ export class DashManager {
       this._lastBgX = bgX; this._lastBgY = bgY;
     }
 
-    if (this.bgClone && this.windowClonesContainer) {
-      this.bgClone.set_position(-bgX, -bgY);
-      this.windowClonesContainer.set_position(-bgX, -bgY);
+    this._windowCloneManager?.setOffset(-bgX, -bgY);
 
-      if (this.overviewCloneContainer) {
-        this.overviewCloneContainer.set_position(-bgX, -bgY);
-      }
 
-      // アクティビティ画面が開いているか（アニメーション中含む）を判定
-      let isOverview = Main.overview.visible || Main.overview.animationInProgress;
+    // アクティビティ画面が開いているか（アニメーション中含む）を判定
+    // let isOverview = Main.overview.visible || Main.overview.animationInProgress;
 
-      let windows = global.get_window_actors();
-      let activeWindows = new Set();
-      let zIndex = 0;
 
-      /*
-      for (let w of windows) {
-          let metaWindow = w.get_meta_window();
-          if (!metaWindow || metaWindow.minimized || !w.visible) continue;
- 
-          activeWindows.add(w);
- 
-          let clone;
-          if (!this._windowClones.has(w)) {
-              clone = new UnpickableClone({ source: w });
-              this.windowClonesContainer.add_child(clone);
-              this._windowClones.set(w, clone);
-          } else {
-              clone = this._windowClones.get(w);
-          }
-          
-          clone.set_position(w.x, w.y);
-          clone.set_size(w.width, w.height);
-          clone.set_scale(w.scale_x, w.scale_y);
-          clone.translation_x = w.translation_x;
-          clone.translation_y = w.translation_y;
- 
-          let pX = w.pivot_point ? w.pivot_point.x : 0;
-          let pY = w.pivot_point ? w.pivot_point.y : 0;
-          clone.set_pivot_point(pX, pY);
- 
-          this.windowClonesContainer.set_child_at_index(clone, zIndex);
-          zIndex++;
-      }
- 
-      for (let [w, clone] of this._windowClones.entries()) {
-          if (!activeWindows.has(w)) {
-              clone.destroy();
-              this._windowClones.delete(w);
-          }
-      }
-      */
-      if (!isOverview) {
-        // --- デスクトップ通常時 ---
+    // this.bgClone.show(); // 通常の壁紙クローンを表示
 
-        // Overview用のクローン群があれば全て破棄
-        if (this._overviewClone) { this._overviewClone.destroy(); this._overviewClone = null; }
-        if (this._appDisplayClone) { this._appDisplayClone.destroy(); this._appDisplayClone = null; }
-        if (this._searchClone) { this._searchClone.destroy(); this._searchClone = null; }
+    this._uiSampler?.refresh();
+    this._uiSampler?.sync(bgX, bgY, bgW, bgH);
 
-        this.bgClone.show(); // 通常の壁紙クローンを表示
-
-        this._uiSampler?.refresh();
-        this._uiSampler?.sync();
-
-        // 既存のウィンドウクローン同期ロジック
-        for (let w of windows) {
-          let metaWindow = w.get_meta_window();
-          if (!metaWindow || metaWindow.minimized || !w.visible) continue;
-
-          activeWindows.add(w);
-
-          let clone;
-          if (!this._windowClones.has(w)) {
-            clone = new UnpickableClone({ source: w });
-            this.windowClonesContainer.add_child(clone);
-            this._windowClones.set(w, clone);
-          } else {
-            clone = this._windowClones.get(w);
-          }
-
-          clone.set_position(w.x, w.y);
-          clone.set_size(w.width, w.height);
-          clone.set_scale(w.scale_x, w.scale_y);
-          clone.translation_x = w.translation_x;
-          clone.translation_y = w.translation_y;
-
-          let pX = w.pivot_point ? w.pivot_point.x : 0;
-          let pY = w.pivot_point ? w.pivot_point.y : 0;
-          clone.set_pivot_point(pX, pY);
-
-          this.windowClonesContainer.set_child_at_index(clone, zIndex);
-          zIndex++;
-        }
-      } else {
-        // --- アクティビティ画面（Overview）時 ---
-
-        // ワークスペースプレビュー自体に壁紙が含まれるため、通常の壁紙クローンは隠す
-        // this.bgClone.hide();
-        this.bgClone.show();
-
-        this._uiSampler?.refresh();
-        this._uiSampler?.sync();
-
-        // Dockを含まない、ワークスペース（背景＋プレビュー）だけのActorをピンポイント取得
-        // ※ GNOME 40以降で安全にアクセスできるよう Optional Chaining (?.) を使用
-        // Overview内の主要UIを管理しているcontrolsを取得
-        let controls = Main.overview._overview?._controls;
-
-        if (controls) {
-          // 1. ワークスペースプレビュー（背景含む）のクローン
-          if (controls._workspacesDisplay) {
-            if (!this._overviewClone) {
-              this._overviewClone = new UnpickableClone({ source: controls._workspacesDisplay });
-              this.overviewCloneContainer?.add_child(this._overviewClone);
-            }
-            this._syncActorProperties(controls._workspacesDisplay, this._overviewClone);
-          }
-
-          // 2. アプリ一覧 (AppGrid) のクローン
-          if (controls._appDisplay) {
-            if (!this._appDisplayClone) {
-              this._appDisplayClone = new UnpickableClone({ source: controls._appDisplay });
-              this.overviewCloneContainer?.add_child(this._appDisplayClone);
-            }
-            this._syncActorProperties(controls._appDisplay, this._appDisplayClone);
-          }
-
-          // 3. 検索画面 のクローン
-          if (controls._searchController && controls._searchController.actor) {
-            if (!this._searchClone) {
-              this._searchClone = new UnpickableClone({ source: controls._searchController.actor });
-              this.overviewCloneContainer?.add_child(this._searchClone);
-            }
-            this._syncActorProperties(controls._searchController.actor, this._searchClone);
-          }
-        }
-
-        // isOverview が true の間は activeWindows が空のままになるため、
-        // 以下のクリーンアップ処理によってフルサイズのウィンドウクローンは自動的に破棄されます。
-      }
-
-      // 使われなくなったクローン（閉じたウィンドウ、またはOverview起動時の全ウィンドウ）を削除
-      for (let [w, clone] of this._windowClones.entries()) {
-        if (!activeWindows.has(w)) {
-          clone.destroy();
-          this._windowClones.delete(w);
-        }
-      }
-    }
+    this._windowCloneManager?.sync();
   }
 
   _syncActorProperties(source, clone) {
@@ -814,10 +657,14 @@ export class DashManager {
     }
 
     // 正しい絶対座標とサイズをクローンに適用
+    clone.remove_transition('position');
+    clone.remove_transition('size');
     clone.set_position(absX, absY);
     clone.set_size(w, h);
 
     // スケールとピボット
+    clone.remove_transition('scale-x');
+    clone.remove_transition('scale-y');
     clone.set_scale(source.scale_x, source.scale_y);
     let pX = source.pivot_point ? source.pivot_point.x : 0;
     let pY = source.pivot_point ? source.pivot_point.y : 0;
@@ -905,16 +752,9 @@ export class DashManager {
       this.bgActor = null;
     }
     this.blurEffect = null;
-    this.bgClone = null;
-    this.windowClonesContainer = null;
-    this._windowClones.clear();
-    if (this.overviewCloneContainer) {
-      // this.overviewCloneContainer.destroy();
-      this.overviewCloneContainer = null;
-    }
-    this._overviewClone = null;
-    this._appDisplayClone = null;
-    this._searchClone = null;
+
+    this._uiSampler?.destroy();
+    this._windowCloneManager?.destroy();
   }
 
   // 拡張機能全体が無効化される時の最終クリーンアップ

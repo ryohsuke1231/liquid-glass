@@ -8,7 +8,7 @@ import Meta from 'gi://Meta';
 import Gio from 'gi://Gio';
 import { LiquidEffect } from './liquidEffect.js';
 import { StageContrastSampler, AdaptiveContrastConfig } from './contrastSampler.js';
-import { UnpickableClone, UnpickableActor, UILayerSampler } from './utils.js';
+import { UnpickableClone, UnpickableActor, UILayerSampler, UnpickableWidget } from './utils.js';
 // ========== Configuration Parameters ==========
 // Transparent padding outside the glass area. 
 // This prevents the shader distortion or rounded corners from being clipped by the actor bounds.
@@ -160,8 +160,8 @@ export class UIManager {
         if (!this.targetActor)
             return;
         // 1. 親要素と子要素を作成して、GNOMEテーマが要求する正しい階層を再現
-        const parent = new St.Widget({ style_class: 'calendar' });
-        const child = new St.Widget({ style_class: 'calendar-day calendar-today' });
+        const parent = new UnpickableWidget({ style_class: 'calendar' });
+        const child = new UnpickableWidget({ style_class: 'calendar-day calendar-today' });
         parent.add_child(child);
         // 2. UIグループに追加してスタイルを強制計算させる
         Main.layoutManager.uiGroup.add_child(parent);
@@ -336,19 +336,19 @@ export class UIManager {
         // Create the main background actor that will hold the glass effect
         // clip_to_allocation is false so the shader can draw outside the strict bounds if needed
         // 1. bgActor (LiquidEffect用：メニューサイズ)
-        this.bgActor = new St.Widget({
+        this.bgActor = new UnpickableWidget({
             style_class: 'liquid-glass-bg-actor',
             clip_to_allocation: false,
             reactive: false
         });
         this.bgActor.set_size(1.0, 1.0);
         // 2. clipBox (切り抜き用ハサミ：メニューサイズ)
-        this.clipBox = new St.Widget({
+        this.clipBox = new UnpickableWidget({
             clip_to_allocation: true
         });
         this.bgActor.add_child(this.clipBox);
         // 🌟 新規追加: 3. fboContainer (マイナス座標回避用フルスクリーンキャンバス)
-        // this.fboContainer = new Clutter.Actor();
+        // this.fboContainer = new UnpickableActor();
         this.fboContainer = new UnpickableActor();
         this.clipBox.add_child(this.fboContainer);
         // Set pivot points for scaling. 
@@ -437,12 +437,12 @@ export class UIManager {
             this.bgClone = new UnpickableClone({ source: Main.layoutManager._backgroundGroup });
             this.bgClone.connect('destroy', () => { this.bgClone = null; });
             this.fboContainer?.add_child(this.bgClone);
-            // this.overviewCloneContainer = new Clutter.Actor();
+            // this.overviewCloneContainer = new UnpickableActor();
             this.overviewCloneContainer = new UnpickableActor();
             this.overviewCloneContainer.connect('destroy', () => { this.overviewCloneContainer = null; });
             this.fboContainer?.add_child(this.overviewCloneContainer);
             // Create a container for the window clones
-            // this.windowClonesContainer = new Clutter.Actor();
+            // this.windowClonesContainer = new UnpickableActor();
             this.windowClonesContainer = new UnpickableActor();
             this.windowClonesContainer.connect('destroy', () => { this.windowClonesContainer = null; });
             this.fboContainer?.add_child(this.windowClonesContainer);
@@ -788,7 +788,6 @@ export class UIManager {
                 if (controls) {
                     if (controls._workspacesDisplay) {
                         if (!this._overviewClone) {
-                            // this._overviewClone = new UnpickableClone({ source: controls._workspacesDisplay });
                             this._overviewClone = new UnpickableClone({ source: controls._workspacesDisplay });
                             this.overviewCloneContainer?.add_child(this._overviewClone);
                         }
@@ -796,7 +795,6 @@ export class UIManager {
                     }
                     if (controls._appDisplay) {
                         if (!this._appDisplayClone) {
-                            // this._appDisplayClone = new UnpickableClone({ source: controls._appDisplay });
                             this._appDisplayClone = new UnpickableClone({ source: controls._appDisplay });
                             this.overviewCloneContainer?.add_child(this._appDisplayClone);
                         }
@@ -804,7 +802,6 @@ export class UIManager {
                     }
                     if (controls._searchController && controls._searchController.actor) {
                         if (!this._searchClone) {
-                            // this._searchClone = new UnpickableClone({ source: controls._searchController.actor });
                             this._searchClone = new UnpickableClone({ source: controls._searchController.actor });
                             this.overviewCloneContainer?.add_child(this._searchClone);
                         }
