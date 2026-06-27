@@ -113,3 +113,32 @@ export const InverseCornerEffect = GObject.registerClass(
         }
     }
 );
+
+/**
+ * Safe helper to retrieve window actors, compatible with GNOME Shell pre-48 and 48+ (GNOME 50)
+ * Ayudante seguro para obtener los actores de ventanas, compatible con versiones anteriores y posteriores a GNOME 48 (GNOME 50)
+ */
+export function getWindowActors(): any[] {
+    if (global.compositor && typeof (global.compositor as any).get_window_actors === 'function') {
+        return (global.compositor as any).get_window_actors();
+    }
+    if (typeof (global as any).get_window_actors === 'function') {
+        return (global as any).get_window_actors();
+    }
+    return [];
+}
+
+/**
+ * Safe helper to check if a Clutter Actor (GObject) is still valid and not disposed.
+ * Ayudante seguro para comprobar si un actor de Clutter (GObject) sigue siendo válido y no ha sido destruido.
+ */
+export function isActorValid(actor: any): boolean {
+    if (!actor) return false;
+    try {
+        let _v = actor.visible;
+        return true;
+    } catch (e) {
+        return false;
+    }
+}
+

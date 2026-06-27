@@ -6,7 +6,7 @@ import St from 'gi://St';
 import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import { LiquidEffect } from './liquidEffect.js';
-import { UnpickableClone } from './utils.js';
+import { UnpickableClone, getWindowActors } from './utils.js';
 // Padding to allow the shader to draw effects (like refraction and blur) outside the actor's strict bounds.
 const SHADER_PADDING = 20;
 // Utility: Convert HEX color string (e.g., "#ffffff") to normalized RGB array [1.0, 1.0, 1.0]
@@ -255,7 +255,7 @@ export class DashManager {
             this.clipBox?.add_child(this.overviewCloneContainer);
             this._windowClones.clear();
             this._overviewClone = null;
-            let windows = global.get_window_actors();
+            let windows = getWindowActors();
             for (let w of windows) {
                 let metaWindow = w.get_meta_window();
                 if (!metaWindow || metaWindow.minimized || !w.visible)
@@ -600,7 +600,7 @@ export class DashManager {
             }
             // アクティビティ画面が開いているか（アニメーション中含む）を判定
             let isOverview = Main.overview.visible || Main.overview.animationInProgress;
-            let windows = global.get_window_actors();
+            let windows = getWindowActors();
             let activeWindows = new Set();
             let zIndex = 0;
             /*
