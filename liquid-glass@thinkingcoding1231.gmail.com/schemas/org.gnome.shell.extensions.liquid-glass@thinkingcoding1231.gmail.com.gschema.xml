@@ -173,7 +173,7 @@
     <key name="notification-brightness" type="d">
       <default>1.0</default>
       <summary>Brightness</summary>
-      <description>Adjusts the overall brightness of the notifications.</description>
+      <description>Adjusts the overall brightness of the notifications.</description>
     </key>
     <key name="notification-contrast" type="d">
       <default>1.0</default>
