@@ -27,6 +27,21 @@
       <default>5</default>
       <summary>Blur radius</summary>
     </key>
+    <key name="dock-brightness" type="d">
+      <default>1.0</default>
+      <summary>Brightness</summary>
+      <description>Adjusts the overall brightness of the dock.</description>
+    </key>
+    <key name="dock-contrast" type="d">
+      <default>1.0</default>
+      <summary>Contrast</summary>
+      <description>Adjusts the contrast of the dock.</description>
+    </key>
+    <key name="dock-saturation" type="d">
+      <default>1.0</default>
+      <summary>Saturation</summary>
+      <description>Adjusts the saturation of the dock.</description>
+    </key>
     <key name="dock-corner-radius" type="d">
       <default>30.0</default>
       <summary>Corner radius</summary>
@@ -95,6 +110,21 @@
       <default>60.0</default>
       <summary>Corner radius</summary>
     </key>
+    <key name="menu-brightness" type="d">
+      <default>1.0</default>
+      <summary>Brightness</summary>
+      <description>Adjusts the overall brightness of the menu.</description>
+    </key>
+    <key name="menu-contrast" type="d">
+      <default>1.0</default>
+      <summary>Contrast</summary>
+      <description>Adjusts the contrast of the menu.</description>
+    </key>
+    <key name="menu-saturation" type="d">
+      <default>1.0</default>
+      <summary>Saturation</summary>
+      <description>Adjusts the saturation of the menu.</description>
+    </key>
 
     <key name="enable-notification-glass" type="b">
       <default>true</default>
@@ -139,6 +169,21 @@
     <key name="notification-y-offset" type="i">
       <default>10</default>
       <summary>Y offset</summary>
+    </key>
+    <key name="notification-brightness" type="d">
+      <default>1.0</default>
+      <summary>Brightness</summary>
+      <description>Adjusts the overall brightness of the notifications.</description>
+    </key>
+    <key name="notification-contrast" type="d">
+      <default>1.0</default>
+      <summary>Contrast</summary>
+      <description>Adjusts the contrast of the notifications.</description>
+    </key>
+    <key name="notification-saturation" type="d">
+      <default>1.0</default>
+      <summary>Saturation</summary>
+      <description>Adjusts the saturation of the notifications.</description>
     </key>
 
     <key name="enable-quick-settings-glass" type="b">
@@ -205,6 +250,21 @@
       <default>0</default>
       <summary>X offset</summary>
     </key>
+    <key name="quick-settings-brightness" type="d">
+      <default>1.0</default>
+      <summary>Brightness</summary>
+      <description>Adjusts the overall brightness of the quick settings.</description>
+    </key>
+    <key name="quick-settings-contrast" type="d">
+      <default>1.0</default>
+      <summary>Contrast</summary>
+      <description>Adjusts the contrast of the quick settings.</description>
+    </key>
+    <key name="quick-settings-saturation" type="d">
+      <default>1.0</default>
+      <summary>Saturation</summary>
+      <description>Adjusts the saturation of the quick settings.</description>
+    </key>
 
     <key name="enable-osd-glass" type="b">
       <default>true</default>
@@ -242,7 +302,27 @@
       <default>17</default>
       <summary>Y offset</summary>
     </key>
+    <key name="osd-brightness" type="d">
+      <default>1.0</default>
+      <summary>Brightness</summary>
+      <description>Adjusts the overall brightness of the on-screen displays.</description>
+    </key>
+    <key name="osd-contrast" type="d">
+      <default>1.0</default>
+      <summary>Contrast</summary>
+      <description>Adjusts the contrast of the on-screen displays.</description>
+    </key>
+    <key name="osd-saturation" type="d">
+      <default>1.0</default>
+      <summary>Saturation</summary>
+      <description>Adjusts the saturation of the on-screen displays.</description>
+    </key>
 
+    <key name="blur-method" type="i">
+      <default>0</default>
+      <summary>Blur method</summary>
+      <description>0 = Gaussian Blur (Recommended), 1 = Dual Kawase (Performance)</description>
+    </key>
 
     <key name="glass-max-z" type="d">
       <default>25.0</default>
