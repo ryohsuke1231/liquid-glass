@@ -1,12 +1,9 @@
 // src/dockManager.js
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
-import Clutter from 'gi://Clutter';
-import Shell from 'gi://Shell';
-import St from 'gi://St';
 import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import { LiquidEffect } from './liquidEffect.js';
-import { UnpickableClone } from './utils.js';
+import { UnpickableActor, UILayerSampler, WindowCloneManager } from './utils.js';
 // Padding to allow the shader to draw effects (like refraction and blur) outside the actor's strict bounds.
 const SHADER_PADDING = 20;
 // Utility: Convert HEX color string (e.g., "#ffffff") to normalized RGB array [1.0, 1.0, 1.0]
@@ -24,17 +21,22 @@ export class DashManager {
     extensionPath;
     targetActor;
     _settings;
+    // private bgActor: St.Widget | null = null;
     bgActor = null;
-    blurEffect = null;
+    // Delete Shell.BlurEffect and use custom blur (dual kawase) — now handled inside LiquidEffect
     effect = null;
+    // [NEW] Separate actor layers for liquid-glass effect.
+    //
+    // Nesting order (outermost → innermost):
+    //   bgActor (full monitor, no effect)
+    //     └─ liquidBox  ← LiquidEffect with built-in dual-Kawase blur
+    //          └─ _cloneContainer  ← bgClone + windowClones + uiClones
+    liquidBox = null;
+    // [NEW] Cached monitor dimensions — used to detect monitor-resize events
+    // so the full-screen actors and clips are rebuilt when needed.
+    _lastScreenW;
+    _lastScreenH;
     _glassExpand;
-    bgClone = null;
-    windowClonesContainer = null;
-    overviewCloneContainer = null;
-    _windowClones;
-    _overviewClone = null;
-    _appDisplayClone = null;
-    _searchClone = null;
     _signals;
     _settingsSignals; // GSettingsのイベントリスナーを管理
     _frameSyncId;
@@ -42,7 +44,7 @@ export class DashManager {
     _originalStyle;
     _currentMarginStyle;
     _dockParent = null;
-    clipBox = null;
+    _cloneContainer = null;
     _lastAbsX;
     _lastAbsY;
     _lastTW;
@@ -57,18 +59,18 @@ export class DashManager {
     _lastBaseH;
     _outputLogs = false;
     _marginValue = 0;
+    _uiSampler = null;
+    _windowCloneManager = null;
     // コンストラクタに settings を追加
     constructor(extensionPath, targetActor, settings) {
         this.extensionPath = extensionPath;
         this.targetActor = targetActor;
         this._settings = settings; // GSettings object
         // this.bgActor = null;
-        // this.blurEffect = null;
         // this.effect = null;
         this._glassExpand = 0; // ガラスエリアの拡張量（ピクセル）
         // this.bgClone = null;
         // this.windowClonesContainer = null;
-        this._windowClones = new Map();
         this._signals = [];
         this._settingsSignals = []; // GSettingsのイベントリスナーを管理
         this._frameSyncId = 0;
@@ -125,9 +127,9 @@ export class DashManager {
             }
         });
         connectSetting('dock-blur-radius', () => {
-            if (this.blurEffect && this._isEffectActive) {
-                this.blurEffect.radius = this._settings.get_int('dock-blur-radius');
-            }
+            const radius = this._settings.get_int('dock-blur-radius');
+            if (this.effect && this._isEffectActive)
+                this.effect.setBlurRadius(radius);
         });
         connectSetting('dock-corner-radius', () => {
             if (this.effect && this._isEffectActive) {
@@ -136,6 +138,21 @@ export class DashManager {
         });
         connectSetting('output-logs', () => {
             this._outputLogs = this._settings.get_boolean('output-logs');
+        });
+        connectSetting('dock-brightness', () => {
+            if (this.effect && this._isEffectActive) {
+                this.effect.setBrightness(this._settings.get_double('dock-brightness'));
+            }
+        });
+        connectSetting('dock-contrast', () => {
+            if (this.effect && this._isEffectActive) {
+                this.effect.setContrast(this._settings.get_double('dock-contrast'));
+            }
+        });
+        connectSetting('dock-saturation', () => {
+            if (this.effect && this._isEffectActive) {
+                this.effect.setSaturation(this._settings.get_double('dock-saturation'));
+            }
         });
     }
     // マージンの再計算と適用（動的反映のために独立した関数化）
@@ -188,17 +205,37 @@ export class DashManager {
         if (this._dockParent) {
             this._dockParent.add_style_class_name('liquid-glass-transparent');
         }
-        this.bgActor = new St.Widget({
-            style_class: 'liquid-glass-bg-actor',
-            clip_to_allocation: false,
-            reactive: false
+        /*
+        this.bgActor = new UnpickableWidget({
+          style_class: 'liquid-glass-bg-actor',
+          clip_to_allocation: false,
+          reactive: false
         });
+        */
+        this.bgActor = new UnpickableActor();
+        this.bgActor.set_name('liquid-glass-bg-actor');
+        // [CHANGED] bgActor starts at 1×1; _syncGeometry() will immediately expand
+        // it to full monitor size on the first frame tick.
         this.bgActor.set_size(1.0, 1.0);
-        this.clipBox = new St.Widget({ clip_to_allocation: true });
-        this.clipBox.set_size(1.0, 1.0);
-        this.bgActor.add_child(this.clipBox);
-        this.targetActor.set_pivot_point(0.5, 0.5);
-        this.bgActor.set_pivot_point(0.0, 0.0);
+        // [NEW] liquidBox: full-monitor-sized actor that holds the LiquidEffect.
+        // LiquidEffect internally runs dual-Kawase blur passes before the glass composite,
+        // so no separate blurBox/Shell.BlurEffect is needed.
+        this.liquidBox = new UnpickableActor();
+        this.liquidBox.set_name("liquid-box");
+        this.liquidBox.set_clip_to_allocation(true);
+        this.bgActor.add_child(this.liquidBox);
+        // [NEW] dummyBreaker: dummy actor to break the BMS bug
+        let dummyBreaker = new UnpickableActor();
+        dummyBreaker.set_name("optimization-breaker");
+        dummyBreaker.set_size(1.0, 1.0);
+        dummyBreaker.set_opacity(0); // 完全に透明
+        this.liquidBox.add_child(dummyBreaker);
+        // _cloneContainer lives inside liquidBox.
+        // Clones are captured into the LiquidEffect's OffscreenEffect FBO and
+        // blurred + distorted by the shader in a single pass.
+        this._cloneContainer = new UnpickableActor();
+        this._cloneContainer.set_name("clone-container");
+        this.liquidBox.add_child(this._cloneContainer);
         // 動的マージンを適用
         this._applyMargin();
         this._marginValue = this._settings.get_int('dock-margin-bottom');
@@ -222,49 +259,50 @@ export class DashManager {
         let tintColorStr = this._settings.get_string('dock-tint-color');
         let tintStrength = this._settings.get_double('dock-tint-strength');
         let cornerRadius = this._settings.get_double('dock-corner-radius');
-        this.blurEffect = new Shell.BlurEffect({ radius: blurRadius, mode: Shell.BlurMode.ACTOR });
-        this.clipBox.add_effect(this.blurEffect);
+        let brightness = this._settings.get_double('dock-brightness');
+        let contrast = this._settings.get_double('dock-contrast');
+        let saturation = this._settings.get_double('dock-saturation');
         this.effect = new LiquidEffect({ extensionPath: this.extensionPath, settings: this._settings });
         this.effect.setPadding(SHADER_PADDING);
         this.effect.setTintColor(...hexToColorArray(tintColorStr));
         this.effect.setTintStrength(tintStrength);
         this.effect.setCornerRadius(cornerRadius);
+        this.effect.setBrightness(brightness);
+        this.effect.setContrast(contrast);
+        this.effect.setSaturation(saturation);
+        this.effect.setBlurRadius(blurRadius);
         this.effect.setIsDock(true);
-        this.bgActor.add_effect(this.effect);
+        this.liquidBox.add_effect(this.effect);
+        // WindowCloneManager + UILayerSampler deposit their clones inside liquidBox.
+        this._windowCloneManager = new WindowCloneManager(this.liquidBox, this._cloneContainer);
+        this._uiSampler = new UILayerSampler(this.bgActor, this.liquidBox, [dockRoot, global.windowGroup, global.window_group], this._cloneContainer);
         this.bgActor.show();
         const laterAdd = (laterType, callback) => {
             return global.compositor.get_laters().add(laterType, callback);
         };
         const frameLaterType = Meta.LaterType.BEFORE_REDRAW;
+        // Rebuild clones (called on menu open): delegate entirely to WindowCloneManager + UILayerSampler
         let buildClones = () => {
             if (!this.bgActor)
                 return;
-            if (this.bgClone) {
-                this.bgClone.destroy();
-                this.bgClone = null;
+            // _uiSampler が存在する場合のみ除外リストへの追加処理を行う
+            if (this._uiSampler) {
+                for (let child of Main.layoutManager.uiGroup.get_children()) {
+                    if (child === this.bgActor)
+                        continue;
+                    // 名前が 'liquid-glass-bg-actor' のもの、または 'liquid-box' を子に持つものを
+                    // 他のLiquid Glassエフェクトの背景アクターと判定する
+                    let isLiquidBg = child.name === 'liquid-glass-bg-actor' ||
+                        (typeof child.get_children === 'function' &&
+                            child.get_children().some(c => c.name === 'liquid-box'));
+                    if (isLiquidBg) {
+                        this._uiSampler.addExclusion(child);
+                    }
+                }
             }
-            if (this.windowClonesContainer) {
-                this.windowClonesContainer.destroy();
-                this.windowClonesContainer = null;
-            }
-            this.bgClone = new UnpickableClone({ source: Main.layoutManager._backgroundGroup });
-            this.clipBox?.add_child(this.bgClone);
-            this.windowClonesContainer = new Clutter.Actor();
-            this.clipBox?.add_child(this.windowClonesContainer);
-            this.overviewCloneContainer = new Clutter.Actor();
-            this.clipBox?.add_child(this.overviewCloneContainer);
-            this._windowClones.clear();
-            this._overviewClone = null;
-            let windows = global.get_window_actors();
-            for (let w of windows) {
-                let metaWindow = w.get_meta_window();
-                if (!metaWindow || metaWindow.minimized || !w.visible)
-                    continue;
-                let clone = new UnpickableClone({ source: w });
-                clone.set_position(w.x, w.y);
-                this.windowClonesContainer.add_child(clone);
-                this._windowClones.set(w, clone);
-            }
+            this._windowCloneManager?.rebuildClones();
+            this._uiSampler?.rebindSelf();
+            this._uiSampler?.refresh();
         };
         let frameTick = () => {
             this._frameSyncId = 0;
@@ -546,6 +584,12 @@ export class DashManager {
         let h = Math.max(1.0, baseH);
         if (baseW <= 9 || baseH <= 9) {
             this.bgActor.hide();
+            // stateをリセットして、次の表示時に必ずガードを通過させる 
+            // Reset state to guard against the next frame tick from applying the guard.
+            this._lastBgW = undefined;
+            this._lastBgH = undefined;
+            this._lastBgX = undefined;
+            this._lastBgY = undefined;
             return;
         }
         else {
@@ -581,159 +625,74 @@ export class DashManager {
         let bgH = Math.max(1.0, h + (SHADER_PADDING * 2) + (this._glassExpand * 2));
         let bgX = absX - SHADER_PADDING - this._glassExpand;
         let bgY = absY - SHADER_PADDING - this._glassExpand;
-        if (this._lastBgW !== bgW || this._lastBgH !== bgH || this._lastBgX !== bgX || this._lastBgY !== bgY) {
-            this.bgActor.set_size(bgW, bgH);
-            this.bgActor.set_position(bgX, bgY);
-            this.clipBox?.set_size(bgW, bgH);
-            this.clipBox?.set_position(0, 0);
-            this.effect?.setResolution(bgW, bgH);
+        // [NEW] Full-screen FBO geometry.
+        // bgActor and liquidBox are both sized to cover the entire monitor.
+        // This makes the FBO coordinate system match what BMS expects (full-screen
+        // absolute coordinates), eliminating the BMS blur offset and cache-pollution
+        // bugs caused by the old dock-sized FBO.
+        let screenW = monitor.width;
+        let screenH = monitor.height;
+        // Dock background position in monitor-local coordinates (monitor origin = 0,0).
+        // This is what the shader receives via setGlassGeometry() to reconstruct the
+        // dock-centred local coordinate system inside the full-screen FBO.
+        let localBgX = bgX - monitor.x;
+        let localBgY = bgY - monitor.y;
+        // Detect any change in dock geometry OR monitor size to trigger a rebuild.
+        if (this._lastBgW !== bgW || this._lastBgH !== bgH ||
+            this._lastBgX !== bgX || this._lastBgY !== bgY ||
+            this._lastScreenW !== screenW || this._lastScreenH !== screenH) {
+            // [CHANGED] bgActor now occupies the full monitor (was dock-sized).
+            // Positioning it at the monitor's absolute origin aligns the FBO coordinate
+            // system with BMS's global-absolute sampling assumptions.
+            this.bgActor.remove_transition('size');
+            this.bgActor.remove_transition('position');
+            this.bgActor.set_position(monitor.x, monitor.y);
+            this.bgActor.set_size(screenW, screenH);
+            this.bgActor.remove_transition('size');
+            this.bgActor.remove_transition('position');
+            // [NEW] liquidBox fills the entire bgActor (full monitor size).
+            // Being at (0,0) relative to bgActor it occupies the same absolute space,
+            // so every pixel of the monitor can participate in the FBO capture.
+            this.liquidBox?.set_position(0, 0);
+            this.liquidBox?.set_size(screenW, screenH);
             this._lastBgW = bgW;
             this._lastBgH = bgH;
             this._lastBgX = bgX;
             this._lastBgY = bgY;
+            this._lastScreenW = screenW;
+            this._lastScreenH = screenH;
         }
-        if (this.bgClone && this.windowClonesContainer) {
-            this.bgClone.set_position(-bgX, -bgY);
-            this.windowClonesContainer.set_position(-bgX, -bgY);
-            if (this.overviewCloneContainer) {
-                this.overviewCloneContainer.set_position(-bgX, -bgY);
-            }
-            // アクティビティ画面が開いているか（アニメーション中含む）を判定
-            let isOverview = Main.overview.visible || Main.overview.animationInProgress;
-            let windows = global.get_window_actors();
-            let activeWindows = new Set();
-            let zIndex = 0;
-            /*
-            for (let w of windows) {
-                let metaWindow = w.get_meta_window();
-                if (!metaWindow || metaWindow.minimized || !w.visible) continue;
-       
-                activeWindows.add(w);
-       
-                let clone;
-                if (!this._windowClones.has(w)) {
-                    clone = new UnpickableClone({ source: w });
-                    this.windowClonesContainer.add_child(clone);
-                    this._windowClones.set(w, clone);
-                } else {
-                    clone = this._windowClones.get(w);
-                }
-                
-                clone.set_position(w.x, w.y);
-                clone.set_size(w.width, w.height);
-                clone.set_scale(w.scale_x, w.scale_y);
-                clone.translation_x = w.translation_x;
-                clone.translation_y = w.translation_y;
-       
-                let pX = w.pivot_point ? w.pivot_point.x : 0;
-                let pY = w.pivot_point ? w.pivot_point.y : 0;
-                clone.set_pivot_point(pX, pY);
-       
-                this.windowClonesContainer.set_child_at_index(clone, zIndex);
-                zIndex++;
-            }
-       
-            for (let [w, clone] of this._windowClones.entries()) {
-                if (!activeWindows.has(w)) {
-                    clone.destroy();
-                    this._windowClones.delete(w);
-                }
-            }
-            */
-            if (!isOverview) {
-                // --- デスクトップ通常時 ---
-                // Overview用のクローン群があれば全て破棄
-                if (this._overviewClone) {
-                    this._overviewClone.destroy();
-                    this._overviewClone = null;
-                }
-                if (this._appDisplayClone) {
-                    this._appDisplayClone.destroy();
-                    this._appDisplayClone = null;
-                }
-                if (this._searchClone) {
-                    this._searchClone.destroy();
-                    this._searchClone = null;
-                }
-                this.bgClone.show(); // 通常の壁紙クローンを表示
-                // 既存のウィンドウクローン同期ロジック
-                for (let w of windows) {
-                    let metaWindow = w.get_meta_window();
-                    if (!metaWindow || metaWindow.minimized || !w.visible)
-                        continue;
-                    activeWindows.add(w);
-                    let clone;
-                    if (!this._windowClones.has(w)) {
-                        clone = new UnpickableClone({ source: w });
-                        this.windowClonesContainer.add_child(clone);
-                        this._windowClones.set(w, clone);
-                    }
-                    else {
-                        clone = this._windowClones.get(w);
-                    }
-                    clone.set_position(w.x, w.y);
-                    clone.set_size(w.width, w.height);
-                    clone.set_scale(w.scale_x, w.scale_y);
-                    clone.translation_x = w.translation_x;
-                    clone.translation_y = w.translation_y;
-                    let pX = w.pivot_point ? w.pivot_point.x : 0;
-                    let pY = w.pivot_point ? w.pivot_point.y : 0;
-                    clone.set_pivot_point(pX, pY);
-                    this.windowClonesContainer.set_child_at_index(clone, zIndex);
-                    zIndex++;
-                }
-            }
-            else {
-                // --- アクティビティ画面（Overview）時 ---
-                // ワークスペースプレビュー自体に壁紙が含まれるため、通常の壁紙クローンは隠す
-                // this.bgClone.hide();
-                this.bgClone.show();
-                // Dockを含まない、ワークスペース（背景＋プレビュー）だけのActorをピンポイント取得
-                // ※ GNOME 40以降で安全にアクセスできるよう Optional Chaining (?.) を使用
-                // Overview内の主要UIを管理しているcontrolsを取得
-                let controls = Main.overview._overview?._controls;
-                if (controls) {
-                    // 1. ワークスペースプレビュー（背景含む）のクローン
-                    if (controls._workspacesDisplay) {
-                        if (!this._overviewClone) {
-                            this._overviewClone = new UnpickableClone({ source: controls._workspacesDisplay });
-                            this.overviewCloneContainer?.add_child(this._overviewClone);
-                        }
-                        this._syncActorProperties(controls._workspacesDisplay, this._overviewClone);
-                    }
-                    // 2. アプリ一覧 (AppGrid) のクローン
-                    if (controls._appDisplay) {
-                        if (!this._appDisplayClone) {
-                            this._appDisplayClone = new UnpickableClone({ source: controls._appDisplay });
-                            this.overviewCloneContainer?.add_child(this._appDisplayClone);
-                        }
-                        this._syncActorProperties(controls._appDisplay, this._appDisplayClone);
-                    }
-                    // 3. 検索画面 のクローン
-                    // NOTE: In GNOME 45+, SearchController extends St.Widget directly,
-                    // so the controller itself IS the actor. The previous `.actor` getter
-                    // is deprecated (logs "Usage of object.actor is deprecated for
-                    // SearchController" on every frame). Use the controller directly.
-                    if (controls._searchController) {
-                        const searchActor = controls._searchController;
-                        if (!this._searchClone) {
-                            this._searchClone = new UnpickableClone({ source: searchActor });
-                            this.overviewCloneContainer?.add_child(this._searchClone);
-                        }
-                        this._syncActorProperties(searchActor, this._searchClone);
-                    }
-                }
-                // isOverview が true の間は activeWindows が空のままになるため、
-                // 以下のクリーンアップ処理によってフルサイズのウィンドウクローンは自動的に破棄されます。
-            }
-            // 使われなくなったクローン（閉じたウィンドウ、またはOverview起動時の全ウィンドウ）を削除
-            for (let [w, clone] of this._windowClones.entries()) {
-                if (!activeWindows.has(w)) {
-                    clone.destroy();
-                    this._windowClones.delete(w);
-                }
-            }
-        }
+        // [NEW] Soft clipping via set_clip — limits GPU fragment-shader execution
+        // to the dock region + a generous margin for drop-shadow decay, without
+        // using clip_to_allocation (which hard-clips child actors and severs shadows).
+        //
+        // CLIP_PADDING must be at least as large as the maximum shadow_radius
+        // setting so the penumbra gradient has room to fade to zero naturally.
+        const CLIP_PADDING = 200;
+        // Clip only bgActor; liquidBox has no separate clip
+        // this.liquidBox?.remove_clip();
+        this.bgActor.set_clip(localBgX - CLIP_PADDING, localBgY - CLIP_PADDING, bgW + CLIP_PADDING * 2, bgH + CLIP_PADDING * 2);
+        // [CHANGED] setResolution now receives the full monitor dimensions (was bgW/bgH).
+        // The shader uses resolution to compute UV-to-pixel mapping over the full FBO.
+        this.effect?.setResolution(screenW, screenH);
+        // [NEW] Inform the shader where the dock lives within the full-screen FBO.
+        // The shader uses these to compute dock_center and box_size, replacing
+        // the old "resolution * 0.5" center assumption that only worked when
+        // the FBO was dock-sized.
+        this.effect?.setGlassGeometry(localBgX, localBgY, bgW, bgH);
+        // [CHANGED] Clone offset uses monitor origin instead of dock origin.
+        //
+        // Clones in WindowCloneManager are placed at (w.x, w.y) — absolute screen
+        // coordinates. The container shift of (-monitor.x, -monitor.y) makes each
+        // clone appear at (w.x - monitor.x, w.y - monitor.y) inside the full-screen
+        // FBO, which maps back to (w.x, w.y) in screen space once bgActor's
+        // monitor-origin position is added by Clutter's scene graph. ✓
+        this._windowCloneManager?.setOffset(-monitor.x, -monitor.y);
+        // UILayerSampler is synced with the monitor origin and full-screen
+        // dimensions instead of the dock-relative bgX/bgY/bgW/bgH.
+        this._uiSampler?.refresh();
+        this._uiSampler?.sync(monitor.x, monitor.y, screenW, screenH);
+        this._windowCloneManager?.sync();
     }
     _syncActorProperties(source, clone) {
         if (!source || !clone)
@@ -748,9 +707,13 @@ export class DashManager {
             return;
         }
         // 正しい絶対座標とサイズをクローンに適用
+        clone.remove_transition('position');
+        clone.remove_transition('size');
         clone.set_position(absX, absY);
         clone.set_size(w, h);
         // スケールとピボット
+        clone.remove_transition('scale-x');
+        clone.remove_transition('scale-y');
         clone.set_scale(source.scale_x, source.scale_y);
         let pX = source.pivot_point ? source.pivot_point.x : 0;
         let pY = source.pivot_point ? source.pivot_point.y : 0;
@@ -827,17 +790,11 @@ export class DashManager {
             this.bgActor.destroy();
             this.bgActor = null;
         }
-        this.blurEffect = null;
-        this.bgClone = null;
-        this.windowClonesContainer = null;
-        this._windowClones.clear();
-        if (this.overviewCloneContainer) {
-            // this.overviewCloneContainer.destroy();
-            this.overviewCloneContainer = null;
-        }
-        this._overviewClone = null;
-        this._appDisplayClone = null;
-        this._searchClone = null;
+        // liquidBox is a child of bgActor and is already destroyed by bgActor.destroy().
+        // Just clear the reference here.
+        this.liquidBox = null;
+        this._uiSampler?.destroy();
+        this._windowCloneManager?.destroy();
     }
     // 拡張機能全体が無効化される時の最終クリーンアップ
     cleanup() {

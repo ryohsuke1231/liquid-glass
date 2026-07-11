@@ -10,27 +10,27 @@ I love the look of Apple's Liquid Glass, but since I don't own any Apple product
 ### Demo
 Overview:
 
-![GNOME Desktop Screenshot](demo1.png)
+![GNOME Desktop Screenshot](assets/demo1.png)
 
 Dash to Dock:
 
-![Dash to Dock Screenshot](demo2.png)
+![Dash to Dock Screenshot](assets/demo2.png)
 
 Notifications:
 
-![Notifications Screenshot](demo3.png)
+![Notifications Screenshot](assets/demo3.png)
 
 Panel Menus:
 
-![Panel Menu Screenshot](demo4.png)
+![Panel Menu Screenshot](assets/demo4.png)
 
 Quick Settings (Experimental):
 
-![Quick Settings Screenshot](demo5.png)
+![Quick Settings Screenshot](assets/demo5.png)
 
 OSD:
 
-![OSD Screenshot](demo6.png)
+![OSD Screenshot](assets/demo6.png)
 
 
 ## Installation (GNOME Extension)
@@ -81,7 +81,7 @@ I lost count of how many times I crashed GNOME Shell during development.
 
 Before writing the GNOME implementation in GJS/Clutter, I built a standalone WebGL prototype using Three.js to perfect the math, shaders, and real-time tuning. 
 
-![Three.js Prototype Preview](image.png)
+![Three.js Prototype Preview](assets/image.png)
 
 You can run the web prototype locally:
 ```bash

@@ -1,5 +1,6 @@
 // shaders/glass.frag
-uniform sampler2D cogl_sampler;
+uniform sampler2D cogl_sampler0; // Layer 0: 元のシャープな背景
+uniform sampler2D cogl_sampler1; // Layer 1: ブラー済み背景
 
 uniform float resolution_x;
 uniform float resolution_y;
@@ -33,6 +34,20 @@ uniform float shadow_radius;
 uniform float shadow_intensity;
 uniform float padding;
 uniform float isDock;
+
+// [NEW] SCB (Saturation, Contrast, Brightness) 調整用の変数
+uniform float brightness;
+uniform float contrast;
+uniform float saturation;
+
+// [NEW] Dock geometry in monitor-local pixel coordinates.
+// In full-screen FBO mode the actor covers the whole monitor, so the shader
+// must know the dock's position and size within that space to correctly
+// compute local_pos and box_size. Supplied each frame by LiquidEffect::setDockGeometry().
+uniform float dock_x;  // dock background left edge  (monitor-relative px)
+uniform float dock_y;  // dock background top  edge  (monitor-relative px)
+uniform float dock_w;  // dock background width       (px, includes SHADER_PADDING)
+uniform float dock_h;  // dock background height      (px, includes SHADER_PADDING)
 
 // Signed Distance Field (SDF) function for a rounded rectangle.
 // Returns negative values inside the shape, positive outside, and 0 on the exact edge.
@@ -146,30 +161,64 @@ vec2 stabilizedUV(vec2 candidate, vec2 fallback) {
     return mix(fallback, clamped, keep);
 }
 
+// [NEW] Adjust color saturation, contrast, brightness
+vec3 applySCB(vec3 color, float b, float c, float s) {
+    // 1. 輝度 (Brightness): 単純な乗算
+    color *= b;
+    
+    // 2. コントラスト (Contrast): 0.5のグレーを基準に距離を拡大・縮小
+    color = mix(vec3(0.5), color, c);
+    
+    // 3. 彩度 (Saturation): グレースケール値とのブレンド
+    // 人間の目の感度に基づいた重み（Rec. 601）を使用
+    float luma = dot(color, vec3(0.299, 0.587, 0.114));
+    color = mix(vec3(luma), color, s);
+    
+    // コントラスト調整等でマイナスになった値を0に丸める
+    return max(color, 0.0);
+}
+
 void main() {
     vec2 resolution = vec2(resolution_x, resolution_y);
     vec2 uv = cogl_tex_coord_in[0].st;
     
     vec2 pixel_coord = uv * resolution;
-    vec2 center = resolution * 0.5;
+
+    // [CHANGED] Full-screen FBO coordinate reconstruction.
+    //
+    // Previously the effect actor was sized to the dock area, so "center" was
+    // simply resolution * 0.5 and local_pos was measured from that center.
+    //
+    // Now the effect actor spans the entire monitor (full-screen FBO).
+    // We reconstruct the dock center from the dock_* uniforms supplied by
+    // dockManager, giving us the same dock-centred local coordinate system
+    // without any FBO size / BMS absolute-coordinate mismatch.
+    //
+    // dock_center is in the same pixel space as pixel_coord (monitor-local).
+    vec2 dock_center = vec2(dock_x + dock_w * 0.5, dock_y + dock_h * 0.5);
+
+    // local_pos: pixel offset from the dock center — identical semantics to
+    // the old (pixel_coord - resolution*0.5) but now pinned to the dock, not
+    // to the actor boundary.
+    vec2 local_pos = pixel_coord - dock_center;
 
     // Pre-calculate geometry anti-aliasing feathering width.
     float edgeFeather = max(edge_smoothing, 0.75);
 
-    vec2 local_pos = pixel_coord - center; 
+    // [CHANGED] box_size is derived from dock_w / dock_h instead of resolution.
+    // Previously the whole actor was dock-sized so resolution == dock size.
+    // Now resolution is the full monitor size; using it here would produce a
+    // vastly oversized rounded rectangle.  dock_w/dock_h give the true extents
+    // of the glass shape (including SHADER_PADDING on all sides).
     vec2 box_size;
-
-    // Adjust the internal rendering box size based on the element type.
     if (isDock > 0.5) {
-        // For the dock, dynamically shrink the box so the feathered edges 
-        // don't get clipped by the hard screen boundaries.
-        vec2 actual_size = resolution - vec2(padding * 2.0) - vec2(edgeFeather * 2.0);
-        
-        // Ensure size never goes below 1x1 to prevent division-by-zero crashes.
-        box_size = max(actual_size * 0.5, vec2(1.0)); 
+        // For the dock, shrink the box so the feathered edges don't reach
+        // the dock background boundary.
+        vec2 actual_size = vec2(dock_w, dock_h) - vec2(padding * 2.0) - vec2(edgeFeather * 2.0);
+        box_size = max(actual_size * 0.5, vec2(1.0));
     } else {
-        vec2 actual_size = resolution - vec2(padding * 2.0);
-        box_size = max(actual_size * 0.5, vec2(1.0)); 
+        vec2 actual_size = vec2(dock_w, dock_h) - vec2(padding * 2.0);
+        box_size = max(actual_size * 0.5, vec2(1.0));
     }
 
     // Distance from the current pixel to the rounded rectangle boundary.
@@ -246,7 +295,7 @@ void main() {
     //    pure black" look.
     vec3 shadowColor = vec3(0.03, 0.04, 0.08);
 
-    vec4 source = texture2D(cogl_sampler, uv);
+    vec4 source = texture2D(cogl_sampler1, uv);
 
     vec2 gradH = heightGradient(local_pos, box_size, corner_radius, max_z, resolution);
     vec3 normal = getNormal(gradH);
@@ -288,23 +337,26 @@ void main() {
 
     // Step 2: Multi-tap Sampling (Averaging 4 sub-pixels to smooth out the image)
     vec3 refractedRgb = vec3(
-        (texture2D(cogl_sampler, SAFE(uvR + off1)).r +
-         texture2D(cogl_sampler, SAFE(uvR + off2)).r +
-         texture2D(cogl_sampler, SAFE(uvR + off3)).r +
-         texture2D(cogl_sampler, SAFE(uvR + off4)).r) * 0.25,
+        (texture2D(cogl_sampler1, SAFE(uvR + off1)).r +
+         texture2D(cogl_sampler1, SAFE(uvR + off2)).r +
+         texture2D(cogl_sampler1, SAFE(uvR + off3)).r +
+         texture2D(cogl_sampler1, SAFE(uvR + off4)).r) * 0.25,
 
-        (texture2D(cogl_sampler, SAFE(uvG + off1)).g +
-         texture2D(cogl_sampler, SAFE(uvG + off2)).g +
-         texture2D(cogl_sampler, SAFE(uvG + off3)).g +
-         texture2D(cogl_sampler, SAFE(uvG + off4)).g) * 0.25,
+        (texture2D(cogl_sampler1, SAFE(uvG + off1)).g +
+         texture2D(cogl_sampler1, SAFE(uvG + off2)).g +
+         texture2D(cogl_sampler1, SAFE(uvG + off3)).g +
+         texture2D(cogl_sampler1, SAFE(uvG + off4)).g) * 0.25,
 
-        (texture2D(cogl_sampler, SAFE(uvB + off1)).b +
-         texture2D(cogl_sampler, SAFE(uvB + off2)).b +
-         texture2D(cogl_sampler, SAFE(uvB + off3)).b +
-         texture2D(cogl_sampler, SAFE(uvB + off4)).b) * 0.25
+        (texture2D(cogl_sampler1, SAFE(uvB + off1)).b +
+         texture2D(cogl_sampler1, SAFE(uvB + off2)).b +
+         texture2D(cogl_sampler1, SAFE(uvB + off3)).b +
+         texture2D(cogl_sampler1, SAFE(uvB + off4)).b) * 0.25
     );
 
-    vec3 refracted = refractedRgb;
+    // Apply color saturation, contrast, brightness
+    vec3 adjustedRefracted = applySCB(refractedRgb, brightness, contrast, saturation); 
+    vec3 refracted = adjustedRefracted;
+
     vec3 tintColor = vec3(tint_r, tint_g, tint_b);
     vec3 insideBaseColor = mix(refracted, tintColor, tint_strength);
 
@@ -341,11 +393,13 @@ void main() {
     //     in main()) so it tracks the user's light-angle setting.
     //     `-lightDir2D` because the focal point sits on the same side
     //     as the light, not the shadow side.
-    vec2 focalOffset = -lightDir2D * box_size.x * 0.15;
+    /*
+    vec2 focalOffset = -lightDir2D * box_size * 0.15;
     vec2 fromFocal  = (local_pos - focalOffset) / box_size;
     float radialDist = length(fromFocal);
     float focalHighlight = (1.0 - smoothstep(0.0, 0.85, radialDist)) * 0.20;
     baseColor += vec3(focalHighlight);
+    */
 
     // lightAngleRad was declared earlier in main() (in the shadow block) and
     // is reused here for the 3D lighting direction.
@@ -396,8 +450,15 @@ void main() {
     // white backgrounds), this smoothly limits the maximum brightness to 1.0.
     vec3 litColor = baseColor + addedLight - (baseColor * addedLight);
 
-    // 3. Final safety clamp to absolutely prevent illegal HDR values.
-    litColor = clamp(litColor, 0.0, 1.0);
+    // [CHANGED] 3. Hue-preserving clamp (色相を維持する安全処理)
+    // RGBのいずれかが1.0を超えた場合、白飛びによる色変（黄ばみ等）を防ぐため、
+    // 最も強い色を基準にRGB全体の比率を保ったまま縮小する。
+    float maxChannel = max(litColor.r, max(litColor.g, litColor.b));
+    if (maxChannel > 1.0) {
+        litColor /= maxChannel;
+    }
+    // マイナス値への侵入を防ぐ
+    litColor = max(litColor, 0.0);
 
     // Composite the glass OVER the shadow, in PREMULTIPLIED-alpha space.
     //
