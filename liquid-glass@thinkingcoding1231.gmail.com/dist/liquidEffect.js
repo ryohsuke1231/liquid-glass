@@ -1,55 +1,57 @@
 // src/liquidEffect.ts
 //
-// ─── 設計概要 ──────────────────────────────────────────────────────────────────
+// ─── Design overview ───────────────────────────────────────────────────────
 //
-//  旧実装: Clutter.ShaderEffect を継承し、glass.frag 1 本で
-//          屈折・リムライト・シャドウをすべて処理。
-//          ブラーは ShaderEffect の cogl_sampler に依存した
-//          単純なテクスチャサンプリングのみ。
+//  Old implementation: subclassed Clutter.ShaderEffect and did refraction,
+//          rim lighting, and shadowing all in a single glass.frag shader.
+//          Blur relied solely on ShaderEffect's cogl_sampler texture
+//          sampling, with no dedicated blur pass.
 //
-//  新実装: Clutter.OffscreenEffect を継承し、vfunc_paint_target を
-//          オーバーライドして自前の FBO マルチパスを実行。
+//  New implementation: subclasses Clutter.OffscreenEffect and overrides
+//          vfunc_paint_target to run a custom multi-pass FBO pipeline.
 //
-//  レンダリングパイプライン (1 フレーム):
+//  Rendering pipeline (per frame):
 //
 //    ┌──────────────────────────────────────────────────────┐
-//    │  OffscreenEffect が自動的にアクターの描画内容を       │
-//    │  内部 FBO に取り込む (get_texture() で取得可能)       │
+//    │  OffscreenEffect automatically captures the actor's   │
+//    │  painted content into an internal FBO                │
+//    │  (retrievable via get_texture())                      │
 //    └────────────────────┬─────────────────────────────────┘
-//                         │ srcTex (フルモニター解像度)
+//                         │ srcTex (full monitor resolution)
 //                         ▼
 //    ┌──────────────── Downsample ──────────────────────────┐
-//    │  Pass 0: srcTex    → _blurFbos[0]  (w/2  × h/2)    │
-//    │  Pass 1: _tex[0]   → _blurFbos[1]  (w/4  × h/4)    │
-//    │  Pass 2: _tex[1]   → _blurFbos[2]  (w/8  × h/8)    │
-//    │  Pass 3: _tex[2]   → _blurFbos[3]  (w/16 × h/16)   │
-//    │  (shaders/downsample.frag – Dual Kawase 5-tap)       │
+//    │  Pass 0: srcTex    → _blurFbos[0]  (w/2  × h/2)      │
+//    │  Pass 1: _tex[0]   → _blurFbos[1]  (w/4  × h/4)      │
+//    │  Pass 2: _tex[1]   → _blurFbos[2]  (w/8  × h/8)      │
+//    │  Pass 3: _tex[2]   → _blurFbos[3]  (w/16 × h/16)     │
+//    │  (shaders/downsample.frag – Dual Kawase, 5-tap)       │
 //    └────────────────────┬─────────────────────────────────┘
 //                         │
 //    ┌──────────────── Upsample ────────────────────────────┐
-//    │  Pass 3→2: _tex[3] → _blurFbos[2]                   │
-//    │  Pass 2→1: _tex[2] → _blurFbos[1]                   │
-//    │  Pass 1→0: _tex[1] → _blurFbos[0]  (w/2 × h/2)     │
-//    │  (shaders/upsample.frag – Dual Kawase tent 8-tap)    │
+//    │  Pass 3→2: _tex[3] → _blurFbos[2]                    │
+//    │  Pass 2→1: _tex[2] → _blurFbos[1]                    │
+//    │  Pass 1→0: _tex[1] → _blurFbos[0]  (w/2 × h/2)       │
+//    │  (shaders/upsample.frag – Dual Kawase tent, 8-tap)    │
 //    └────────────────────┬─────────────────────────────────┘
-//                         │ _blurTextures[0] (ぼかし済み w/2 × h/2)
+//                         │ _blurTextures[0] (blurred, w/2 × h/2)
 //                         ▼
-//    ┌──────────────── Glass Composite ────────────────────┐
-//    │  shaders/glass.frag を実行時パース → Cogl snippet   │
-//    │  cogl_sampler0 = ぼかし済みテクスチャ               │
-//    │  → 屈折 / 色収差 / リムライト / シャドウを適用      │
-//    │  → screenFb (Clutter が準備した画面 FB) へ描画      │
+//    ┌──────────────── Glass composite ─────────────────────┐
+//    │  shaders/glass.frag is parsed at runtime into a Cogl  │
+//    │  snippet. cogl_sampler0 = the blurred texture.        │
+//    │  Applies refraction / chromatic aberration / rim      │
+//    │  lighting / shadow, then draws into screenFb (the     │
+//    │  on-screen framebuffer Clutter has prepared).          │
 //    └─────────────────────────────────────────────────────┘
 //
-//  テクスチャプールは解像度変更時に作り直す。
-//  Cogl パイプラインは初回フレームで 1 度だけコンパイルし再利用。
+//  The texture pool is rebuilt whenever the resolution changes.
+//  Cogl pipelines are compiled once on the first frame and reused after that.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 import GObject from 'gi://GObject';
 import Clutter from 'gi://Clutter';
 import Cogl from 'gi://Cogl';
 import Gio from 'gi://Gio';
-// ─── メインクラス ─────────────────────────────────────────────────────────────
+// ─── Main class ───────────────────────────────────────────────────────────────
 export const LiquidEffect = GObject.registerClass({
     GTypeName: 'LiquidGlassEffect',
 }, class LiquidEffect extends Clutter.OffscreenEffect {
@@ -77,13 +79,10 @@ export const LiquidEffect = GObject.registerClass({
         this._cropFbo = null;
         this._cropPoolW = 0;
         this._cropPoolH = 0;
-        this._debugCropAnchor = 1;
-        this._debugH1FrameCounter = 0;
-        this._debugH1Enabled = true; // 検証が終わったら false に
         this.PASS_COUNT = 4;
         this._blurRadiusDown = 0.5;
         this._blurRadiusUp = 1.0;
-        this._blurMethod = 1; // デフォルト: Dual Kawase
+        this._blurMethod = 1; // default: Dual Kawase
         this._targetRadius = 15.0;
         this._gaussianKernel = null;
         this._pendingGaussianKernel = null;
@@ -93,9 +92,9 @@ export const LiquidEffect = GObject.registerClass({
         this._gaussianFetchPairs = 0;
         this._extensionPath = extensionPath;
         this._settings = settings;
-        console.log(`[Liquid Glass] Initing LiquidEffect (OffscreenEffect). path: ${this._extensionPath}`);
-        // ── コンポジットシェーダー用ユニフォームのデフォルト値を設定 ──
-        // パイプラインはまだ存在しないため _pendingUniforms に蓄積される。
+        // ── Default values for the composite shader's uniforms ──
+        // The pipeline doesn't exist yet at this point, so these are buffered
+        // into _pendingUniforms and applied once the pipeline is created.
         this._setFloat('resolution_x', 0.0);
         this._setFloat('resolution_y', 0.0);
         this._setFloat('pointer_x', -100.0);
@@ -107,7 +106,7 @@ export const LiquidEffect = GObject.registerClass({
         this._setFloat('saturation', 1.0);
         this._setFloat('padding', 20.0);
         this._setFloat('isDock', 0.0);
-        // フルスクリーン FBO モード用: ドック位置をシェーダーに伝える
+        // Full-screen FBO mode: lets the shader know where the dock sits.
         this._setFloat('dock_x', 0.0);
         this._setFloat('dock_y', 0.0);
         this._setFloat('dock_w', 0.0);
@@ -117,7 +116,7 @@ export const LiquidEffect = GObject.registerClass({
             this._bindSettings();
         }
         else {
-            // GSettings が無い場合のフォールバックデフォルト
+            // Fallback defaults used when no GSettings schema is available.
             this._setFloat('max_z', 25.0);
             this._setFloat('displacement_scale', 78.5);
             this._setFloat('edge_smoothing', 2.0);
@@ -141,11 +140,10 @@ export const LiquidEffect = GObject.registerClass({
             this._setFloat('tint_b', 1.0);
         }
     }
-    // ─── パイプライン初期化 (遅延実行 – 初回フレームで Cogl コンテキストが利用可能になってから) ──
+    // ─── Pipeline initialization (deferred until the first frame, once a Cogl context exists) ──
     /**
-     * ダウンサンプル / アップサンプル / コンポジット の 3 つの
-     * Cogl.Pipeline をコンパイルしてキャッシュする。
-     * 一度だけ呼び出すこと。
+     * Compiles and caches the downsample / upsample / composite Cogl.Pipeline
+     * objects. Call only once.
      */
     _initPipelines(ctx) {
         // ── Downsample pipeline ──────────────────────────────────────────────────
@@ -166,25 +164,24 @@ export const LiquidEffect = GObject.registerClass({
             s.set_replace(upSnippet.body);
             this._upsamplePipeline.add_snippet(s);
         }
-        // ── Gaussian H/V pipeline ────────────────────────────────────────────────
-        // 注: 分離型 Gaussian Blur のパイプラインはここでは事前コンパイルしない。
-        // setBlurRadius() で算出されたカーネル (フェッチ数・重み・オフセット) に基づき、
-        // _compileGaussianPipelines() が vfunc_paint_target 内で遅延コンパイルする
-        // (動的シェーダー生成方式。詳細は _computeGaussianKernel / _buildGaussianSnippet 参照)。
+        // ── Gaussian H/V pipelines ───────────────────────────────────────────────
+        // Not precompiled here: the separable Gaussian blur builds its shader
+        // source dynamically from the kernel computed in setBlurRadius(), and
+        // _compileGaussianPipelines() compiles it lazily inside
+        // vfunc_paint_target (see _computeGaussianKernel / _buildGaussianSnippet).
         // ── Composite pipeline (glass.frag) ──────────────────────────────────────
         this._compositePipeline = Cogl.Pipeline.new(ctx);
         this._configureSamplerLayer(this._compositePipeline, 0);
-        // Clutter / Cogl の標準プリマルチプライドα合成
+        // Standard premultiplied-alpha blending, equivalent to ShaderEffect's default:
         // "src.rgb + dst.rgb * (1 - src.a)"
-        // (ShaderEffect のデフォルトと同等)
         this._compositePipeline.set_blend('RGBA = ADD(SRC_COLOR, DST_COLOR * (1 - SRC_COLOR[A]))');
         this._loadCompositeShader();
-        // パイプライン生成前にバッファされていたユニフォームを一括適用
+        // Apply any uniforms that were buffered before the pipeline existed.
         this._applyPendingUniforms();
     }
     /**
-     * パイプラインのレイヤー 0 にバイリニアフィルタリングと
-     * クランプラッピングを設定する共通ヘルパー。
+     * Shared helper: sets bilinear filtering and clamp-to-edge wrapping on
+     * layer 0 of a pipeline.
      */
     _configureSamplerLayer(pipeline, layer) {
         pipeline.set_layer_wrap_mode(layer, Cogl.PipelineWrapMode.CLAMP_TO_EDGE);
@@ -193,11 +190,11 @@ export const LiquidEffect = GObject.registerClass({
         );
     }
     /**
-     * シェーダーファイルを読み込んで ShaderSnippet に解析する。
-     * GLSL の "void main()" の前後で分割し、
-     *   decl = 宣言部 (uniform / 関数定義)
-     *   body = main() の本体
-     * を返す。失敗した場合は null を返す。
+     * Loads a shader file and parses it into a ShaderSnippet, splitting on
+     * "void main()" into:
+     *   decl = the declaration section (uniforms / helper functions)
+     *   body = the body of main()
+     * Returns null on failure.
      */
     _loadShaderSnippet(path) {
         const file = Gio.File.new_for_path(path);
@@ -216,8 +213,7 @@ export const LiquidEffect = GObject.registerClass({
         return this._splitShader(src);
     }
     /**
-     * GLSL ソースを "void main()" の境界で
-     * { decl, body } に分割する。
+     * Splits a GLSL source string into { decl, body } at the "void main()" boundary.
      */
     _splitShader(src) {
         const match = src.match(/void\s+main\s*\(\s*\)\s*\{/);
@@ -227,7 +223,7 @@ export const LiquidEffect = GObject.registerClass({
         }
         const decl = src.substring(0, match.index);
         const rest = src.substring(match.index + match[0].length);
-        // 対応する閉じ括弧を探す
+        // Find the matching closing brace.
         let depth = 1;
         let bodyEnd = 0;
         for (let i = 0; i < rest.length; i++) {
@@ -244,12 +240,13 @@ export const LiquidEffect = GObject.registerClass({
         return { decl, body: rest.substring(0, bodyEnd) };
     }
     /**
-     * glass.frag を読み込み、ShaderEffect 用の "cogl_sampler" を
-     * FRAGMENT フック用の "cogl_sampler0" に書き換えてから
-     * コンポジットパイプラインにスニペットとして追加する。
+     * Loads glass.frag, rewrites its "cogl_sampler" (the uniform name used by
+     * the old ShaderEffect) to "cogl_sampler0" (the name Cogl auto-declares for
+     * a FRAGMENT-hook layer 0), and adds it to the composite pipeline as a
+     * snippet.
      *
-     * cogl_sampler0 は Cogl が layer 0 用に自動宣言するため、
-     * glass.frag の "uniform sampler2D cogl_sampler;" 宣言は削除する。
+     * The original "uniform sampler2D cogl_sampler;" declaration is stripped
+     * since cogl_sampler0 is already declared automatically by Cogl.
      */
     _loadCompositeShader() {
         if (!this._compositePipeline)
@@ -258,38 +255,33 @@ export const LiquidEffect = GObject.registerClass({
         if (!snippetData)
             return;
         let { decl, body } = snippetData;
-        // ShaderEffect の sampler 名 → FRAGMENT フック用の sampler 名に変換
-        /*
-        decl = decl.replace('uniform sampler2D cogl_sampler;\n', '');
-        decl = decl.replace('uniform sampler2D cogl_sampler;', '');
-        decl = decl.replace(/\bcogl_sampler\b/g, 'cogl_sampler0');
-        */
+        // Rewrite the ShaderEffect-style sampler name to the FRAGMENT-hook name.
         decl = decl.replace(/uniform\s+sampler2D\s+cogl_sampler\d*\s*;[^\n]*/g, '');
         body = body.replace(/\bcogl_sampler\b/g, 'cogl_sampler0');
         const snippet = Cogl.Snippet.new(Cogl.SnippetHook.FRAGMENT, decl, null);
         snippet.set_replace(body);
         this._compositePipeline.add_snippet(snippet);
     }
-    // ─── 動的 Gaussian カーネル計算・シェーダー生成 ───────────────────────────
+    // ─── Dynamic Gaussian kernel computation / shader generation ────────────────
     /**
-     * 半解像度 texel 空間における標準偏差 (σ) と必要フェッチペア数から、
-     * 線形サンプリング最適化済みの 1D ガウスカーネルを算出する。
+     * Computes a linear-sampling-optimized 1D Gaussian kernel from a standard
+     * deviation (sigma, in half-res texels) and a target number of fetch pairs.
      *
-     * 算出方法:
-     *   1. i = 0..(fetchPairs*2) の離散ガウス重みを計算し正規化する。
-     *   2. i = 0 (中心) はそのまま単独サンプルとして扱う。
-     *   3. i, i+1 のペアを 1 フェッチに合成する (線形サンプリング最適化):
-     *        合成重み  = w(i) + w(i+1)
-     *        合成オフセット = (i・w(i) + (i+1)・w(i+1)) / 合成重み
+     * Method:
+     *   1. Compute discrete Gaussian weights for i = 0..(fetchPairs*2) and normalize.
+     *   2. i = 0 (the center) stays a single, standalone sample.
+     *   3. Merge each (i, i+1) pair into a single fetch (bilinear-tap merging):
+     *        combined weight  = w(i) + w(i+1)
+     *        combined offset  = (i * w(i) + (i+1) * w(i+1)) / combined weight
      *
-     * fetchPairs を固定すれば、生成される offsets/weights の "形" (= シェーダー
-     * コードの構造) は一意に決まる。σ が変化しても fetchPairs が変わらない限り
-     * シェーダーの再生成は不要 — 呼び出し側は kernel_scale ユニフォームのみを
-     * 更新すればよい (setBlurRadius 参照)。
+     * For a fixed fetchPairs, the resulting offsets/weights (and therefore the
+     * shader's structure) are deterministic. As long as fetchPairs doesn't
+     * change, sigma changes only need to update the kernel_scale uniform — see
+     * setBlurRadius() — without any shader recompilation.
      */
     _computeGaussianKernel(sigma, fetchPairs) {
         const sideTaps = Math.max(2, fetchPairs * 2);
-        // 離散ガウス重み (i = 0..sideTaps) を算出して正規化する
+        // Compute and normalize discrete Gaussian weights for i = 0..sideTaps.
         const raw = [];
         let sum = 0;
         for (let i = 0; i <= sideTaps; i++) {
@@ -315,17 +307,17 @@ export const LiquidEffect = GObject.registerClass({
         return { offsets, weights };
     }
     /**
-     * GaussianKernel から GLSL フラグメントシェーダーのスニペット文字列を
-     * 動的に組み立てる (アンロール展開型 — for ループを使用しない)。
+     * Builds a GLSL fragment shader snippet string from a GaussianKernel
+     * (fully unrolled — no for loop is used at runtime).
      *
-     * オフセットは GLSL 側の定数として埋め込み、実行時には kernel_scale
-     * ユニフォームを乗算することで σ の微調整 (再コンパイル無し) を可能にする。
-     * 重みはカーネル形状そのもの (フェッチ数) を表すため、再コンパイルが
-     * 必要な場合のみ更新される定数として埋め込む。
+     * Offsets are baked in as GLSL constants; the kernel_scale uniform is
+     * multiplied in at runtime so sigma can be fine-tuned without recompiling.
+     * Weights define the kernel's shape (fetch count) and are only baked in
+     * again when a recompile actually happens.
      */
     _buildGaussianSnippet(kernel, direction) {
         const decl = `uniform vec2 inv_size;    /* 1/width, 1/height of the SOURCE texture */\n` +
-            `uniform float kernel_scale; /* sigma 比に基づく動的スケール (再コンパイル回避用) */\n`;
+            `uniform float kernel_scale; /* dynamic scale based on the sigma ratio, avoids recompiling */\n`;
         const lines = [];
         lines.push(`vec2 uv = cogl_tex_coord_in[0].st;`);
         lines.push(`vec4 col = texture2D(cogl_sampler0, uv) * ${kernel.weights[0].toFixed(8)};`);
@@ -342,9 +334,9 @@ export const LiquidEffect = GObject.registerClass({
         return { decl, body: '\n    ' + lines.join('\n    ') + '\n' };
     }
     /**
-     * 動的生成された GaussianKernel から H/V 両パイプラインをコンパイルする。
-     * 既存のパイプライン参照は呼び出し側で破棄しておくこと
-     * (run_dispose() は呼ばず、GJS の GC に解放を任せる)。
+     * Compiles the H/V pipelines from a dynamically generated GaussianKernel.
+     * The caller is responsible for having already dropped any previous
+     * pipeline reference (we never call run_dispose(), see _destroyTexturePool).
      */
     _compileGaussianPipelines(ctx, kernel) {
         this._gaussianHPipeline = Cogl.Pipeline.new(ctx);
@@ -362,14 +354,12 @@ export const LiquidEffect = GObject.registerClass({
         this._gaussianKernel = kernel;
         this._gaussianPipelineDirty = false;
         this._pendingGaussianKernel = null;
-        console.log(`[Liquid Glass] Gaussian シェーダー再生成: fetchPairs=${this._gaussianFetchPairs} ` +
-            `(taps=${1 + 2 * (kernel.offsets.length - 1)})`);
     }
-    // ─── テクスチャプール管理 ─────────────────────────────────────────────────
+    // ─── Texture pool management ─────────────────────────────────────────────────
     /**
-     * 解像度 (w, h) に対応したブラー用テクスチャ + FBO のペアを生成する。
+     * Allocates the blur texture + FBO pairs for resolution (w, h).
      *
-     * インデックスと解像度の対応:
+     * Index-to-resolution mapping:
      *   [0]: w>>1 × h>>1  (= w/2)
      *   [1]: w>>2 × h>>2  (= w/4)
      *   ...
@@ -381,19 +371,19 @@ export const LiquidEffect = GObject.registerClass({
         let ph = Math.max(h >> 1, 1);
         for (let i = 0; i < this.PASS_COUNT; i++) {
             try {
-                // Dual Kawase / Gaussian 共用のメインバッファ
+                // Main buffer, shared by Dual Kawase and Gaussian.
                 const tex = Cogl.Texture2D.new_with_size(ctx, pw, ph);
                 const fbo = Cogl.Offscreen.new_with_texture(tex);
                 this._blurTextures.push(tex);
                 this._blurFbos.push(fbo);
-                // Gaussian 水平パス用の中間バッファ (同解像度)
+                // Intermediate buffer for the Gaussian horizontal pass (same resolution).
                 const tmpTex = Cogl.Texture2D.new_with_size(ctx, pw, ph);
                 const tmpFbo = Cogl.Offscreen.new_with_texture(tmpTex);
                 this._gaussianTempTextures.push(tmpTex);
                 this._gaussianTempFbos.push(tmpFbo);
             }
             catch (e) {
-                console.error(`[Liquid Glass] テクスチャプール生成失敗 pass ${i} (${pw}x${ph}): ${e}`);
+                console.error(`[Liquid Glass] Failed to build texture pool at pass ${i} (${pw}x${ph}): ${e}`);
                 this._destroyTexturePool();
                 return;
             }
@@ -402,25 +392,18 @@ export const LiquidEffect = GObject.registerClass({
         }
         this._poolWidth = w;
         this._poolHeight = h;
-        console.log(`[Liquid Glass] テクスチャプール構築完了: ` +
-            `${w}x${h} → ${this.PASS_COUNT} パス`);
     }
     /**
-     * テクスチャプールを解放し、メンバーをリセットする。
-     * GJS の GC が Cogl オブジェクトのファイナライズを担うが、
-     * 参照をクリアすることで即座に GC 候補にできる。
-     */
-    /**
-     * Dual Kawase Blur を実行する。
+     * Runs the Dual Kawase blur.
      *
-     *   ダウンサンプルフェーズ: srcTex → [0] → [1] → ... → [PASS_COUNT-1]
-     *   アップサンプルフェーズ: [PASS_COUNT-1] → ... → [0]
+     *   Downsample phase: srcTex → [0] → [1] → ... → [PASS_COUNT-1]
+     *   Upsample phase:   [PASS_COUNT-1] → ... → [0]
      *
-     * 結果は _blurTextures[0] に格納される。
+     * The result ends up in _blurTextures[0].
      */
     _runDualKawaseBlur(srcTex) {
         let currentSrc = srcTex;
-        // ── ダウンサンプルフェーズ ──────────────────────────────────────────
+        // ── Downsample phase ────────────────────────────────────────────────────
         for (let i = 0; i < this.PASS_COUNT; i++) {
             const destFbo = this._blurFbos[i];
             const destTex = this._blurTextures[i];
@@ -434,11 +417,11 @@ export const LiquidEffect = GObject.registerClass({
             destFbo.clear4f(Cogl.BufferBit.COLOR, 0.0, 0.0, 0.0, 0.0);
             destFbo.orthographic(0, 0, destW, destH, -1, 1);
             destFbo.draw_textured_rectangle(this._downsamplePipeline, 0, 0, destW, destH, 0, 0, 1, 1);
-            // パス後に即フラッシュして FBO の依存関係チェーンをクリアする。
+            // Flush right after each pass to break the FBO dependency chain.
             destFbo.flush();
             currentSrc = destTex;
         }
-        // ── アップサンプルフェーズ ──────────────────────────────────────────
+        // ── Upsample phase ──────────────────────────────────────────────────────
         for (let i = this.PASS_COUNT - 1; i > 0; i--) {
             const srcTexture = this._blurTextures[i];
             const destFbo = this._blurFbos[i - 1];
@@ -457,17 +440,17 @@ export const LiquidEffect = GObject.registerClass({
         }
     }
     /**
-     * 分離型 Gaussian Blur を実行する。
+     * Runs the separable Gaussian blur.
      *
-     * 方式A (動的シェーダー生成) では PASS_COUNT は常に 1 に固定され、
-     * テクスチャプールも w/2 × h/2 の 1 階層のみを使用する
-     * (半径変更によるプール再構築・パス数変動は発生しない)。
+     * PASS_COUNT is always fixed to 1 for this method, and the texture pool
+     * only uses a single w/2 × h/2 level (no pool rebuild / pass-count change
+     * happens when the radius changes).
      *
-     *   srcTex → [gaussianTemp[0]] (水平パス) → [blurTextures[0]] (垂直パス)
+     *   srcTex → [gaussianTemp[0]] (horizontal pass) → [blurTextures[0]] (vertical pass)
      *
-     * H/V パイプラインは setBlurRadius() で算出されたカーネルに基づき
-     * 動的に生成・コンパイルされたものを使用する (アンロール展開済み)。
-     * 結果は _blurTextures[0] に格納される。
+     * The H/V pipelines are the ones dynamically built from the kernel
+     * computed in setBlurRadius() (fully unrolled). Result ends up in
+     * _blurTextures[0].
      */
     _runGaussianBlur(srcTex) {
         const tempFbo = this._gaussianTempFbos[0];
@@ -478,9 +461,10 @@ export const LiquidEffect = GObject.registerClass({
         const destH = destTex.get_height();
         const srcW = srcTex.get_width();
         const srcH = srcTex.get_height();
-        // ── 0. プリパス: srcTex (フル解像度) → destTex (半解像度) ──────────────
-        // 単純なバイリニアダウンサンプルを行い、H/V パスが同一の半解像度空間で
-        // 動作できるようにする。（Dual Kawase用のパイプラインを半径0で流用）
+        // ── 0. Pre-pass: srcTex (full res) → destTex (half res) ─────────────────
+        // A plain bilinear downsample so the H/V passes can operate entirely in
+        // half-resolution space. (Reuses the Dual Kawase downsample pipeline with
+        // radius 0.)
         this._downsamplePipeline.set_layer_texture(0, srcTex);
         this._setPipelineVec2(this._downsamplePipeline, 'inv_size', 1.0 / srcW, 1.0 / srcH);
         this._setPipelineFloat(this._downsamplePipeline, 'blur_radius', 0.0);
@@ -488,9 +472,8 @@ export const LiquidEffect = GObject.registerClass({
         destFbo.orthographic(0, 0, destW, destH, -1, 1);
         destFbo.draw_textured_rectangle(this._downsamplePipeline, 0, 0, destW, destH, 0, 0, 1, 1);
         destFbo.flush();
-        // ── 1. 水平パス: destTex (半解像度) → tempTex (半解像度) ──────────────
-        // 入力がすでに半解像度になったため、以前の RES_SCALE (=2.0) の補正は削除。
-        // inv_size も destW, destH (半解像度) を基準にする。
+        // ── 1. Horizontal pass: destTex (half res) → tempTex (half res) ─────────
+        // Input is already half-resolution, so inv_size uses destW/destH directly.
         this._gaussianHPipeline.set_layer_texture(0, destTex);
         this._setPipelineVec2(this._gaussianHPipeline, 'inv_size', 1.0 / destW, 1.0 / destH);
         this._setPipelineFloat(this._gaussianHPipeline, 'kernel_scale', this._gaussianScale);
@@ -498,7 +481,7 @@ export const LiquidEffect = GObject.registerClass({
         tempFbo.orthographic(0, 0, destW, destH, -1, 1);
         tempFbo.draw_textured_rectangle(this._gaussianHPipeline, 0, 0, destW, destH, 0, 0, 1, 1);
         tempFbo.flush();
-        // ── 2. 垂直パス: tempTex (半解像度) → destTex (半解像度) ───────────────
+        // ── 2. Vertical pass: tempTex (half res) → destTex (half res) ───────────
         this._gaussianVPipeline.set_layer_texture(0, tempTex);
         this._setPipelineVec2(this._gaussianVPipeline, 'inv_size', 1.0 / destW, 1.0 / destH);
         this._setPipelineFloat(this._gaussianVPipeline, 'kernel_scale', this._gaussianScale);
@@ -507,11 +490,15 @@ export const LiquidEffect = GObject.registerClass({
         destFbo.draw_textured_rectangle(this._gaussianVPipeline, 0, 0, destW, destH, 0, 0, 1, 1);
         destFbo.flush();
     }
+    /**
+     * Drops the texture pool and resets the related fields.
+     *
+     * We never call run_dispose() on these GJS-managed Cogl objects: GJS's own
+     * garbage collector would later try to unref them again, causing a double
+     * free ("free(): invalid size" → SIGABRT). Simply clearing the references
+     * lets the GC reclaim the VRAM safely.
+     */
     _destroyTexturePool() {
-        // run_dispose() は GJS 管理下の GObject に対して呼ぶと
-        // GJS の GC が後から同じオブジェクトを再度 unref しようとして
-        // 二重解放になり "free(): invalid size" → SIGABRT を引き起こす。
-        // 参照をクリアするだけで GC に任せれば安全に VRAM が回収される。
         this._blurFbos = [];
         this._blurTextures = [];
         this._gaussianTempFbos = [];
@@ -519,40 +506,36 @@ export const LiquidEffect = GObject.registerClass({
         this._poolWidth = 0;
         this._poolHeight = 0;
     }
-    // ─── クロップパス (OffscreenEffect FBO パディング対策) ─────────────────────
+    // ─── Crop pass (works around OffscreenEffect FBO padding) ───────────────────
     //
-    // 【背景】DEBUG-H1 ログにより、get_texture() が返す FBO テクスチャの実サイズが
-    // アクターの論理サイズ (actor.get_size()) より常に数 px 大きいことが判明した
-    // (例: alloc=1920x1080 に対し tex=1923x1083)。この差はユーザー設定・BMS の
-    // sigma 等いずれとも相関せず、Cogl/Clutter 内部で OffscreenEffect の FBO が
-    // アクターの論理サイズより大きく確保されるために生じる固定的なパディングと
-    // 考えられる。
+    // Background: on some Cogl/Clutter versions, the texture returned by
+    // get_texture() can be a few pixels larger than the actor's logical size
+    // (e.g. alloc=1920x1080 but tex=1923x1083). This appears to be fixed
+    // internal padding added by OffscreenEffect's FBO allocation, unrelated to
+    // any user setting.
     //
-    // vfunc_paint_target がこのパディング込みのサイズをそのまま
-    // "本当の解像度" として扱っていたため、
-    //   - 最終コンポジットの描画先矩形
-    //   - ブラーテクスチャプールの解像度計算 (半解像度チェーンの基準)
-    // の両方にパディング分の余剰が混入し、パディング領域のゴミ (未定義内容)
-    // が右下方向に描画されたり、奇数サイズに対するビットシフト (w >> 1) の
-    // 丸め誤差がブラーパスを重ねるごとに蓄積し、raw レイヤーと blur レイヤーの
-    // 間に数 px のズレを生む、という一連の症状につながっていたと考えられる。
+    // If vfunc_paint_target treated that padded size as the "true" resolution,
+    // the extra pixels would leak into both the final composite draw rect and
+    // the blur texture pool's resolution chain, producing undefined-content
+    // artifacts and small misalignments between sharp and blurred layers.
     //
-    // 【対策】get_texture() のサイズを信用せず、常に actor.get_size() を正とする。
-    // 差がある場合は、有効領域だけを切り出した専用テクスチャ (_cropTexture) を
-    // 1 パスだけ生成し、以降のブラー・コンポジットは全てこちらを入力として使う。
-    // 追加シェーダーは不要 — downsample.frag を blur_radius = 0 で使うと
-    // 5-tap Kawase カーネルの全オフセットが中心画素に収束するため、
-    // 単純なパススルー (かつ UV 範囲の変換) として流用できる。
+    // Fix: never trust get_texture()'s size — actor.get_size() is always the
+    // source of truth. When they differ, crop out just the valid region into
+    // a dedicated texture (_cropTexture) once per frame, and use that as the
+    // input for every later pass. No extra shader is needed: downsample.frag
+    // run with blur_radius = 0 collapses its 5-tap Kawase kernel onto the
+    // center sample, so it doubles as a plain UV-remapping passthrough.
     /**
-     * クロップ用 FBO/テクスチャを (w, h) に合わせて確保し直す。
-     * サイズが変わらない限り再利用する。
+     * (Re)allocates the crop FBO/texture at size (w, h), reusing the existing
+     * one if the size hasn't changed.
      */
     _ensureCropTarget(ctx, w, h) {
         if (this._cropTexture && this._cropFbo &&
             this._cropPoolW === w && this._cropPoolH === h) {
             return true;
         }
-        // 古い参照はクリアするだけ (GJS GC に解放を任せる。理由は _destroyTexturePool と同様)
+        // Just clear the old references and let the GC handle them (same
+        // reasoning as _destroyTexturePool).
         this._cropTexture = null;
         this._cropFbo = null;
         this._cropPoolW = 0;
@@ -567,60 +550,36 @@ export const LiquidEffect = GObject.registerClass({
             return true;
         }
         catch (e) {
-            console.error(`[Liquid Glass] クロップ用テクスチャ生成失敗 (${w}x${h}): ${e}`);
+            console.error(`[Liquid Glass] Failed to create crop texture (${w}x${h}): ${e}`);
             return false;
         }
     }
     /**
-     * srcTex (パディングを含む可能性のある OffscreenEffect の生テクスチャ) から、
-     * アクターの論理サイズ (allocW x allocH) ぶんだけを正確に切り出した
-     * テクスチャを返す。切り出しが不要 (パディング無し) の場合は srcTex を
-     * そのまま返す。
+     * Crops srcTex (the OffscreenEffect's raw texture, which may include
+     * padding) down to exactly the actor's logical size (allocW x allocH).
+     * If no cropping is needed (no padding), returns srcTex unchanged.
+     *
+     * Padding is assumed to be distributed evenly around the content (i.e. the
+     * valid region is centered within srcTex). This anchor was determined
+     * empirically to match observed behavior across the tested Cogl/Clutter
+     * versions.
      */
     _cropSourceTexture(ctx, srcTex, srcW, srcH, allocW, allocH) {
         if (allocW === srcW && allocH === srcH) {
             return srcTex;
         }
         if (!this._downsamplePipeline) {
-            // パイプライン未初期化ならクロップできないので諦めて生テクスチャを返す
+            // Pipeline isn't ready yet, so cropping isn't possible; fall back to the raw texture.
             return srcTex;
         }
         if (!this._ensureCropTarget(ctx, allocW, allocH)) {
             return srcTex;
         }
-        // srcTex の有効領域 (パディングを除いた本当のコンテンツ) の UV 範囲。
-        //
-        // 【未検証だった前提】これまで「パディングは常に右下側に付与され、
-        // 有効なコンテンツは原点 (0,0) アンカーである」という仮定のもとで
-        // (0,0)-(uMax,vMax) を切り出していた。しかしこの仮定を裏付ける直接
-        // 証拠 (ピクセル読み出し等) は取れていなかった。marker 実験で形状計算
-        // (dock_x/y/w/h 周り) は完全に正しいと確定した一方、背景コンテンツの
-        // 数pxズレが残っていることから、この「アンカー位置の仮定」自体が
-        // 誤っている可能性が高い。
-        //
-        // _debugCropAnchor で切り出し位置を切り替えられるようにし、
-        // 実機でどのアンカーが正しいかを実験的に確定させる:
-        //   0 = 左上アンカー (これまでの仮定。パディングは右下に付与)
-        //   1 = 中央アンカー (パディングは全周に均等分配)
-        //   2 = 右下アンカー (パディングは左上に付与)
+        // Assume padding is split evenly on all sides (center anchor).
         const padW = srcW - allocW;
         const padH = srcH - allocH;
-        let offX = 0;
-        let offY = 0;
-        switch (this._debugCropAnchor) {
-            case 1: // 中央アンカー
-                offX = padW / 2;
-                offY = padH / 2;
-                break;
-            case 2: // 右下アンカー (有効領域は srcTex の "末尾" にあると仮定)
-                offX = padW;
-                offY = padH;
-                break;
-            default: // 0: 左上アンカー
-                offX = 0;
-                offY = 0;
-                break;
-        }
+        const offX = padW / 2;
+        const offY = padH / 2;
         const uMin = offX / srcW;
         const vMin = offY / srcH;
         const uMax = Math.min(1.0, (offX + allocW) / srcW);
@@ -629,14 +588,14 @@ export const LiquidEffect = GObject.registerClass({
         const pipeline = this._downsamplePipeline;
         pipeline.set_layer_texture(0, srcTex);
         this._setPipelineVec2(pipeline, 'inv_size', 1.0 / srcW, 1.0 / srcH);
-        // blur_radius = 0 → 5-tap カーネルの全オフセットが中心画素に収束し、
-        // 実質的なパススルー (単純な UV リサンプル) として機能する。
+        // blur_radius = 0 collapses every tap in the 5-tap kernel onto the center
+        // sample, turning this into a plain UV resample (i.e. a crop).
         this._setPipelineFloat(pipeline, 'blur_radius', 0.0);
         fbo.clear4f(Cogl.BufferBit.COLOR, 0.0, 0.0, 0.0, 0.0);
         fbo.orthographic(0, 0, allocW, allocH, -1, 1);
-        // 出力は全面 (0,0)-(allocW,allocH) に描画しつつ、入力側の UV を
-        // (uMin,vMin)-(uMax,vMax) に制限することで「パディングを除いた領域を
-        // ぴったり引き伸ばす」= 実質的なクロップを実現する。
+        // Draw across the full (0,0)-(allocW,allocH) output rect while sampling
+        // only the (uMin,vMin)-(uMax,vMax) input UV range — stretching the
+        // padding-free region to fill the output, i.e. cropping.
         fbo.draw_textured_rectangle(pipeline, 0, 0, allocW, allocH, uMin, vMin, uMax, vMax);
         fbo.flush();
         return this._cropTexture;
@@ -648,61 +607,62 @@ export const LiquidEffect = GObject.registerClass({
         this._cropPoolH = 0;
     }
     /**
-     * Clutter.OffscreenEffect のフックをオーバーライドする。
+     * Overrides the Clutter.OffscreenEffect hook.
      *
-     * このメソッドは OffscreenEffect がアクターの内容を内部 FBO に
-     * レンダリングした後、その FBO テクスチャを画面に合成する
-     * タイミングで呼び出される。
+     * Called after OffscreenEffect has rendered the actor's content into its
+     * internal FBO, at the point where that FBO texture is normally composited
+     * onto the screen.
      *
-     * デフォルトの super.vfunc_paint_target() は FBO を
-     * そのまま画面に描画するだけだが、ここではその代わりに
-     * Dual Kawase ブラー → Glass コンポジット のパイプラインを実行する。
+     * The default super.vfunc_paint_target() just draws the FBO straight to
+     * the screen; here we instead run the blur pipeline followed by the glass
+     * composite pass.
      *
-     * @param _paintNode   Clutter の描画ノード (GNOME 45+ の新しい signature)
-     * @param paintContext 現在のペイントコンテキスト (画面 FB への参照を含む)
+     * @param _paintNode   Clutter's paint node (new signature since GNOME 45+)
+     * @param paintContext Current paint context, holding a reference to the on-screen framebuffer
      */
     vfunc_paint_target(_paintNode, paintContext) {
-        // ── 遅延パイプライン初期化 ────────────────────────────────────────────
+        // ── Deferred pipeline initialization ─────────────────────────────────────
         if (!this._compositePipeline) {
             try {
                 const ctx = this._getCoglContext();
                 if (!ctx)
-                    throw new Error('Cogl コンテキストを取得できません');
+                    throw new Error('Could not obtain a Cogl context');
                 this._initPipelines(ctx);
             }
             catch (e) {
-                console.error(`[Liquid Glass] パイプライン初期化失敗: ${e}`);
-                // フォールバック: OffscreenEffect のデフォルト描画を使用
+                console.error(`[Liquid Glass] Pipeline initialization failed: ${e}`);
+                // Fall back to OffscreenEffect's default drawing.
                 super.vfunc_paint_target(_paintNode, paintContext);
                 return;
             }
         }
-        // ── ガードチェック ────────────────────────────────────────────────────
-        // Gaussian H/V パイプラインは方式A (動的シェーダー生成) では半径が
-        // 設定されるまで存在しないため、ここでの必須チェックには含めない。
+        // ── Guard check ───────────────────────────────────────────────────────────
+        // The Gaussian H/V pipelines don't exist until a radius has been set
+        // (they're built dynamically), so they're intentionally excluded from
+        // this required-pipeline check.
         if (!this._compositePipeline || !this._downsamplePipeline || !this._upsamplePipeline) {
             super.vfunc_paint_target(_paintNode, paintContext);
             return;
         }
-        // ── Gaussian シェーダーの遅延コンパイル ───────────────────────────────
-        // setBlurRadius() でフェッチ数 (タップ構成) が変化した場合のみ、
-        // ここで安全に (Cogl コンテキストが確実に利用可能なタイミングで)
-        // 新しい H/V パイプラインをコンパイルする。
-        // 古いパイプライン参照は run_dispose() せず GC に解放を任せる。
+        // ── Deferred compilation of the Gaussian shaders ─────────────────────────
+        // Whenever setBlurRadius() changes the tap count, compile the new H/V
+        // pipelines here, where a Cogl context is guaranteed to be available.
+        // Old pipeline references are left for GJS's GC rather than disposed
+        // manually.
         if (this._gaussianPipelineDirty && this._pendingGaussianKernel) {
             try {
                 const ctx = this._getCoglContext();
                 if (!ctx)
-                    throw new Error('Cogl コンテキストを取得できません');
+                    throw new Error('Could not obtain a Cogl context');
                 this._gaussianHPipeline = null;
                 this._gaussianVPipeline = null;
                 this._compileGaussianPipelines(ctx, this._pendingGaussianKernel);
             }
             catch (e) {
-                console.error(`[Liquid Glass] Gaussian パイプライン生成失敗: ${e}`);
+                console.error(`[Liquid Glass] Failed to build Gaussian pipelines: ${e}`);
             }
         }
-        // OffscreenEffect がキャプチャしたアクターの FBO テクスチャを取得
+        // Grab the FBO texture OffscreenEffect captured from the actor.
         const srcTex = this.get_texture();
         if (!srcTex) {
             super.vfunc_paint_target(_paintNode, paintContext);
@@ -710,16 +670,10 @@ export const LiquidEffect = GObject.registerClass({
         }
         const srcW = srcTex.get_width();
         const srcH = srcTex.get_height();
-        // ── 【DEBUG-H1】診断ログ (frac=0 だったためサブピクセル説は否定済み。
-        //    代わりに tex-alloc diff が一貫して非ゼロであることを確認済み) ──────
-        if (this._debugH1Enabled) {
-            this._logH1DebugInfo(srcTex, srcW, srcH);
-        }
-        // ── アクターの論理サイズを正とする ────────────────────────────────────
-        // DEBUG-H1 の検証により、get_texture() の実サイズ (srcW, srcH) が
-        // アクターの論理サイズ (actor.get_size()) より常に数 px 大きい
-        // (Cogl 内部パディング混入) ことが判明した。以降は srcW/srcH を
-        // "本当の解像度" として信用せず、actor.get_size() を正とする。
+        // ── Trust the actor's logical size over get_texture()'s reported size ──
+        // get_texture() can be a few pixels larger than the actor's logical size
+        // due to internal FBO padding (see the crop-pass comment above), so
+        // actor.get_size() is used as the source of truth from here on.
         const actor = this.get_actor();
         let allocW = srcW;
         let allocH = srcH;
@@ -730,9 +684,9 @@ export const LiquidEffect = GObject.registerClass({
             if (Number.isFinite(ah) && ah > 0)
                 allocH = Math.round(ah);
         }
-        // ── パディング混入時のみクロップパスを実行 ────────────────────────────
-        // (サイズが一致していれば _cropSourceTexture は srcTex をそのまま返す
-        //  ため、通常時のオーバーヘッドは分岐チェック 1 回のみ)
+        // ── Only run the crop pass when padding is actually present ─────────────
+        // (When sizes match, _cropSourceTexture just returns srcTex unchanged,
+        //  so the normal-case overhead is a single size comparison.)
         let effectiveTex = srcTex;
         let effectiveW = srcW;
         let effectiveH = srcH;
@@ -740,42 +694,33 @@ export const LiquidEffect = GObject.registerClass({
             try {
                 const ctx = this._getCoglContext();
                 if (!ctx)
-                    throw new Error('Cogl コンテキストを取得できません');
+                    throw new Error('Could not obtain a Cogl context');
                 effectiveTex = this._cropSourceTexture(ctx, srcTex, srcW, srcH, allocW, allocH);
-                // クロップに成功した場合のみ有効寸法を更新する
-                // (失敗時は _cropSourceTexture が srcTex をそのまま返すため据え置き)
+                // Only update the effective dimensions if cropping actually succeeded
+                // (on failure, _cropSourceTexture returns srcTex unchanged, so we keep
+                // the padded dimensions).
                 if (effectiveTex !== srcTex) {
                     effectiveW = allocW;
                     effectiveH = allocH;
                 }
             }
             catch (e) {
-                console.error(`[Liquid Glass] クロップパス失敗、パディング込みのテクスチャで続行: ${e}`);
+                console.error(`[Liquid Glass] Crop pass failed; continuing with the padded texture: ${e}`);
             }
         }
-        // ── 【DEBUG-H1-CROP】クロップが実際に適用されたかどうかを確認するログ ──
-        // _logH1DebugInfo は生の srcTex しか見ないため、クロップ処理自体が
-        // 実行されたか・effectiveTex に切り替わったかはここで別途確認する。
-        if (this._debugH1Enabled &&
-            this._debugH1FrameCounter % LiquidEffect._DEBUG_H1_LOG_INTERVAL_FRAMES === 0) {
-            console.log(`[Liquid Glass][DEBUG-H1-CROP] wasCropped=${effectiveTex !== srcTex} ` +
-                `anchor=${this._debugCropAnchor} ` +
-                `effective=(${effectiveW}x${effectiveH}) alloc=(${allocW}x${allocH}) ` +
-                `cropPool=(${this._cropPoolW}x${this._cropPoolH})`);
-        }
-        // ── 解像度変更時にテクスチャプールを再構築 ───────────────────────────
-        // (クロップ後の "本当の" 解像度を基準にする — パディング込みのサイズを
-        //  基準にすると、奇数値へのビットシフト (w >> 1) で丸め誤差が段階的に
-        //  蓄積し、raw レイヤーと blur レイヤーの間にズレが生じていた)
+        // ── Rebuild the texture pool when the resolution changes ────────────────
+        // Based on the cropped ("true") resolution — using the padded size here
+        // would cause rounding error from bit-shifting (w >> 1) an odd value to
+        // accumulate across passes, misaligning the sharp and blurred layers.
         if (effectiveW !== this._poolWidth || effectiveH !== this._poolHeight) {
             try {
                 const ctx = this._getCoglContext();
                 if (!ctx)
-                    throw new Error('Cogl コンテキストを取得できません');
+                    throw new Error('Could not obtain a Cogl context');
                 this._buildTexturePool(ctx, effectiveW, effectiveH);
             }
             catch (e) {
-                console.error(`[Liquid Glass] テクスチャプール再構築失敗: ${e}`);
+                console.error(`[Liquid Glass] Failed to rebuild the texture pool: ${e}`);
                 super.vfunc_paint_target(_paintNode, paintContext);
                 return;
             }
@@ -785,10 +730,10 @@ export const LiquidEffect = GObject.registerClass({
             return;
         }
         // ─────────────────────────────────────────────────────────────────────
-        // ブラーパス: _blurMethod に応じてぼかし方式を切り替える
-        //   0: 分離型 Gaussian Blur
-        //   1: Dual Kawase Blur (従来実装)
-        // 入力は必ず effectiveTex (クロップ済み、パディング無し) を使う。
+        // Blur pass: which blur method runs depends on _blurMethod
+        //   0: Separable Gaussian blur
+        //   1: Dual Kawase blur (original implementation)
+        // Always takes effectiveTex (cropped, padding-free) as input.
         // ─────────────────────────────────────────────────────────────────────
         if (this.PASS_COUNT > 0) {
             if (this._blurMethod === 0) {
@@ -801,24 +746,24 @@ export const LiquidEffect = GObject.registerClass({
             }
         }
         // ─────────────────────────────────────────────────────────────────────
-        // 最終パス: Glass Composite
-        //   _blurTextures[0] (ブラー済み w/2 × h/2) を cogl_sampler0 にバインドし、
-        //   glass.frag で屈折・リムライト・シャドウを適用して画面へ描画する。
+        // Final pass: glass composite.
+        //   Binds _blurTextures[0] (blurred, w/2 × h/2) as cogl_sampler0 and runs
+        //   glass.frag (refraction / rim lighting / shadow) to draw onto the screen.
         //
-        //   Clutter がアクターのモデルビュー変換を screenFb に設定済みなので、
-        //   アクターローカル座標 (0, 0)〜(effectiveW, effectiveH) で描くだけでよい。
-        //   ここを (0,0,srcW,srcH) にしていたことが、パディング分を画面に
-        //   はみ出させていた直接の原因だった。
+        //   Clutter has already set up the actor's model-view transform on
+        //   screenFb, so drawing in actor-local coordinates
+        //   (0, 0)-(effectiveW, effectiveH) is all that's needed. Using
+        //   (0,0,srcW,srcH) here used to leak the padding onto the screen.
         // ─────────────────────────────────────────────────────────────────────
         const compFb = paintContext.get_framebuffer();
         const compPipeline = this._compositePipeline;
-        // Layer 0: ぼけていない生のキャプチャテクスチャ (屈折計算の基準用)
-        // — クロップ済みテクスチャを使うことで UV (0,0)-(1,1) が
-        //   ぴったりアクターの論理サイズに一致する。
+        // Layer 0: the sharp, unblurred capture (used as the basis for refraction).
+        // Using the cropped texture means UV (0,0)-(1,1) lines up exactly with
+        // the actor's logical size.
         compPipeline.set_layer_texture(0, effectiveTex);
         this._configureSamplerLayer(compPipeline, 0);
-        // Layer 1: Dual Kawase で極限までぼかしたテクスチャ (背景ブラー用)
-        // 変更後: ブラー処理を行った場合のみ blurTextures[0] を渡し、ブラー無しなら effectiveTex を渡す
+        // Layer 1: the heavily blurred texture (used for the background blur).
+        // Falls back to effectiveTex when no blur pass ran.
         if (this.PASS_COUNT > 0 && this._blurTextures.length > 0) {
             compPipeline.set_layer_texture(1, this._blurTextures[0]);
         }
@@ -826,90 +771,19 @@ export const LiquidEffect = GObject.registerClass({
             compPipeline.set_layer_texture(1, effectiveTex);
         }
         this._configureSamplerLayer(compPipeline, 1);
-        // 【修正箇所②】Coglパイプラインへのユニフォーム手動同期
-        // （これが無いと dock_x 等がすべて 0 になり、画面全体がマスク内だと誤判定されます）
+        // Manually sync pending uniforms into the composite pipeline.
+        // Without this, values like dock_x would stay at 0 and the whole screen
+        // would be misdetected as being inside the dock mask.
         this._applyPendingUniforms();
         compFb.push_matrix();
         const screenFb = paintContext.get_framebuffer();
         screenFb.draw_textured_rectangle(this._compositePipeline, 0, 0, effectiveW, effectiveH, 0, 0, 1, 1);
         compFb.pop_matrix();
     }
-    // ─── 【DEBUG】仮説1検証用ヘルパー ───────────────────────────────────────
-    // LOG_INTERVAL_FRAMES 毎に1回だけ、以下を出力する:
-    //   1. actor.get_transformed_position() — アクターの「真の」絶対位置
-    //      (浮動小数点)。その小数部 (frac) が非ゼロであれば、OffscreenEffect の
-    //      デフォルト実装が本来吸収するはずのサブピクセル残差が存在する証拠。
-    //   2. actor.get_paint_box() — Clutter が実際に計算した (おそらく整数
-    //      スナップ済みの) ペイントボックス。真の位置との差分が
-    //      「基底クラスが内部で保持しているはずのオフセット量」の推定値。
-    //   3. get_texture() のサイズ vs アクターの論理サイズ (allocation) — 差分が
-    //      あれば FBO 側でも丸め・パディングが発生している証拠。
-    //
-    // 使い方: journalctl -f -o cat /usr/bin/gnome-shell (または looking glass) で
-    // "[Liquid Glass][DEBUG-H1]" を grep しながらメニューを開閉し、
-    //   - frac の値
-    //   - paintBox 由来のオフセット
-    //   - 画面上で目視/スクリーンショットで測定したズレ量 (px)
-    // の3つが一致した傾向で変動するかを確認する。一致すれば仮説1はほぼ確定。
-    static _DEBUG_H1_LOG_INTERVAL_FRAMES = 60;
-    _logH1DebugInfo(srcTex, srcW, srcH) {
-        this._debugH1FrameCounter++;
-        if (this._debugH1FrameCounter % LiquidEffect._DEBUG_H1_LOG_INTERVAL_FRAMES !== 0) {
-            return;
-        }
-        const actor = this.get_actor();
-        if (!actor)
-            return;
-        try {
-            // 1. アクターの「真の」絶対位置 (浮動小数点、サブピクセル成分を含む)
-            const [absX, absY] = actor.get_transformed_position();
-            const [allocW, allocH] = actor.get_size();
-            const fracX = absX - Math.floor(absX);
-            const fracY = absY - Math.floor(absY);
-            // 2. Clutter が実際に使っているペイントボックス (バージョンによって
-            //    API が無い場合があるため防御的に取得する)
-            //    【修正】このGNOME/Clutterバインディングの get_paint_box() は
-            //    引数を取らず、ActorBox を戻り値として返す (out引数版ではない)。
-            //    以前の実装は ActorBox を引数として渡していたため
-            //    "Too many arguments: expected 0, got 1" の JS 警告が出ていた。
-            let paintBoxStr = 'N/A';
-            try {
-                const anyActor = actor;
-                if (typeof anyActor.get_paint_box === 'function') {
-                    const box = anyActor.get_paint_box()[1];
-                    if (box) {
-                        const bx1 = box.get_x();
-                        const by1 = box.get_y();
-                        const bw = box.get_width();
-                        const bh = box.get_height();
-                        paintBoxStr =
-                            `x1=${bx1.toFixed(4)} y1=${by1.toFixed(4)} w=${bw.toFixed(4)} h=${bh.toFixed(4)} ` +
-                                `(vs absPos diff: dx=${(bx1 - absX).toFixed(4)} dy=${(by1 - absY).toFixed(4)})`;
-                    }
-                }
-            }
-            catch (e) {
-                paintBoxStr = `取得失敗: ${e}`;
-            }
-            // 3. FBO テクスチャの物理サイズ vs アクターの論理サイズ (allocation) の差
-            const texVsAllocW = srcW - allocW;
-            const texVsAllocH = srcH - allocH;
-            console.log(`[Liquid Glass][DEBUG-H1] frame=${this._debugH1FrameCounter} ` +
-                `absPos=(${absX.toFixed(4)}, ${absY.toFixed(4)}) ` +
-                `frac=(${fracX.toFixed(4)}, ${fracY.toFixed(4)}) ` +
-                `alloc=(${allocW.toFixed(4)}x${allocH.toFixed(4)}) ` +
-                `tex=(${srcW}x${srcH}) ` +
-                `tex-alloc diff=(${texVsAllocW.toFixed(4)}, ${texVsAllocH.toFixed(4)}) ` +
-                `paintBox=[${paintBoxStr}]`);
-        }
-        catch (e) {
-            console.error(`[Liquid Glass][DEBUG-H1] ログ取得失敗: ${e}`);
-        }
-    }
-    // ─── ユニフォームヘルパー ─────────────────────────────────────────────────
+    // ─── Uniform helpers ─────────────────────────────────────────────────────────
     /**
-     * パイプラインに vec2 ユニフォームを設定する。
-     * ロケーション取得は Cogl が内部でキャッシュするため、毎フレーム呼んでも安全。
+     * Sets a vec2 uniform on a pipeline. Cogl caches the uniform location
+     * internally, so calling this every frame is safe.
      */
     _setPipelineVec2(pipeline, name, x, y) {
         const loc = pipeline.get_uniform_location(name);
@@ -917,16 +791,16 @@ export const LiquidEffect = GObject.registerClass({
         pipeline.set_uniform_float(loc, 2, 1, [x, y]);
     }
     /**
-     * パイプラインに float スカラーユニフォームを設定する。
+     * Sets a scalar float uniform on a pipeline.
      */
     _setPipelineFloat(pipeline, name, value) {
         const loc = pipeline.get_uniform_location(name);
         pipeline.set_uniform_float(loc, 1, 1, [value]);
     }
     /**
-     * コンポジットパイプラインに float ユニフォームをセットする。
-     * パイプライン未生成時は _pendingUniforms にバッファし、
-     * 生成後 (_applyPendingUniforms) に一括適用される。
+     * Sets a float uniform on the composite pipeline. If the pipeline hasn't
+     * been created yet, the value is buffered in _pendingUniforms and applied
+     * later in _applyPendingUniforms().
      */
     _setFloat(name, value) {
         this._pendingUniforms.set(name, value);
@@ -937,7 +811,7 @@ export const LiquidEffect = GObject.registerClass({
     _applyUniform(name, value) {
         if (!this._compositePipeline)
             return;
-        // ロケーションをキャッシュして毎フレームの get_uniform_location 呼び出しを削減
+        // Cache the uniform location to avoid a get_uniform_location() call every frame.
         let loc = this._compUniforms.get(name);
         if (loc === undefined) {
             loc = this._compositePipeline.get_uniform_location(name);
@@ -951,20 +825,20 @@ export const LiquidEffect = GObject.registerClass({
             this._applyUniform(name, value);
         }
     }
-    // ─── Cogl コンテキスト取得 ───────────────────────────────────────────────
+    // ─── Cogl context lookup ─────────────────────────────────────────────────────
     _getCoglContext() {
         try {
-            // Clutter.get_default_backend() は GJS で利用可能。
-            // GNOME 50 では get_cogl_context() は Cogl.Context を返す。
+            // Clutter.get_default_backend() is available from GJS.
+            // On GNOME 50, get_cogl_context() returns a Cogl.Context.
             const backend = Clutter.get_default_backend();
             return backend.get_cogl_context();
         }
         catch (e) {
-            console.error(`[Liquid Glass] Cogl コンテキスト取得失敗: ${e}`);
+            console.error(`[Liquid Glass] Failed to obtain the Cogl context: ${e}`);
             return null;
         }
     }
-    // ─── GSettings バインディング ─────────────────────────────────────────────
+    // ─── GSettings bindings ───────────────────────────────────────────────────────
     _bindSettings() {
         const mappings = [
             { key: 'glass-max-z', uniform: 'max_z' },
@@ -989,17 +863,16 @@ export const LiquidEffect = GObject.registerClass({
         if (!settings)
             return;
         mappings.forEach(map => {
-            // 初回反映
+            // Apply the initial value.
             this._setFloat(map.uniform, settings.get_double(map.key));
-            // 変更監視
+            // Watch for changes.
             const id = settings.connect(`changed::${map.key}`, () => {
                 this._setFloat(map.uniform, settings.get_double(map.key));
             });
             this._settingsIds.push(id);
         });
         // ── blur-method (int): 0 = Gaussian, 1 = Dual Kawase ──────────────────
-        // GSettings の int キーとして定義されていることを前提とする。
-        // get_int() で読み込み、0 か否かで BlurMethod にマップする。
+        // Assumes the GSettings schema defines this key as an int.
         const applyBlurMethod = () => {
             const raw = settings.get_int('blur-method');
             this.setBlurMethod(raw === 0 ? 0 : 1);
@@ -1008,18 +881,18 @@ export const LiquidEffect = GObject.registerClass({
         const blurMethodId = settings.connect('changed::blur-method', applyBlurMethod);
         this._settingsIds.push(blurMethodId);
     }
-    // ─── 公開 API (呼び出し側から見た互換インターフェース) ──────────────────
+    // ─── Public API (compatible with the previous ShaderEffect-based interface) ──
     cleanup() {
-        // GSettings シグナル切断
+        // Disconnect GSettings signal handlers.
         if (this._settings && this._settingsIds) {
             this._settingsIds.forEach(id => this._settings?.disconnect(id));
             this._settingsIds = [];
         }
-        // テクスチャプール解放 (参照クリアのみ。run_dispose() は二重解放になるため禁止)
+        // Free the texture pool (reference clear only — run_dispose() would double-free).
         this._destroyTexturePool();
         this._destroyCropTarget();
-        // パイプライン参照クリア (GJS GC が VRAM を解放する)
-        // run_dispose() は呼ばない – GJS 管理オブジェクトへの二重 unref を防ぐため
+        // Clear pipeline references (GJS's GC reclaims the VRAM).
+        // Never call run_dispose() here — it would double-unref a GJS-managed object.
         this._downsamplePipeline = null;
         this._upsamplePipeline = null;
         this._gaussianHPipeline = null;
@@ -1027,7 +900,7 @@ export const LiquidEffect = GObject.registerClass({
         this._compositePipeline = null;
         this._compUniforms.clear();
         this._pendingUniforms.clear();
-        // 動的 Gaussian シェーダー生成の状態もリセットする
+        // Reset the dynamic Gaussian shader generation state too.
         this._gaussianKernel = null;
         this._pendingGaussianKernel = null;
         this._gaussianPipelineDirty = false;
@@ -1070,10 +943,11 @@ export const LiquidEffect = GObject.registerClass({
         this._setFloat('intensity', intensity);
     }
     /**
-     * アクターの論理サイズをシェーダーの resolution ユニフォームに同期する。
+     * Syncs the actor's logical size to the shader's resolution uniform.
      *
-     * テクスチャプールの再構築は vfunc_paint_target で get_texture() のサイズを
-     * 見て自動的に行われるため、ここでは不要。
+     * The texture pool itself is rebuilt automatically inside
+     * vfunc_paint_target based on get_texture()'s size, so no extra work is
+     * needed here.
      */
     setResolution(width, height) {
         this._setFloat('resolution_x', width);
@@ -1081,8 +955,8 @@ export const LiquidEffect = GObject.registerClass({
         this.queue_repaint();
     }
     /**
-     * フルスクリーン FBO モード: ドックのモニター相対座標をシェーダーに渡す。
-     * (詳細は glass.frag の dock_x/y/w/h コメント参照)
+     * Full-screen FBO mode: passes the dock's monitor-relative geometry to the
+     * shader (see the dock_x/y/w/h comments in glass.frag for details).
      */
     setGlassGeometry(x, y, w, h) {
         this._setFloat('dock_x', x);
@@ -1104,29 +978,28 @@ export const LiquidEffect = GObject.registerClass({
         this.queue_repaint();
     }
     /**
-     * ブラー方式を動的に変更する。
+     * Dynamically switches the blur method.
      *
-     * @param method 0: 分離型 Gaussian Blur, 1: Dual Kawase Blur
+     * @param method 0: separable Gaussian blur, 1: Dual Kawase blur
      *
-     * Dual Kawase 用パイプラインは _initPipelines で初回フレームにコンパイル済み。
-     * Gaussian 用パイプラインは方式A (動的シェーダー生成) のため、setBlurRadius()
-     * 経由で半径に応じたカーネルが算出され、必要な場合のみ次フレームの
-     * vfunc_paint_target で遅延コンパイルされる。
-     * テクスチャプールも両方式で共用できる構造 (_buildTexturePool 参照) のため、
-     * 方式切り替え時の手動再構築は不要。queue_repaint() のみで安全に次フレームから
-     * 新方式が適用される。
+     * The Dual Kawase pipelines are already compiled in _initPipelines on the
+     * first frame. The Gaussian pipelines are built dynamically: setBlurRadius()
+     * computes the kernel for the current radius, and it's lazily compiled on
+     * the next vfunc_paint_target only if needed.
+     * The texture pool is shared between both methods (see _buildTexturePool),
+     * so no manual rebuild is required when switching — queue_repaint() alone
+     * is enough for the new method to take effect on the next frame.
      */
     setBlurMethod(method) {
         if (this._blurMethod === method)
             return;
         this._blurMethod = method;
-        console.log(`[Liquid Glass] blur-method → ${method === 0 ? 'Gaussian' : 'Dual Kawase'}`);
         this.setBlurRadius(this._targetRadius);
         this.queue_repaint();
     }
     /**
-     * ブラー半径を動的に設定する。
-     * 方式（Gaussian / Dual Kawase）に応じて計算を分岐する。
+     * Dynamically sets the blur radius. The calculation branches depending on
+     * the active method (Gaussian / Dual Kawase).
      */
     setBlurRadius(radius) {
         this._targetRadius = radius;
@@ -1137,41 +1010,44 @@ export const LiquidEffect = GObject.registerClass({
         this._setDualKawaseBlurRadius(radius);
     }
     /**
-     * 分離型 Gaussian Blur (方式A: 動的シェーダー生成) の半径設定。
+     * Radius setter for the separable Gaussian blur (dynamic shader generation).
      *
-     * 基本方針:
-     *   - PASS_COUNT は常に 1 に固定。テクスチャプールは w/2 × h/2 の
-     *     1 階層のみを使用し、半径変更によるプール破棄・再構築は行わない
-     *     (ガクつきの排除)。
-     *   - 半径 (= 元解像度ピクセル単位のσ) に応じてサンプリングのフェッチ数
-     *     (タップペア数) を動的に決定する。フェッチ数が変化しない限り、
-     *     既存のコンパイル済みシェーダーをそのまま再利用し、kernel_scale
-     *     ユニフォームの更新のみで対応する (再コンパイル抑制による最適化)。
+     * Basic approach:
+     *   - PASS_COUNT is always fixed to 1. The texture pool only uses a single
+     *     w/2 × h/2 level, so changing the radius never triggers a pool
+     *     rebuild (avoids visible stutter).
+     *   - The number of fetch pairs (tap count) is derived from the radius
+     *     (= sigma, in original-resolution pixels). As long as the fetch count
+     *     doesn't change, the existing compiled shader is reused as-is and only
+     *     the kernel_scale uniform is updated (skips an unnecessary recompile).
      *
-     * 算出方法:
-     *   1. 半解像度空間における実質的な標準偏差 σ を算出する:
-     *        σ = radius / RES_SCALE   (RES_SCALE = 2.0; 半解像度では 1 texel = 2 元ピクセル)
-     *   2. 最大半径 30px (半解像度空間で 15 texel) を上限にクランプする。
-     *   3. ガウス重みが十分にゼロへ収束する範囲 (3σ ルール) をカバーするために
-     *      必要な片側タップ数を求め、フェッチペア数 (2 タップ = 1 フェッチ) を決定する。
-     *   4. フェッチペア数が前回と同一であれば、シェーダー文字列の再生成・
-     *      パイプラインの再コンパイルをスキップし、kernel_scale = σ / 基準σ の
-     *      比率のみを更新する。
-     *      フェッチペア数が変化した場合は新しいカーネルを _pendingGaussianKernel
-     *      にセットし、次回 vfunc_paint_target で安全にコンパイルする。
+     * Derivation:
+     *   1. Compute the effective standard deviation sigma in half-resolution
+     *      space: sigma = radius / RES_SCALE (RES_SCALE = 2.0; at half
+     *      resolution, 1 texel = 2 original pixels).
+     *   2. Clamp to a maximum radius of 30px (15 texels in half-res space).
+     *   3. Determine how many one-sided taps are needed for the Gaussian
+     *      weights to decay close enough to zero (the "3 sigma" rule), then
+     *      convert that into a fetch-pair count (2 taps merged per fetch).
+     *   4. If the fetch-pair count matches the previous one, skip regenerating
+     *      the shader string and recompiling the pipeline — just update
+     *      kernel_scale = sigma / base sigma.
+     *      If it changed, stage a new kernel in _pendingGaussianKernel to be
+     *      compiled safely on the next vfunc_paint_target.
      */
     _setGaussianBlurRadius(radius) {
-        const RES_SCALE = 2.0; // 半解像度: 1 texel = 2 元ピクセル
-        const MAX_SIGMA_TEXEL = 15.0; // 物理上限 30px (= 半解像度空間で 15 texel)
-        // ── 最小 σ の保証 ──────────────────────────────────────────────────────
-        // 半解像度へのダウンサンプル (bilinear 2x) は本質的に幅 2px のボックスフィルターと
-        // 等価であり、文字のような高周波成分に対してエイリアシングを生じさせる。
-        // このエイリアシングを打ち消すには、H/V カーネルの実効幅が 1.0 half-res texel
-        // (= 2 元ピクセル) を超えている必要がある。
-        // したがって σ の下限を MIN_SIGMA_TEXEL = 1.0 に設定し、
-        // 指定 radius が極小であっても最低限の平滑化を保証する。
-        // radius が小さいほど kernel_scale < 1.0 になるが、タップが中心に寄ることで
-        // 単純に「弱いぼかし」として機能する (エイリアシングは除去できる)。
+        const RES_SCALE = 2.0; // half resolution: 1 texel = 2 original pixels
+        const MAX_SIGMA_TEXEL = 15.0; // physical cap of 30px (= 15 texels in half-res space)
+        // ── Minimum sigma guarantee ────────────────────────────────────────────
+        // Downsampling to half resolution (bilinear 2x) is effectively a 2px-wide
+        // box filter, which aliases high-frequency content such as text. To
+        // counteract that aliasing, the H/V kernel's effective width needs to
+        // exceed 1.0 half-res texel (= 2 original pixels).
+        // So sigma is floored at MIN_SIGMA_TEXEL = 1.0, guaranteeing at least a
+        // minimal amount of smoothing even for a very small requested radius.
+        // For small radii, kernel_scale ends up < 1.0, pulling the taps toward
+        // the center — functioning simply as a "weaker blur" (the anti-aliasing
+        // effect is preserved).
         const MIN_SIGMA_TEXEL = 1.0;
         if (radius <= 0) {
             if (this.PASS_COUNT !== 0) {
@@ -1183,11 +1059,13 @@ export const LiquidEffect = GObject.registerClass({
             return;
         }
         const sigmaTexel = Math.min(radius / RES_SCALE, MAX_SIGMA_TEXEL);
-        // カーネル形状 (フェッチペア数) の決定には MIN_SIGMA_TEXEL 以上の σ を使用する。
-        // これにより、小半径でも十分な幅のカーネルがコンパイルされる。
+        // Use a sigma floored at MIN_SIGMA_TEXEL to decide the kernel shape
+        // (fetch-pair count), so a wide-enough kernel gets compiled even for
+        // small radii.
         const kernelSigma = Math.max(sigmaTexel, MIN_SIGMA_TEXEL);
-        // 3σ ルールでカバーすべき片側タップ数 → フェッチペア数 (2 タップ/フェッチ) を算出
-        // 最低 2 ペア (5-tap 相当) を保証して bilinear ダウンサンプルのエイリアシングを確実に吸収する
+        // Number of one-sided taps needed to satisfy the 3-sigma rule, converted
+        // to fetch pairs (2 taps per fetch). At least 2 pairs (5-tap equivalent)
+        // are guaranteed so bilinear-downsample aliasing is reliably absorbed.
         const sideTaps = Math.max(2, Math.ceil(kernelSigma * 3));
         const fetchPairs = Math.max(2, Math.ceil(sideTaps / 2));
         const needsRecompile = this._gaussianFetchPairs !== fetchPairs ||
@@ -1198,54 +1076,58 @@ export const LiquidEffect = GObject.registerClass({
             this._gaussianPipelineDirty = true;
             this._gaussianFetchPairs = fetchPairs;
             this._gaussianBaseSigma = kernelSigma;
-            // kernel_scale: 実際の σ / コンパイル時の σ。
-            // sigmaTexel < kernelSigma のとき scale < 1.0 となり、弱いぼかしとして機能する。
+            // kernel_scale = actual sigma / sigma at compile time.
+            // When sigmaTexel < kernelSigma, scale < 1.0, giving a weaker blur.
             this._gaussianScale = sigmaTexel / kernelSigma;
         }
         else {
-            // フェッチ数 (シェーダー構造) は変化なし — kernel_scale のみ更新し
-            // 再コンパイルを回避する。
+            // Fetch count (shader structure) is unchanged — only update
+            // kernel_scale and skip the recompile.
             this._gaussianScale = this._gaussianBaseSigma > 0
                 ? sigmaTexel / this._gaussianBaseSigma
                 : 1.0;
         }
-        // Gaussian は常に 1 階層 (w/2 × h/2) のみ使用する。
-        // PASS_COUNT が 0 → 1 へ遷移する場合のみプール構築が必要 (ブラー無効状態からの復帰)。
+        // Gaussian always uses a single level (w/2 × h/2).
+        // A pool rebuild is only needed when PASS_COUNT transitions 0 → 1
+        // (recovering from a disabled-blur state).
         if (this.PASS_COUNT !== 1) {
             this.PASS_COUNT = 1;
-            // プールが未構築 (または前回 Dual Kawase で異なる階層数だった) 場合のみ再構築させる。
-            // vfunc_paint_target 側の解像度差分チェックにより、実際の構築は次フレームで行われる。
+            // Only force a rebuild if the pool wasn't built yet, or previously had
+            // a different number of levels (e.g. coming from Dual Kawase). The
+            // actual rebuild happens next frame once vfunc_paint_target notices
+            // the resolution mismatch.
             this._destroyTexturePool();
         }
         this.queue_repaint();
     }
     /**
-     * Dual Kawase Blur (従来実装) の半径設定。ロジックは変更なし。
+     * Radius setter for the Dual Kawase blur (original implementation, logic unchanged).
      */
     _setDualKawaseBlurRadius(radius) {
         let newPassCount = 0;
         let offsetDown = 0.0;
         let offsetUp = 0.0;
         if (radius > 0) {
-            // 1. 物理半径 R から最適な整数パス数 P を決定 (固有ボケモデル)
+            // 1. Derive the optimal integer pass count P from the physical radius R
+            //    (empirical blur-falloff model).
             let p = Math.floor(Math.log2(radius + 1));
-            // パス数をシェーダーおよびFBO上限 [1, 4] の範囲にクランプ
+            // Clamp the pass count to the shader/FBO limit of [1, 4].
             newPassCount = Math.max(1, Math.min(4, p));
-            // 2. パス区間内における線形な正規化進行度 t を算出
+            // 2. Compute a linear normalized progress t within the pass interval.
             let baseR = (newPassCount === 1) ? 0 : Math.pow(2, newPassCount) - 1;
             let nextR = Math.pow(2, newPassCount + 1) - 1;
             let t = (radius - baseR) / (nextR - baseR);
             t = Math.max(0.0, Math.min(1.0, t));
-            // 3. C1連続性を保証する区分的3次エルミートスプライン
+            // 3. A piecewise cubic Hermite spline, chosen for C1 continuity.
             let s = 0.25 * Math.pow(t, 3) - 0.75 * Math.pow(t, 2) + 1.5 * t;
-            // 4. アンチエイリアスを保証するオフセット・マッピング
+            // 4. Map to an offset range that guarantees anti-aliasing.
             let minOffset = (newPassCount === 1) ? 0.0 : 0.5;
             let maxOffset = 1.0;
             let r = minOffset + s * (maxOffset - minOffset);
             offsetDown = r;
             offsetUp = r * 1.5;
         }
-        // 状態に変更があるかチェック
+        // Check whether anything actually changed.
         if (this.PASS_COUNT !== newPassCount ||
             this._blurRadiusDown !== offsetDown ||
             this._blurRadiusUp !== offsetUp) {
@@ -1253,7 +1135,7 @@ export const LiquidEffect = GObject.registerClass({
             this.PASS_COUNT = newPassCount;
             this._blurRadiusDown = offsetDown;
             this._blurRadiusUp = offsetUp;
-            // パス数が変更された場合は FBO プールの再構築が必要
+            // A pass-count change requires rebuilding the FBO pool.
             if (passCountChanged) {
                 this._destroyTexturePool();
             }

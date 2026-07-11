@@ -14,15 +14,6 @@ import { UnpickableActor, UILayerSampler, UnpickableWidget, WindowCloneManager }
 const SHADER_PADDING = 20;
 // Adaptive text color flags
 const SAMPLE_PER_ELEMENT = false;
-// ─── 【DEBUG-BMS】Main.panel (BMS blur) 干渉調査用フラグ ─────────────────────
-// true にすると、BMS のパネルブラー対象アクターに対応するクローンを
-// 強制的に非表示にする (A/Bテスト)。これで実機の Main.panel のブラーずれが
-// 消えれば「クローン経由の二重ペイントが原因」という仮説が裏付けられる。
-// 検証が終わったら false に戻すこと。
-const DEBUG_DISABLE_BMS_CLONE = false;
-// true にすると、BMS対象アクターに多重ペイント検出プローブを取り付け、
-// 1フレーム内に複数回ペイントされていないかログに出力する。
-const DEBUG_ENABLE_BMS_PROBE = true;
 // ==============================================
 export class UIManager {
     extensionPath;
@@ -374,9 +365,6 @@ export class UIManager {
         // 5. UILayerSampler: handles uiGroup child clones (panels, notifications, overview, etc.)
         //    Exclude menuRoot and window groups to prevent recursive cloning and BMS loops.
         this._uiSampler = new UILayerSampler(this.bgActor, this.liquidBox, [menuRoot, global.windowGroup, global.window_group], this._cloneContainer);
-        // ── 【DEBUG-BMS】Main.panel (BMS blur) 干渉調査 ──────────────────────
-        this._uiSampler.setDebugBmsProbeEnabled(DEBUG_ENABLE_BMS_PROBE);
-        this._uiSampler.setDebugDisableBmsClone(DEBUG_DISABLE_BMS_CLONE);
         let blurRadius = this._settings.get_int('menu-blur-radius');
         let tintColorStr = this._settings.get_string('menu-tint-color');
         let tintStrength = this._settings.get_double('menu-tint-strength');
