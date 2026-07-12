@@ -374,9 +374,21 @@ export class OsdManager {
         let [absX, absY] = state.targetBox.get_transformed_position();
         if (Number.isNaN(absX) || Number.isNaN(absY))
             return;
-        // Respect GNOME's OSD fade animation
-        let currentOpacity = Math.min(state.osdWindow.opacity, state.targetBox.opacity);
-        let isVisible = currentOpacity > 0 && state.targetBox.visible;
+        // Respect GNOME's OSD fade animation.
+        //
+        // [FIX] Previously this only looked at targetBox's opacity/visible. After
+        // a suspend/resume cycle the outer osdWindow itself can end up hidden or
+        // unmapped while its opacity and targetBox's visibility still hold stale
+        // "visible" values from before suspend — so bgActor was never told to
+        // hide, and the Liquid Glass background stayed on screen indefinitely
+        // even though the OSD content itself was gone. Gate visibility on the
+        // osdWindow's own visible/mapped state as well, not just targetBox's.
+        let osdWindowVisible = state.osdWindow.visible && state.osdWindow.mapped;
+        let targetBoxVisible = state.targetBox.visible && state.targetBox.mapped;
+        let currentOpacity = (osdWindowVisible && targetBoxVisible)
+            ? Math.min(state.osdWindow.opacity, state.targetBox.opacity)
+            : 0;
+        let isVisible = currentOpacity > 0;
         if (isVisible && !state._wasVisible) {
             state._wasVisible = true;
             this._isFirstAdaptiveRun = true;
@@ -386,7 +398,7 @@ export class OsdManager {
             state._wasVisible = false;
         }
         state.bgActor.opacity = currentOpacity;
-        if (currentOpacity === 0 || !state.targetBox.visible) {
+        if (!isVisible) {
             state.bgActor.hide();
             return;
         }
@@ -477,18 +489,21 @@ export class OsdManager {
         this._osdStates = [];
     }
     _cleanupOsdState(state) {
-        const isDisposed = (obj) => {
-            if (!obj)
-                return true;
-            try {
-                return Object.getOwnPropertyNames(obj).length === 0;
-            }
-            catch (e) {
-                return true;
-            }
-        };
+        // [FIX] This used to gate every step below on an isDisposed() helper
+        // defined as `Object.getOwnPropertyNames(obj).length === 0`. That is not
+        // a reliable way to tell whether a GObject/Clutter actor has been
+        // disposed — a perfectly live actor can have no JS-owned properties at
+        // all — so it could misclassify a live actor as "disposed" and skip its
+        // cleanup entirely. In practice that caused two symptoms:
+        //   1. targetBox.remove_style_class_name('liquid-glass-transparent')
+        //      being skipped, leaving the OSD's own background permanently
+        //      transparent after the glass effect was turned off.
+        //   2. bgActor.destroy() being skipped, leaving a stale glass background
+        //      actor stuck on screen (most visible after suspend/resume).
+        // Every step here is already wrapped in try/catch, so it's safe to
+        // always attempt it rather than pre-checking disposal state.
         // Disconnect destroy watcher
-        if (state.osdWindow && !isDisposed(state.osdWindow) && state._destroyId) {
+        if (state.osdWindow && state._destroyId) {
             try {
                 state.osdWindow.disconnect(state._destroyId);
             }
@@ -496,7 +511,7 @@ export class OsdManager {
             state._destroyId = 0;
         }
         // Restore target box
-        if (state.targetBox && !isDisposed(state.targetBox)) {
+        if (state.targetBox) {
             try {
                 state.targetBox.remove_style_class_name('liquid-glass-transparent');
                 state.targetBox.translation_y = 0;
@@ -512,7 +527,11 @@ export class OsdManager {
             state.effect = null;
         }
         // DESTROY ACTOR HIERARCHY — cascades through liquidBox → _cloneContainer
-        if (state.bgActor && !isDisposed(state.bgActor)) {
+        if (state.bgActor) {
+            try {
+                state.bgActor.hide();
+            }
+            catch (e) { }
             try {
                 state.bgActor.destroy();
             }
@@ -522,9 +541,15 @@ export class OsdManager {
         state.liquidBox = null;
         state._cloneContainer = null;
         // Clean up managers
-        state._uiSampler?.destroy();
+        try {
+            state._uiSampler?.destroy();
+        }
+        catch (e) { }
         state._uiSampler = null;
-        state._windowCloneManager?.destroy();
+        try {
+            state._windowCloneManager?.destroy();
+        }
+        catch (e) { }
         state._windowCloneManager = null;
     }
     cleanup() {

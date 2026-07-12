@@ -54,7 +54,17 @@ import Mtk from 'gi://Mtk';
 export class SelfExcludingSnapshotCapture {
     _content = null;
     _rectGetter;
-    _hideActor;
+    // [CHANGED] A single shared capture (keyed by BMS source actor, see
+    // acquireSelfExcludingSnapshot) can be used by *multiple* Liquid Glass
+    // instances at once (e.g. dock glass + menu glass both on). Every
+    // instance's own root actor must be hidden during the snapshot, not just
+    // whichever instance happened to create the capture first — otherwise
+    // instances created later stay visible in the shared snapshot, get
+    // captured into it, and since that snapshot is what they redraw with
+    // every frame, each new capture already contains the previous one's
+    // rendered glass, nested one level deeper: a runaway feedback loop that
+    // washes the panel out to white ("複数個ある場合は自己参照して真っ白になる").
+    _hideActors = new Set();
     _stage;
     _refCount = 0;
     _afterPaintId = 0;
@@ -68,7 +78,8 @@ export class SelfExcludingSnapshotCapture {
     _frameCounter = 0;
     constructor(stage, hideActor, rectGetter) {
         this._stage = stage;
-        this._hideActor = hideActor;
+        if (hideActor)
+            this._hideActors.add(hideActor);
         this._rectGetter = rectGetter;
         this._captureOnce();
         try {
@@ -94,14 +105,33 @@ export class SelfExcludingSnapshotCapture {
         }
         return false;
     }
+    /** Registers another Liquid Glass instance's root as needing to be hidden during capture. */
+    addHideActor(actor) {
+        if (actor)
+            this._hideActors.add(actor);
+    }
+    /** Unregisters a previously-added hide actor (called when that instance releases the capture). */
+    removeHideActor(actor) {
+        if (actor)
+            this._hideActors.delete(actor);
+    }
     _captureOnce() {
         const [x, y, w, h] = this._rectGetter();
         if (w <= 0 || h <= 0)
             return;
-        const wasVisible = this._hideActor.visible;
+        // [CHANGED] Hide every registered instance's root, not just a single
+        // one, so a shared capture never leaks any glass instance into itself.
+        const hidden = [];
         try {
-            if (wasVisible)
-                this._hideActor.hide();
+            for (const actor of this._hideActors) {
+                try {
+                    if (actor && actor.visible) {
+                        actor.hide();
+                        hidden.push(actor);
+                    }
+                }
+                catch (_) { /* actor may have been destroyed; skip it */ }
+            }
             const rect = new Mtk.Rectangle({ x: Math.round(x), y: Math.round(y), width: Math.round(w), height: Math.round(h) });
             const scale = 1; // TODO: honor per-monitor resource scale if this is ever used on HiDPI setups.
             // Signature is (rect, scale, color_state, paint_flags); color_state
@@ -116,8 +146,12 @@ export class SelfExcludingSnapshotCapture {
             console.error(`[Liquid Glass] SelfExcludingSnapshotCapture: paint_to_content failed: ${e}`);
         }
         finally {
-            if (wasVisible)
-                this._hideActor.show();
+            for (const actor of hidden) {
+                try {
+                    actor.show();
+                }
+                catch (_) { /* actor may have been destroyed; skip it */ }
+            }
         }
     }
     getContent() {
@@ -144,13 +178,25 @@ function acquireSelfExcludingSnapshot(sourceActor, stage, hideActor, rectGetter)
         cap = new SelfExcludingSnapshotCapture(stage, hideActor, rectGetter);
         _selfExcludingSnapshotRegistry.set(sourceActor, cap);
     }
+    else {
+        // [CHANGED] The capture already exists (created by another Liquid Glass
+        // instance, e.g. the dock glass while this is the menu glass, or vice
+        // versa). We must still register *our* root as a hide target, or our
+        // glass stays visible during every future capture and ends up
+        // recursively baked into its own panel snapshot.
+        cap.addHideActor(hideActor);
+    }
     cap.retain();
     return cap;
 }
-function releaseSelfExcludingSnapshot(sourceActor) {
+function releaseSelfExcludingSnapshot(sourceActor, hideActor) {
     const cap = _selfExcludingSnapshotRegistry.get(sourceActor);
     if (!cap)
         return;
+    // Unregister our hide actor first so a capture that outlives us (still
+    // retained by another instance) doesn't keep trying to hide an actor we
+    // no longer care about.
+    cap.removeHideActor(hideActor);
     if (cap.release()) {
         _selfExcludingSnapshotRegistry.delete(sourceActor);
     }
@@ -290,7 +336,10 @@ export class UILayerSampler {
     // falls through — this toggle mainly matters for *other* extensions that
     // implement their effects as a JS Clutter.OffscreenEffect subclass.
     _useCaptureFixForBms = true;
-    _delayedCaptureOwners = new Map(); // clone actor -> its source actor
+    // clone actor -> { source actor (BMS target's uiGroup child), hideActor (our own selfRoot) }
+    // Both are needed on destroy to release exactly what we registered on the
+    // (possibly shared) SelfExcludingSnapshotCapture.
+    _delayedCaptureOwners = new Map();
     constructor(selfActor, container, extraExclusions = [], cloneContainer = null) {
         this._selfActor = selfActor;
         this._container = container;
@@ -413,7 +462,7 @@ export class UILayerSampler {
                 console.error(`[Liquid Glass] SelfExcludingSnapshotActor: failed to connect to 'after-paint': ${e}`);
             }
             applyContent();
-            this._delayedCaptureOwners.set(actor, child);
+            this._delayedCaptureOwners.set(actor, { source: child, hideActor: selfRoot });
             actor.connect('destroy', () => {
                 actor._isDisposed = true;
                 if (afterPaintId) {
@@ -422,9 +471,9 @@ export class UILayerSampler {
                     }
                     catch (_) { /* noop */ }
                 }
-                const src = this._delayedCaptureOwners.get(actor);
-                if (src) {
-                    releaseSelfExcludingSnapshot(src);
+                const owner = this._delayedCaptureOwners.get(actor);
+                if (owner) {
+                    releaseSelfExcludingSnapshot(owner.source, owner.hideActor);
                     this._delayedCaptureOwners.delete(actor);
                 }
             });
@@ -590,8 +639,13 @@ export class UILayerSampler {
                 continue;
             if (!child.visible || !child.mapped)
                 continue;
-            if (this._containsOtherLiquidGlassRoot(child))
+            // if (this._containsOtherLiquidGlassRoot(child)) continue;
+            // Deep scan for nested Liquid Glass roots only once per newly discovered actor.
+            // Doing this every frame causes massive performance drops in the Overview.
+            if (!this._clones.has(child) && this._containsOtherLiquidGlassRoot(child)) {
+                this.addExclusion(child);
                 continue;
+            }
             seen.add(child);
             if (!this._clones.has(child)) {
                 child.connect('destroy', () => {
@@ -739,8 +793,14 @@ export class UILayerSampler {
             }
             catch (_) { }
         }
-        if (this._uiClonesContainer.get_parent() === this._container) {
-            this._container.set_child_above_sibling(this._uiClonesContainer, null);
+        // Always bring the UI clones container to the front, regardless of its parent.
+        // This prevents WindowCloneManager's rebuilds from placing windows above the UI.
+        const parent = this._uiClonesContainer.get_parent();
+        if (parent) {
+            const siblings = parent.get_children();
+            if (siblings[siblings.length - 1] !== this._uiClonesContainer) {
+                parent.set_child_above_sibling(this._uiClonesContainer, null);
+            }
         }
         // Sign is flipped relative to WindowCloneManager.setOffset(x, y).
         this._uiClonesContainer.set_position(-contAbsX, -contAbsY);
