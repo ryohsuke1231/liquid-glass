@@ -73,6 +73,7 @@ export class QuickSettingsManager {
     _animationInterval = 16;
     // Flag to forcefully move submenus using translation_x, translation_y
     _enableSubmenuFix = false;
+    _cachedSubmenus = null; // Cache of submenus
     constructor(extensionPath, settings) {
         this.extensionPath = extensionPath;
         this._settings = settings;
@@ -399,6 +400,7 @@ export class QuickSettingsManager {
         // Handle the first open as a plain GNOME quick settings open; apply custom behavior only afterwards.
         this._animSignalId = this.menu.connect('open-state-changed', (menu, isOpen) => {
             if (isOpen) {
+                this._cachedSubmenus = null; // Reset submenu cache
                 if (!this._hasAutoRefreshed)
                     this._hasAutoRefreshed = true;
                 this._applyClassStyles();
@@ -1050,20 +1052,24 @@ export class QuickSettingsManager {
     _adjustSubmenuPositions() {
         if (!this._enableSubmenuFix || !this.menu?.isOpen || !this.animActor)
             return;
-        let foundMenus = [];
-        let deepScan = (actor) => {
-            if (!actor)
-                return;
-            if (actor instanceof St.Widget) {
-                let css = actor.get_style_class_name ? actor.get_style_class_name() : '';
-                if (css && css.split(' ').includes('quick-toggle-menu'))
-                    foundMenus.push(actor);
-            }
-            let children = typeof actor.get_children === 'function' ? actor.get_children() : [];
-            for (let child of children)
-                deepScan(child);
-        };
-        deepScan(this.menu.actor);
+        // Scan when there's no cached submenus yet
+        if (!this._cachedSubmenus) {
+            this._cachedSubmenus = [];
+            let deepScan = (actor) => {
+                if (!actor)
+                    return;
+                if (actor instanceof St.Widget) {
+                    let css = actor.get_style_class_name ? actor.get_style_class_name() : '';
+                    if (css && css.split(' ').includes('quick-toggle-menu'))
+                        this._cachedSubmenus.push(actor);
+                }
+                let children = typeof actor.get_children === 'function' ? actor.get_children() : [];
+                for (let child of children)
+                    deepScan(child);
+            };
+            deepScan(this.menu.actor);
+        }
+        let foundMenus = this._cachedSubmenus;
         if (foundMenus.length === 0)
             return;
         // Get the absolute coordinates and size as the parent's base (animActor = the visual bounding box of the menu)
@@ -1138,27 +1144,31 @@ export class QuickSettingsManager {
         }
     }
     _clearSubmenuFix() {
-        let foundMenus = [];
-        let deepScan = (actor) => {
-            if (!actor)
-                return;
-            if (actor instanceof St.Widget) {
-                let css = actor.get_style_class_name ? actor.get_style_class_name() : '';
-                if (css && css.split(' ').includes('quick-toggle-menu'))
-                    foundMenus.push(actor);
-            }
-            let children = typeof actor.get_children === 'function' ? actor.get_children() : [];
-            for (let child of children)
-                deepScan(child);
-        };
-        if (this.menu?.actor)
-            deepScan(this.menu.actor);
+        // Scan when there's no cached submenus yet
+        let foundMenus = this._cachedSubmenus || [];
+        if (foundMenus.length === 0) {
+            let deepScan = (actor) => {
+                if (!actor)
+                    return;
+                if (actor instanceof St.Widget) {
+                    let css = actor.get_style_class_name ? actor.get_style_class_name() : '';
+                    if (css && css.split(' ').includes('quick-toggle-menu'))
+                        foundMenus.push(actor);
+                }
+                let children = typeof actor.get_children === 'function' ? actor.get_children() : [];
+                for (let child of children)
+                    deepScan(child);
+            };
+            if (this.menu?.actor)
+                deepScan(this.menu.actor);
+        }
         for (let submenu of foundMenus) {
             try {
                 submenu.translation_x = 0;
             }
             catch (e) { }
         }
+        this._cachedSubmenus = null; // Clear cache
     }
     // ── Effect remove / cleanup ─────────────────────────────────────────────────
     _removeEffect() {
