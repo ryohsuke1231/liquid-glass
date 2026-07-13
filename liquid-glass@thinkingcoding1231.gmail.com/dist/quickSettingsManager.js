@@ -340,7 +340,33 @@ export class QuickSettingsManager {
         // ── 5. WindowCloneManager + UILayerSampler ────────────────────────────────
         this._windowCloneManager = new WindowCloneManager(this.liquidBox, this._cloneContainer);
         this._uiSampler = new UILayerSampler(this.bgActor, this.liquidBox, [menuRoot, global.windowGroup, global.window_group], this._cloneContainer);
-        this.bgActor.show();
+        // [FIX] Root cause of "the whole screen darkens by a flat amount as soon
+        // as the Quick Settings glass toggle is turned on, until it's opened
+        // once". This used to unconditionally call `this.bgActor.show()` here,
+        // regardless of whether the Quick Settings menu was open. bgActor is a
+        // permanent uiGroup child (not parented under the menu), so showing it
+        // makes it paint every frame from this point on — but its LiquidEffect
+        // uniforms (resolution_x/y, dock_x/y/w/h) only get synced to real values
+        // inside _syncGeometry(), which only starts running once the menu is
+        // actually opened for the first time (see startFrameSync() below, gated
+        // on this.targetActor.mapped).
+        //
+        // Meanwhile WindowCloneManager (just constructed above) has already
+        // inserted a full-monitor-sized background clone into liquidBox, so
+        // liquidBox's real on-screen allocation balloons to the monitor's size
+        // immediately. With bgActor visible but the shader still holding its
+        // tiny constructor defaults (resolution ~1x1, dock_w/dock_h = 0),
+        // glass.frag's local_pos/box_size math collapses to nearly the same
+        // value for every pixel across that much larger real draw area,
+        // producing a spatially flat, constant darkening across the entire
+        // monitor (scaling with shadow_radius/shadow_intensity) rather than an
+        // actual out-of-bounds shadow.
+        //
+        // Fix: keep bgActor hidden until _syncGeometry() has actually run and
+        // synced real geometry into the shader. _syncGeometry() itself already
+        // shows bgActor once it's safe to do so, and the mapped-based hide
+        // handler takes care of hiding it again once the menu closes.
+        this.bgActor.hide();
         // ── Helper functions for GNOME's render pipeline ──────────────────────────
         const laterAdd = (laterType, callback) => {
             return global.compositor?.get_laters?.().add(laterType, callback);
@@ -566,6 +592,8 @@ export class QuickSettingsManager {
                 const CLIP_PADDING = 200;
                 this.liquidBox?.remove_clip();
                 this.bgActor.set_clip(localBgX - CLIP_PADDING, localBgY - CLIP_PADDING, bgW + CLIP_PADDING * 2, bgH + CLIP_PADDING * 2);
+                const SHADOW_MAX_RADIUS = CLIP_PADDING - 20;
+                this.effect?.setShadowMaxRadius(SHADOW_MAX_RADIUS);
                 // Inform shader of full-screen resolution and where the menu lives in the FBO
                 this.effect?.setResolution(screenW, screenH);
                 this.effect?.setGlassGeometry(localBgX, localBgY, bgW, bgH);

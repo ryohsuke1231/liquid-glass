@@ -235,6 +235,16 @@ export const LiquidEffect = GObject.registerClass({
     this._setFloat('contrast', 1.0);
     this._setFloat('saturation', 1.0);
     this._setFloat('padding', 20.0);
+    // [FIX] Distinct from the small optical 'padding' uniform (20px, only
+    // meant to give the refraction/blur shader room past the actor's strict
+    // bounds). shadow_max_radius instead reflects how much room the drop
+    // shadow actually has to render outward before it would run into the
+    // bgActor's own clip in dockManager.ts (CLIP_PADDING). Previously the
+    // shader reused 'padding' for this, capping shadow_radius at ~18px no
+    // matter how high the 0-100 prefs.js slider was set. Overwritten by
+    // setShadowMaxRadius() once dockManager starts syncing geometry; this
+    // default only matters before the first sync.
+    this._setFloat('shadow_max_radius', 180.0);
     this._setFloat('isDock', 0.0);
 
     // Full-screen FBO mode: lets the shader know where the dock sits.
@@ -1167,6 +1177,54 @@ export const LiquidEffect = GObject.registerClass({
 
   setPadding(pad: number): void {
     this._setFloat('padding', pad);
+  }
+
+  /**
+   * [FIX] Tells the shader how much room (in px) the drop shadow actually
+   * has to render outward, independent of the small optical `padding`
+   * uniform. Should be kept in sync with dockManager's CLIP_PADDING (minus
+   * a small safety margin) so shadow_radius can use its full prefs.js
+   * range (0-100) without being invisibly clamped or hitting a hard edge
+   * at the bgActor's own clip boundary.
+   */
+  setShadowMaxRadius(radius: number): void {
+    this._setFloat('shadow_max_radius', radius);
+  }
+
+  /**
+   * [DEBUG] Forces glass.frag (and the downsample/upsample shaders) to be
+   * re-read from disk and recompiled into fresh Cogl.Pipelines on the next
+   * paint.
+   *
+   * Why this exists: _initPipelines() only ever runs once per LiquidEffect
+   * instance, guarded by `if (!this._compositePipeline)` in
+   * vfunc_paint_target(). The instance itself only gets recreated when
+   * dockManager tears down and rebuilds the effect (extension disable/
+   * re-enable, or the dock actor being destroyed). So editing glass.frag on
+   * disk while the shell keeps running has NO effect on what's on screen
+   * until one of those happens — the exact same (possibly still-buggy)
+   * compiled shader keeps executing every frame regardless of what the
+   * source file now says. This silently made prior shader fixes look like
+   * they hadn't worked. Call this after saving shader edits to pick them up
+   * immediately instead.
+   */
+  reloadShaders(): void {
+    this._compositePipeline = null;
+    this._downsamplePipeline = null;
+    this._upsamplePipeline = null;
+    this._gaussianHPipeline = null;
+    this._gaussianVPipeline = null;
+    this._gaussianKernel = null;
+    this._gaussianFetchPairs = 0;
+    this._compUniforms.clear();
+    // _pendingUniforms is intentionally left intact: it holds every uniform
+    // value currently in effect, and _initPipelines() re-applies all of them
+    // to the freshly-compiled pipeline via _applyPendingUniforms().
+    // Re-derive the Gaussian kernel (if that's the active blur method) so
+    // _gaussianPipelineDirty / _pendingGaussianKernel get set correctly
+    // instead of leaving the Gaussian pass permanently skipped.
+    this.setBlurRadius(this._targetRadius);
+    this.queue_repaint();
   }
 
   setTintColor(r: number, g: number, b: number): void {

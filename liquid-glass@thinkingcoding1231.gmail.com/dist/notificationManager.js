@@ -367,6 +367,8 @@ export class NotificationManager {
             const CLIP_PADDING = 200;
             this.liquidBox?.remove_clip();
             this.bgActor.set_clip(localBgX - CLIP_PADDING, localBgY - CLIP_PADDING, bgW + CLIP_PADDING * 2, bgH + CLIP_PADDING * 2);
+            const SHADOW_MAX_RADIUS = CLIP_PADDING - 20;
+            this.effect?.setShadowMaxRadius(SHADOW_MAX_RADIUS);
             // Inform the shader of the full-screen resolution and where the
             // notification lives within the FBO (mirrors dockManager.setGlassGeometry)
             this.effect?.setResolution(screenW, screenH);

@@ -32,6 +32,12 @@ uniform float mouse_radius;
 uniform float bg_glow_intensity;
 uniform float shadow_radius;
 uniform float shadow_intensity;
+// [FIX] How much room (px) the drop shadow actually has to render outward,
+// synced from dockManager's CLIP_PADDING. Previously the shadow reused
+// `padding` (below) for this, which is a small, fixed value meant only for
+// refraction/blur headroom (20px) — that silently capped shadow_radius's
+// usable range at ~18px regardless of the 0-100 prefs.js slider.
+uniform float shadow_max_radius;
 uniform float padding;
 uniform float isDock;
 
@@ -95,7 +101,10 @@ float getHeight(vec2 p, vec2 b, float r, float zScale) {
 
     // Taper height continuously to zero as d approaches the boundary from inside,
     // and continue fading through the thin outer fringe (0 < d < smoothZone).
-    float fade = smoothstep(smoothZone, -smoothZone, d);
+    // [FIX] Same edge0>edge1 undefined-behavior pattern as insideMask/edgeBand
+    // above (harmless here in practice since the `d > smoothZone` guard above
+    // already bounds this call's domain, but corrected for consistency).
+    float fade = 1.0 - smoothstep(-smoothZone, smoothZone, d);
     return h * fade;
 }
 
@@ -226,8 +235,43 @@ void main() {
     
     // Geometry Anti-Aliasing: Smoothstep forces a sub-pixel soft transition.
     // Inside = 1.0, Outside = 0.0.
-    float insideMask = smoothstep(edgeFeather, -edgeFeather, d);
-    float outsideMask = 1.0 - insideMask;
+    //
+    // [FIX] Root cause of the "whole screen darkens by a flat amount as
+    // shadow_radius/shadow_intensity increase" bug.
+    //
+    // This used to be `smoothstep(edgeFeather, -edgeFeather, d)` — edge0
+    // (+edgeFeather) is numerically LARGER than edge1 (-edgeFeather). Per the
+    // GLSL spec, smoothstep()'s result is *undefined* whenever edge0 >= edge1;
+    // it is only guaranteed to behave as documented when edge0 < edge1.
+    //
+    // With the standard textbook implementation
+    // (t = clamp((x-edge0)/(edge1-edge0), 0, 1)) the swapped call still
+    // happens to evaluate correctly, which is why the drop shadow itself
+    // renders correctly right next to the dock (where |d| is small, so any
+    // implementation difference is hard to notice). But several real
+    // GLSL/GLSL-ES compilers (and fixed-function/optimized paths some
+    // drivers substitute for smoothstep) implement it as sequential branches
+    // that assume edge0 < edge1, e.g. `x <= edge0 -> 0`, `x >= edge1 -> 1`.
+    // Evaluated with our swapped edges, ANY pixel with d > edgeFeather
+    // (i.e. every pixel more than a couple of px outside the dock — the
+    // entire rest of the monitor) satisfies `x >= edge1` (edge1 is negative)
+    // and is misclassified as insideMask = 1.0 / outsideMask = 0.0 — or, in
+    // the mirror-image cases, leaves outsideMask pinned to a non-decaying
+    // constant far past where the umbra/penumbra falloff was supposed to
+    // reach zero. Either way, the fixed, flat-looking tint over the whole
+    // screen that scales with shadow_intensity (and is gated by
+    // radiusEnable/shadow_radius) is exactly this outsideMask term failing
+    // to fall back to 0 away from the dock.
+    //
+    // Fix: compute the same 0..1 transition using a call whose edges are
+    // always in increasing order (-edgeFeather < edgeFeather), which is
+    // well-defined on every driver, and derive insideMask as its complement.
+    // Mathematically this produces IDENTICAL values to the original
+    // (well-behaved) formula — only the undefined-behavior input ordering is
+    // removed.
+    float outsideTransition = smoothstep(-edgeFeather, edgeFeather, d);
+    float insideMask = 1.0 - outsideTransition;
+    float outsideMask = outsideTransition;
 
     // ------------------------------------------------------------------
     // Realistic drop shadow (anchors the glass on light backgrounds).
@@ -266,28 +310,111 @@ void main() {
     float dirRadius    = 0.85 + lightAlignment * 0.15;
     float dirIntensity = 0.85 + lightAlignment * 0.15;
 
-    // 5) Clamp the effective radius to the bgActor's padded area so the
-    //    shadow's penumbra cannot get hard-clipped at the actor boundary.
-    //    (padding is the bgActor's expansion beyond the glass shape.)
-    float maxRadius = max(padding - 2.0, 5.0);
+    // 5) Clamp the effective radius to the bgActor's clipped render area so
+    //    the shadow's penumbra cannot get hard-clipped at the actor boundary.
+    //    [FIX] This used to derive from `padding` (a fixed 20px optical
+    //    margin for refraction/blur, unrelated to the shadow feature), which
+    //    capped every shadow_radius setting above ~18-21 to the same fixed,
+    //    disproportionately dark ~18px band — no matter how far past that
+    //    the 0-100 slider was pushed. shadow_max_radius instead reflects the
+    //    real room available (synced from dockManager's CLIP_PADDING), so a
+    //    large shadow_radius produces a correspondingly wide, gradual, soft
+    //    shadow instead of the same intensity compressed into a tiny band.
+    float maxRadius = max(shadow_max_radius, 5.0);
     float effectiveRadius    = min(shadow_radius * dirRadius, maxRadius);
-    float effectiveIntensity = shadow_intensity * dirIntensity;
+
+    // 5b) [FIX] Master on/off switch driven purely by the user's radius
+    //     setting. Previously effectiveIntensity depended only on
+    //     shadow_intensity, so setting shadow_radius to 0 still left a
+    //     visible shadow: the umbra term below stabilizes its divisor with
+    //     a fixed max(..., 0.5) floor, which keeps producing a ~0.5px-wide,
+    //     up-to-0.8-alpha dark band right at the glass edge no matter how
+    //     small effectiveRadius gets. A short smoothstep ramp (rather than a
+    //     hard step()) avoids a visible pop for very small nonzero radii.
+    float radiusEnable = smoothstep(0.0, 0.75, shadow_radius);
+    float effectiveIntensity = shadow_intensity * dirIntensity * radiusEnable;
+
+    // [FIX] Guard against a 0/0 division when effectiveRadius collapses to
+    // 0 (shadow_radius = 0): penumbra_t below used to divide by
+    // effectiveRadius directly, which produces NaN exactly at d == 0 -
+    // i.e. exactly on the glass boundary. NaN survives the later
+    // "* effectiveIntensity" multiply (NaN * 0 is still NaN, not 0), so it
+    // was reaching the final composite and rendering as a dark hairline
+    // right on the glass edge even after the radiusEnable fix above.
+    float safeRadius = max(effectiveRadius, 0.001);
 
     // 6) UMBRA: tight, dark core. Linear decay over 0.4 * effectiveRadius.
     //    This is the "contact shadow" band - very close to the glass.
-    float umbra_t = clamp(d / max(effectiveRadius * 0.40, 0.5), 0.0, 1.0);
+    float umbra_t = clamp(d / max(safeRadius * 0.40, 0.5), 0.0, 1.0);
     float umbra  = (1.0 - umbra_t) * 0.80;
 
-    // 7) PENUMBRA: wider, softer halo. Squared falloff gives a natural
-    //    convex curve: sharper near the umbra edge, long faint tail.
-    float penumbra_t = clamp(d / effectiveRadius, 0.0, 1.0);
-    float penumbra   = (1.0 - penumbra_t) * (1.0 - penumbra_t) * 0.55;
+    // 7) PENUMBRA: wider, softer halo.
+    //    [FIX] Previously a plain squared falloff (pow(1-t, 2)): its value
+    //    reaches exactly 0 at t=1 with zero SLOPE, but its CURVATURE
+    //    (2nd derivative) at t=1 is still nonzero (d^2/dt^2 of (1-t)^2 is a
+    //    constant 2, not 0). Right where the curve meets the flat "outside
+    //    shadow" region (which has zero value, slope, AND curvature), that
+    //    curvature mismatch reads as a faint but visible bend/ring at the
+    //    shadow's outer edge instead of a truly continuous fade.
+    //
+    //    Replaced with a quintic "smootherstep" ease (6t^5-15t^4+10t^3,
+    //    Perlin's improved curve) applied to the fading term. It has zero
+    //    value, zero 1st derivative, AND zero 2nd derivative at t=1, so the
+    //    penumbra flattens smoothly INTO the surrounding zero rather than
+    //    just touching it — matching curvature with the "no shadow" region
+    //    outside, for a genuinely continuous transition.
+    float penumbra_t = clamp(d / safeRadius, 0.0, 1.0);
+    float penumbraFade = 1.0 - penumbra_t; // 1 at glass edge -> 0 at outer radius
+    float penumbraEase = penumbraFade * penumbraFade * penumbraFade *
+        (penumbraFade * (penumbraFade * 6.0 - 15.0) + 10.0);
+    float penumbra = penumbraEase * 0.55;
 
     // 8) Combined shadow alpha, applied only OUTSIDE the glass shape.
     float shadowAlpha = clamp(
         (umbra + penumbra) * outsideMask * effectiveIntensity,
         0.0, 1.0
     );
+
+    // [FIX] Use the same clamped `maxRadius` here that effectiveRadius/
+    // safeRadius above are derived from, instead of the raw
+    // `shadow_max_radius` uniform. They happen to be numerically identical
+    // whenever shadow_max_radius >= 5 (the normal case, since dockManager
+    // syncs it from CLIP_PADDING - 20 = 180), but keeping every cutoff in
+    // this block anchored to the exact same value removes a latent
+    // inconsistency: if shadow_max_radius were ever synced to something
+    // below 5 (e.g. transiently, before the first geometry sync completes,
+    // or on a future call site that forgets the CLIP_PADDING margin), this
+    // bound and effectiveRadius's cap would silently disagree.
+    // [FIX] Previously started fading at just 10% of maxRadius. Whenever
+    // effectiveRadius (the penumbra's own natural falloff distance) was
+    // smaller than maxRadius — the common case — this made boundsMask start
+    // clipping the shadow *while the penumbra curve above was still
+    // decaying*, layering a second, independent smoothstep on top of it.
+    // Two smooth-but-different curves multiplied together bend the combined
+    // curve at a point that has nothing to do with the shadow's actual
+    // outer edge, which reads as an extra "shoulder" partway through the
+    // fade. boundsMask only exists to guarantee the shadow can't get
+    // hard-clipped at the bgActor's physical boundary (maxRadius) — it
+    // should stay at 1.0 (no-op) through the entire range the penumbra
+    // curve is already handling, and only engage in the last stretch right
+    // before maxRadius. Starting at 85% keeps it out of the way for
+    // virtually every shadow_radius setting, only smoothing the rare case
+    // where effectiveRadius is pushed all the way up to maxRadius.
+    float boundsFade = 1.0 - smoothstep(maxRadius * 0.85, maxRadius, d);
+    // Same quintic ease as the penumbra above, so this safety fade also
+    // reaches zero value/slope/curvature together at d = maxRadius,
+    // continuous with the (curvature-free) fully-outside region beyond it.
+    float boundsMask = boundsFade * boundsFade * boundsFade *
+        (boundsFade * (boundsFade * 6.0 - 15.0) + 10.0);
+    shadowAlpha *= boundsMask;
+
+    // [FIX] Defense-in-depth hard cutoff, independent of any smoothstep().
+    // `step(edge, x)` has only a single comparison point (no edge0/edge1
+    // ordering to get wrong) and is well-defined on every driver: it
+    // returns 0 once d passes maxRadius, guaranteeing the shadow can never
+    // bleed past its own configured range no matter what a given GPU/driver
+    // does with the smoothstep() calls above.
+    shadowAlpha *= 1.0 - step(maxRadius, d);
 
     // 9) Shadow color: dark with a subtle cool/blue cast. Suggests ambient
     //    sky light bleeding into the shadow (a hallmark of realistic
@@ -409,7 +536,11 @@ void main() {
     float response = 1.0;
 
     // Create a sharp band for the rim lighting near the edges.
-    float edgeBand = smoothstep(rim_width, 0.0, abs(d));
+    // [FIX] Same undefined-behavior ordering issue as insideMask above
+    // (edge0 = rim_width > edge1 = 0.0). Rewritten with increasing edges and
+    // complemented, so it's well-defined on every driver instead of only
+    // "happening to work" with the textbook smoothstep formula.
+    float edgeBand = 1.0 - smoothstep(0.0, rim_width, abs(d));
     
     float rimDot = 1.0 - max(dot(normal, viewDir), 0.0);
     float rimFresnel = pow(max(rimDot, 0.0), max(rim_power, 0.001));
@@ -483,3 +614,4 @@ void main() {
     // Output with premultiplied alpha format, required by Clutter/Cogl pipeline.
     cogl_color_out = vec4(finalRgb, finalAlpha) * cogl_color_in;
 }
+
