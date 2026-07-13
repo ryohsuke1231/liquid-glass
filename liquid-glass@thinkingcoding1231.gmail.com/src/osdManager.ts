@@ -386,7 +386,36 @@ export class OsdManager {
     effect.setBlurRadius(blurRadius);
     liquidBox.add_effect(effect);
 
-    bgActor.show();
+    // [FIX] Root cause of "the whole screen darkens by a flat amount right
+    // after enabling OSD glass, until an OSD is actually shown for the
+    // first time" (same family of bug as the Menu/Quick Settings glass).
+    //
+    // This used to unconditionally call `bgActor.show()` right here, for
+    // every monitor's OsdWindow — and GNOME creates all of those at Shell
+    // startup, well before any OSD (volume/brightness/etc.) is ever
+    // triggered. Showing bgActor makes it paint every frame from this point
+    // on. Meanwhile WindowCloneManager (constructed just below) has already
+    // inserted a full-monitor-sized background clone into liquidBox, so
+    // liquidBox's real on-screen allocation balloons to the monitor's size
+    // immediately — long before the shader ever receives real geometry.
+    //
+    // Normally _syncGeometry() would catch this and hide bgActor again on
+    // the very next frame (it hides whenever the OSD isn't currently
+    // visible). But before an OSD has ever been shown once, its targetBox
+    // hasn't been through GNOME's layout/positioning pass yet, so
+    // `targetBox.get_transformed_position()` returns NaN — and
+    // _syncGeometry() bails out on that NaN check *before* it ever reaches
+    // the visibility/hide logic. So bgActor is left visible, with the
+    // shader still holding its tiny constructor defaults (resolution ~1x1,
+    // dock_w/dock_h = 0), across an actor that's already grown to full
+    // monitor size — producing a spatially flat, constant darkening across
+    // the entire monitor, indefinitely, until the OSD is shown for the
+    // first time (which finally gives targetBox a real position and lets
+    // _syncGeometry() run its normal show/hide logic from then on).
+    //
+    // Fix: keep bgActor hidden here. _syncGeometry() already shows it once
+    // real, valid geometry is available and the OSD is genuinely visible.
+    bgActor.hide();
 
     // ── 5. WindowCloneManager + UILayerSampler ────────────────────────────────
     let windowCloneManager = new WindowCloneManager(liquidBox, cloneContainer);
@@ -543,6 +572,9 @@ export class OsdManager {
         localBgX - CLIP_PADDING, localBgY - CLIP_PADDING,
         bgW + CLIP_PADDING * 2, bgH + CLIP_PADDING * 2
       );
+
+      const SHADOW_MAX_RADIUS = CLIP_PADDING - 20;
+      state.effect?.setShadowMaxRadius(SHADOW_MAX_RADIUS);
 
       // Inform shader of full-screen resolution and OSD position within FBO
       state.effect?.setResolution(screenW, screenH);

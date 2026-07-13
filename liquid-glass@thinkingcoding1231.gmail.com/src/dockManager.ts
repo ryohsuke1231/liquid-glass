@@ -740,6 +740,27 @@ export class DashManager {
       bgW + CLIP_PADDING * 2, bgH + CLIP_PADDING * 2
     );
 
+    // [FIX] The shader used to clamp shadow_radius against the small,
+    // fixed optical 'padding' uniform (20px — meant only for refraction/blur
+    // headroom), silently capping the effective shadow radius at ~18px no
+    // matter what the 0-100 'shadow-radius' slider in prefs.js was set to,
+    // and unrelated to how much room the bgActor's own clip actually has.
+    // Feed the shader a dedicated ceiling derived from CLIP_PADDING instead
+    // (with a small safety margin so the penumbra can still fully decay to
+    // 0 a few px before the clip edge, avoiding a hard cutoff there).
+    const SHADOW_MAX_RADIUS = CLIP_PADDING - 20;
+    this.effect?.setShadowMaxRadius(SHADOW_MAX_RADIUS);
+
+    if (this._outputLogs) {
+      const shadowRadiusSetting = this._settings.get_double('shadow-radius');
+      const shadowIntensitySetting = this._settings.get_double('shadow-intensity');
+      log(`[Shadow Debug] dock(local)=(${localBgX.toFixed(1)}, ${localBgY.toFixed(1)}, ${bgW.toFixed(1)}x${bgH.toFixed(1)}) ` +
+        `clip=(${(localBgX - CLIP_PADDING).toFixed(1)}, ${(localBgY - CLIP_PADDING).toFixed(1)}, ` +
+        `${(bgW + CLIP_PADDING * 2).toFixed(1)}x${(bgH + CLIP_PADDING * 2).toFixed(1)}) ` +
+        `shadow_max_radius=${SHADOW_MAX_RADIUS} shadow-radius=${shadowRadiusSetting} shadow-intensity=${shadowIntensitySetting} ` +
+        `screen=${screenW}x${screenH}`);
+    }
+
     // [CHANGED] setResolution now receives the full monitor dimensions (was bgW/bgH).
     // The shader uses resolution to compute UV-to-pixel mapping over the full FBO.
     this.effect?.setResolution(screenW, screenH);
