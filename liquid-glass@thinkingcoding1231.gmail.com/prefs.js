@@ -177,7 +177,6 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
     });
     qsGroup.add(qsAdvanced);
 
-    // 【修正】Spring物理挙動パラメータをAdvanced内へ移動
     const quickSettingsStiffnessRow = this._addSliderRow(qsAdvanced, settings, 'quick-settings-spring-stiffness', 'Spring Stiffness', 'Spring stiffness', 0.0, 1000.0, 0.1);
     const quickSettingsDampingRow = this._addSliderRow(qsAdvanced, settings, 'quick-settings-spring-damping', 'Spring Damping', 'Spring damping', 0.0, 1000.0, 0.1);
     const quickSettingsMassRow = this._addSliderRow(qsAdvanced, settings, 'quick-settings-spring-mass', 'Spring Mass', 'Spring mass', 0.0, 1.0, 0.1);
@@ -242,7 +241,7 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
     const physGroup = new Adw.PreferencesGroup({ title: 'Physical & Optical Properties' });
     shaderPage.add(physGroup);
 
-    // 【追加】Blur Method を選択する ComboRow を追加し、GSettingsにバインド
+    // Blur Method を選択する ComboRow を追加し、GSettingsにバインド
     const blurMethodRow = new Adw.ComboRow({
       title: 'Blur Method',
       model: Gtk.StringList.new([
@@ -282,12 +281,21 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
     this._addSliderRow(shadowGroup, settings, 'shadow-radius', 'Shadow Radius (px)', 'How far the shadow extends past the glass edge. Set to 0 to disable.', 0.0, 100.0, 1.0);
     this._addSliderRow(shadowGroup, settings, 'shadow-intensity', 'Shadow Intensity', 'How dark the shadow is. 0 = invisible, 1 = pure black.', 0.0, 1.0, 0.01);
 
+    const aoGroup = new Adw.PreferencesGroup({
+      title: 'Inner Edge Darkening (AO)',
+      description: 'A separate ambient-occlusion darkening just inside the glass edge, independent of the outer drop shadow above.'
+    });
+    shaderPage.add(aoGroup);
+
+    this._addSliderRow(aoGroup, settings, 'glass-ao-intensity', 'AO Intensity', 'How dark the inner edge band gets. 0 = invisible, 1 = pure black.', 0.0, 1.0, 0.01);
+    this._addSliderRow(aoGroup, settings, 'glass-ao-radius', 'AO Radius (px)', 'How far inward from the edge the darkening extends before fading out.', 0.0, 50.0, 0.5);
+
     const debugGroup = new Adw.PreferencesGroup({ title: 'Debug' });
     shaderPage.add(debugGroup);
 
     this._addSwitchRow(debugGroup, settings, 'output-logs', 'Output Logs', 'Output logs to the terminal');
 
-    // 【追加】Blur Methodの選択に応じて、各Blur Radiusの注釈（subtitle）を動的に切り替える処理
+    // Blur Methodの選択に応じて、各Blur Radiusの注釈（subtitle）を動的に切り替える処理
     const updateBlurSubtitles = () => {
       // get_int() が 1 (Dual Kawase) の時だけ注意書きを追加する
       const isDualKawase = settings.get_int('blur-method') === 1;

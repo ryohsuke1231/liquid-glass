@@ -426,6 +426,17 @@
       <description>How dark the drop shadow is. 0.0 = invisible, 1.0 = maximum darkness. Helps the glass stay visible on light backgrounds (e.g. white).</description>
     </key>
 
+    <key name="glass-ao-intensity" type="d">
+      <range min="0.0" max="1.0"/>
+      <default>0.25</default>
+      <summary>Inner edge AO darkening intensity</summary>
+    </key>
+    <key name="glass-ao-radius" type="d">
+      <range min="0.0" max="50.0"/>
+      <default>7.5</default>
+      <summary>Inner edge AO darkening radius (px)</summary>
+    </key>
+
     <key name="output-logs" type="b">
       <default>false</default>
       <summary>Output logs</summary>
