@@ -61,6 +61,7 @@ export class QuickSettingsManager {
     _hasAutoRefreshed;
     _settingsSignals;
     _adaptiveConfig;
+    // Used in _syncGeometry
     _stableBaseW;
     _stableBaseH;
     _lastValidAnimAbsX;
@@ -115,6 +116,7 @@ export class QuickSettingsManager {
         if (!this._settings)
             return;
         this._bindSettings();
+        // Setup spring parameters
         this._enableAnimation = this._settings.get_boolean('enable-quick-settings-animation');
         this._springStiffness = this._settings.get_double('quick-settings-spring-stiffness');
         this._springDamping = this._settings.get_double('quick-settings-spring-damping');

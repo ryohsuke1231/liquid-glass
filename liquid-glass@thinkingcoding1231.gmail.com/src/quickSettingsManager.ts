@@ -87,6 +87,7 @@ export class QuickSettingsManager {
   private _settingsSignals: number[];
   private _adaptiveConfig!: typeof AdaptiveContrastConfig;
 
+  // Used in _syncGeometry
   private _stableBaseW: number | undefined;
   private _stableBaseH: number | undefined;
   private _lastValidAnimAbsX: number | undefined;
@@ -155,6 +156,7 @@ export class QuickSettingsManager {
     if (!this._settings) return;
     this._bindSettings();
 
+    // Setup spring parameters
     this._enableAnimation = this._settings.get_boolean('enable-quick-settings-animation');
     this._springStiffness = this._settings.get_double('quick-settings-spring-stiffness');
     this._springDamping = this._settings.get_double('quick-settings-spring-damping');

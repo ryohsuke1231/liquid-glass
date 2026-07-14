@@ -144,6 +144,11 @@ export const LiquidEffect = GObject.registerClass({
             this._setFloat('light_angle_deg', 0.0);
             this._setFloat('shadow_radius', 8.0);
             this._setFloat('shadow_intensity', 0.55);
+            // [NEW] Inner edge AO darkening (independent of rim_width/shadow_radius).
+            // ~7.5px matches the old rim_width*1.5-derived falloff at the default
+            // rim_width of 5.0, so the look is unchanged until the user retunes it.
+            this._setFloat('ao_intensity', 0.25);
+            this._setFloat('ao_radius', 7.5);
             this._setFloat('tint_strength', 0.0);
             this._setFloat('tint_r', 1.0);
             this._setFloat('tint_g', 1.0);
@@ -868,6 +873,10 @@ export const LiquidEffect = GObject.registerClass({
             { key: 'glass-light-angle-deg', uniform: 'light_angle_deg' },
             { key: 'shadow-radius', uniform: 'shadow_radius' },
             { key: 'shadow-intensity', uniform: 'shadow_intensity' },
+            // [NEW] Inner edge AO darkening — independent of rim_width and of the
+            // outer drop shadow's radius/intensity pair above.
+            { key: 'glass-ao-intensity', uniform: 'ao_intensity' },
+            { key: 'glass-ao-radius', uniform: 'ao_radius' },
         ];
         const settings = this._settings;
         if (!settings)

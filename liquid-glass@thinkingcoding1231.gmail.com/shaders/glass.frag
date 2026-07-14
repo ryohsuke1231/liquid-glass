@@ -27,6 +27,12 @@ uniform float rim_power;
 uniform float rim_light_color_intensity;
 uniform float sheen_intensity;
 uniform float shininess;
+// [NEW] Inner edge ambient-occlusion darkening, independent of rim_width and
+// of the outer drop shadow (shadow_radius / shadow_intensity above). Lets
+// the user tune the "shadow under the glass" band on its own instead of it
+// being derived from rim_width and gated by the drop shadow's radiusEnable.
+uniform float ao_intensity; // 0 = no inner darkening, 1 = fully black at the edge
+uniform float ao_radius;    // px inward from the edge over which the AO band fades out
 uniform float light_angle_deg;
 uniform float mouse_radius;
 uniform float bg_glow_intensity;
@@ -487,7 +493,27 @@ void main() {
     vec3 tintColor = vec3(tint_r, tint_g, tint_b);
     vec3 insideBaseColor = mix(refracted, tintColor, tint_strength);
 
-    vec3 baseColor = insideBaseColor * insideMask;
+    // [FIX] Do NOT multiply by insideMask here. insideMask is the same
+    // value used as `alpha` below, and the final composite already
+    // multiplies the fully-lit color by it exactly once
+    // (finalRgb = litColor * alpha), matching Cogl/Clutter's
+    // premultiplied-alpha compositing (out = src.rgb + dst.rgb*(1-src.a)).
+    //
+    // Baking insideMask into baseColor here AS WELL made rgb fall off as
+    // insideMask^2 instead of insideMask^1 across the antialiased edge band
+    // (the +-edge_smoothing px zone where insideMask is fractional, i.e.
+    // exactly where the visible glass boundary sits). An under-premultiplied
+    // color (rgb/alpha < true color) reads as a dark ring right at that
+    // boundary once composited over the background — invisible at small
+    // edge_smoothing (the transition band is only ~1-2px wide, too thin to
+    // notice) but clearly visible once edge_smoothing is turned up, since
+    // the band widens and the darkening becomes visible.
+    //
+    // This is independent of shadow_radius/shadow_intensity (radiusEnable
+    // below already zeroes the drop shadow correctly at shadow_radius=0);
+    // the ring persists even with the drop shadow fully disabled, which is
+    // exactly the "Shadow Radius 0, Edge Smoothing >0" symptom reported.
+    vec3 baseColor = insideBaseColor;
 
     // ------------------------------------------------------------------
     // Inner depth effects — make the glass look 3D on LIGHT backgrounds
@@ -509,10 +535,16 @@ void main() {
 
     // (a) Inner shadow: dark band just inside the glass edge.
     //     aoMask = 1 at d=0 (right at the edge), fading to 0 at
-    //     d = -rim_width*1.5 (about 1.5 rim widths inward). Multiplied
-    //     by 0.25 for a subtle but visible darkening on white bgs.
-    float aoMask = 1.0 - smoothstep(0.0, max(rim_width * 1.5, 1.0), -d);
-    baseColor *= (1.0 - aoMask * 0.25);
+    //     d = -ao_radius (ao_radius px inward from the edge).
+    //     Strength is controlled independently by ao_intensity (0-1).
+    //     [CHANGED] Previously this reused rim_width for its falloff
+    //     distance and was multiplied by the drop shadow's radiusEnable
+    //     (so it silently disappeared whenever shadow_radius was 0). Both
+    //     couplings are removed here so the inner AO darkening has its own
+    //     independent radius/intensity controls, matching the outer drop
+    //     shadow's separate radius/intensity pair.
+    float aoMask = 1.0 - smoothstep(0.0, max(ao_radius, 0.001), -d);
+    baseColor *= (1.0 - aoMask * ao_intensity);
 
     // (b) Center focal highlight: bright spot offset slightly toward
     //     the light source, simulating where the curved glass focuses
@@ -551,8 +583,17 @@ void main() {
     float finalRimLight = rimShape * lightMask * rim_intensity * rim_light_color_intensity;
     finalRimLight *= response;
     
-    // Mask out light bleeding past the actual geometry boundary.
-    finalRimLight *= insideMask; 
+    // [FIX] Previously also multiplied by insideMask here to "mask out
+    // light bleeding past the actual geometry boundary" — but the final
+    // composite (finalRgb = litColor * alpha, alpha = insideMask) already
+    // does that exactly once for the whole litColor (baseColor + all added
+    // light, combined via screen blend below). Multiplying by insideMask
+    // here too caused the same insideMask^2 under-premultiplication as
+    // baseColor above, deepening the dark ring in the antialiased edge band
+    // whenever edge_smoothing is large. No bleeding actually occurs from
+    // removing this: outside the shape insideMask (and therefore the final
+    // alpha) is still 0, so the pixel is still fully transparent regardless
+    // of finalRimLight's magnitude.
 
     float specularDot = max(dot(reflectDir, viewDir), 0.0);
     float specularLight = pow(specularDot, max(shininess, 1.0));
@@ -561,12 +602,16 @@ void main() {
     specularLight *= specMask;
 
     float idleRim = edgeBand * 0.008;
-    idleRim *= insideMask; 
+    // [FIX] Same redundant-insideMask issue as finalRimLight above — removed.
+    // The final `litColor * alpha` composite already applies insideMask once.
 
     // Background sheen uses 3D surface normal directly (no 2D radial fallback).
     float sheenFacing = max(dot(normal, lightDir), 0.0);
     float surfaceSheen = pow(sheenFacing, 1.65);
-    surfaceSheen *= insideMask * mix(1.0, 0.55, edgeBand);
+    // [FIX] Dropped the extra insideMask factor here too — same
+    // double-premultiplication issue as baseColor/finalRimLight/idleRim
+    // above; the final `litColor * alpha` composite already covers it.
+    surfaceSheen *= mix(1.0, 0.55, edgeBand);
     vec3 sheenColor = vec3(1.0) * surfaceSheen * sheen_intensity;
 
     float alpha = insideMask;
