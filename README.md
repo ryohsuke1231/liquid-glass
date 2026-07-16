@@ -5,7 +5,7 @@
 
 A GNOME Shell Extension that replicates the "Liquid Glass" UI concept using shaders on your desktop.
 
-> ![NOTE]
+> [!NOTE]
 > **Disclaimer:** This is an unofficial, community-driven fan project and is not affiliated with, endorsed by, or connected to Apple Inc. in any way.
 
 I love the look of Apple's Liquid Glass, but since I don't own any Apple products (I use an Android smartphone and a Linux computer), I wanted a way to see it on my desktop every day. So, I decided to build it myself.
