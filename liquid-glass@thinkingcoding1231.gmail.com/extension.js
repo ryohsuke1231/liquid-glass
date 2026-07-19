@@ -5,29 +5,33 @@ import { DashManager } from './dist/dockManager.js';
 import { NotificationManager } from './dist/notificationManager.js';
 import { QuickSettingsManager } from './dist/quickSettingsManager.js';
 import { OsdManager } from './dist/osdManager.js';
+import { Logger } from './dist/logger.js';
 import GLib from 'gi://GLib';
 
 export default class LiquidGlassExtension extends Extension {
   enable() {
-    console.log(`[Liquid Glass] Enabled. UUID: ${this.uuid}`);
+    this._logger.log(`[Liquid Glass] Enabled. UUID: ${this.uuid}`);
 
     this._settings = this.getSettings("org.gnome.shell.extensions.liquid-glass@thinkingcoding1231.gmail.com");
 
     // Initialize the UI manager for the top panel (e.g., Date Menu)
     // Pass the extension path so it can properly load the GLSL shader files
-    this._uiManager = new UIManager(this.dir.get_path(), this._settings);
+    this._uiManager = new UIManager(this.dir.get_path(), this._settings, this._logger);
     this._uiManager.setup();
 
     // Initialize the notification manager to apply effects to notifications
-    this._notificationManager = new NotificationManager(this.dir.get_path(), this._settings);
+    this._notificationManager = new NotificationManager(this.dir.get_path(), this._settings, this._logger);
     this._notificationManager.setup();
 
     // Initialize the OSD manager to apply effects to on-screen displays (like volume changes)
-    this._osdManager = new OsdManager(this.dir.get_path(), this._settings);
+    this._osdManager = new OsdManager(this.dir.get_path(), this._settings, this._logger);
     this._osdManager.setup();
 
+    // Initialize the logger
+    this._logger = new Logger(this._settings);
+
     this._quickSettingsTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 1500, () => {
-      this._quickSettingsManager = new QuickSettingsManager(this.dir.get_path(), this._settings);
+      this._quickSettingsManager = new QuickSettingsManager(this.dir.get_path(), this._settings, this._logger);
       this._quickSettingsManager.setup();
       this._quickSettingsTimeoutId = 0;
       return GLib.SOURCE_REMOVE;
@@ -72,14 +76,14 @@ export default class LiquidGlassExtension extends Extension {
     let dashContainer = findActorByName(Main.layoutManager.uiGroup, 'dashtodockDashContainer');
 
     if (dashContainer) {
-      console.log("[Liquid Glass] Found Dash to Dock container!", dashContainer);
+      this._logger.log("[Liquid Glass] Found Dash to Dock container!", dashContainer);
 
       // Initialize the dock manager and apply the liquid glass effect
-      this._dashManager = new DashManager(this.dir.get_path(), dashContainer, this._settings);
+      this._dashManager = new DashManager(this.dir.get_path(), dashContainer, this._settings, this._logger);
       this._dashManager.setup();
 
       this._dashDestroyId = dashContainer.connect('destroy', () => {
-        console.log("[Liquid Glass] Dash to Dock container destroyed (settings changed?). Restarting search...");
+        this._logger.log("[Liquid Glass] Dash to Dock container destroyed (settings changed?). Restarting search...");
         this._dashDestroyId = 0; // Reset the destroy signal ID since the container is gone
 
         // Cleanup the existing Dash manager to avoid memory leaks or orphaned actors
@@ -115,13 +119,13 @@ export default class LiquidGlassExtension extends Extension {
     } else {
       // Note: If it's still not found, the user might not have Dash to Dock installed,
       // or it requires a more complex monitoring system to detect late loads.
-      console.log("[Liquid Glass] Dash to Dock was not found.");
+      this._logger.log("[Liquid Glass] Dash to Dock was not found.");
       return false; // Return false to indicate that Dash to Dock was not found
     }
   }
 
   disable() {
-    console.log(`[Liquid Glass] Disabling...`);
+    this._logger.log(`[Liquid Glass] Disabling...`);
 
     if (this._quickSettingsTimeoutId && this._quickSettingsTimeoutId !== 0) {
       GLib.Source.remove(this._quickSettingsTimeoutId);
@@ -154,7 +158,6 @@ export default class LiquidGlassExtension extends Extension {
     if (this._dashManager) {
       // Disconnect the destroy signal if it was connected
       if (this._dashDestroyId !== 0 && this._dashManager.targetActor) {
-        // ---> WRAP THIS IN A TRY-CATCH <---
         try {
           this._dashManager.targetActor.disconnect(this._dashDestroyId);
         } catch (e) { }
@@ -173,5 +176,7 @@ export default class LiquidGlassExtension extends Extension {
       this._osdManager.cleanup();
       this._osdManager = null;
     }
+
+    this._settings = null;
   }
 }

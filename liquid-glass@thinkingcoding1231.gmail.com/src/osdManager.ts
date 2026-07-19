@@ -8,12 +8,12 @@ import { LiquidEffect } from './liquidEffect.js';
 import { StageContrastSampler, AdaptiveContrastConfig } from './contrastSampler.js';
 import Gio from 'gi://Gio';
 import {
-  UnpickableClone,
   UnpickableActor,
   UILayerSampler,
-  UnpickableWidget,
   WindowCloneManager,
 } from './utils.js';
+
+import { Logger } from './logger.js';
 
 interface CustomBannerActor extends St.Widget {
   _colorTweenId?: number;
@@ -25,7 +25,6 @@ interface OsdState {
   osdWindow: any;   // GNOME internal OsdWindow (no strict type)
   targetBox: St.Widget;
 
-  // [CHANGED] bgActor is now Clutter.Actor (was St.Widget) — full monitor size
   bgActor: Clutter.Actor | null;
 
   // Full-screen FBO actor hierarchy
@@ -44,7 +43,7 @@ interface OsdState {
   _lastBgX?: number;
   _lastBgY?: number;
 
-  // [NEW] Monitor size cache for change detection
+  // Monitor size cache for change detection
   _lastScreenW?: number;
   _lastScreenH?: number;
 
@@ -62,6 +61,7 @@ const SHADER_PADDING = 20;
 export class OsdManager {
   private extensionPath: string;
   private _settings: Gio.Settings;
+  private _logger: Logger;
 
   private _settingsSignals: number[];
   private _frameSyncId: number;
@@ -79,9 +79,10 @@ export class OsdManager {
   private _styledActors: Map<Clutter.Actor, string>;
   private _isFirstAdaptiveRun: boolean;
 
-  constructor(extensionPath: string, settings: Gio.Settings) {
+  constructor(extensionPath: string, settings: Gio.Settings, logger: Logger) {
     this.extensionPath = extensionPath;
     this._settings = settings;
+    this._logger = logger;
 
     this._osdStates = [];
     this._settingsSignals = [];
@@ -179,7 +180,7 @@ export class OsdManager {
       }
     });
 
-    // [NEW] Brightness / Saturation / Contrast
+    // ----------  Brightness / Saturation / Contrast  ----------
     connectSetting('osd-brightness', () => {
       if (this._isEffectActive) {
         let v = this._settings.get_double('osd-brightness');
@@ -314,7 +315,7 @@ export class OsdManager {
     }
 
     if (!targetBox || typeof targetBox.add_style_class_name !== 'function') {
-      console.warn('[Liquid Glass] OSD UI container not found.');
+      this._logger.warn('[Liquid Glass] OSD UI container not found.');
       return;
     }
 
@@ -386,35 +387,7 @@ export class OsdManager {
     effect.setBlurRadius(blurRadius);
     liquidBox.add_effect(effect);
 
-    // [FIX] Root cause of "the whole screen darkens by a flat amount right
-    // after enabling OSD glass, until an OSD is actually shown for the
-    // first time" (same family of bug as the Menu/Quick Settings glass).
-    //
-    // This used to unconditionally call `bgActor.show()` right here, for
-    // every monitor's OsdWindow — and GNOME creates all of those at Shell
-    // startup, well before any OSD (volume/brightness/etc.) is ever
-    // triggered. Showing bgActor makes it paint every frame from this point
-    // on. Meanwhile WindowCloneManager (constructed just below) has already
-    // inserted a full-monitor-sized background clone into liquidBox, so
-    // liquidBox's real on-screen allocation balloons to the monitor's size
-    // immediately — long before the shader ever receives real geometry.
-    //
-    // Normally _syncGeometry() would catch this and hide bgActor again on
-    // the very next frame (it hides whenever the OSD isn't currently
-    // visible). But before an OSD has ever been shown once, its targetBox
-    // hasn't been through GNOME's layout/positioning pass yet, so
-    // `targetBox.get_transformed_position()` returns NaN — and
-    // _syncGeometry() bails out on that NaN check *before* it ever reaches
-    // the visibility/hide logic. So bgActor is left visible, with the
-    // shader still holding its tiny constructor defaults (resolution ~1x1,
-    // dock_w/dock_h = 0), across an actor that's already grown to full
-    // monitor size — producing a spatially flat, constant darkening across
-    // the entire monitor, indefinitely, until the OSD is shown for the
-    // first time (which finally gives targetBox a real position and lets
-    // _syncGeometry() run its normal show/hide logic from then on).
-    //
-    // Fix: keep bgActor hidden here. _syncGeometry() already shows it once
-    // real, valid geometry is available and the OSD is genuinely visible.
+
     bgActor.hide();
 
     // ── 5. WindowCloneManager + UILayerSampler ────────────────────────────────
@@ -484,13 +457,7 @@ export class OsdManager {
 
     // Respect GNOME's OSD fade animation.
     //
-    // [FIX] Previously this only looked at targetBox's opacity/visible. After
-    // a suspend/resume cycle the outer osdWindow itself can end up hidden or
-    // unmapped while its opacity and targetBox's visibility still hold stale
-    // "visible" values from before suspend — so bgActor was never told to
-    // hide, and the Liquid Glass background stayed on screen indefinitely
-    // even though the OSD content itself was gone. Gate visibility on the
-    // osdWindow's own visible/mapped state as well, not just targetBox's.
+    // Check visible, mapped, opacity states of the OSD window and targetBox.
     let osdWindowVisible = state.osdWindow.visible && state.osdWindow.mapped;
     let targetBoxVisible = state.targetBox.visible && state.targetBox.mapped;
 
@@ -617,19 +584,6 @@ export class OsdManager {
   }
 
   _cleanupOsdState(state: OsdState) {
-    // [FIX] This used to gate every step below on an isDisposed() helper
-    // defined as `Object.getOwnPropertyNames(obj).length === 0`. That is not
-    // a reliable way to tell whether a GObject/Clutter actor has been
-    // disposed — a perfectly live actor can have no JS-owned properties at
-    // all — so it could misclassify a live actor as "disposed" and skip its
-    // cleanup entirely. In practice that caused two symptoms:
-    //   1. targetBox.remove_style_class_name('liquid-glass-transparent')
-    //      being skipped, leaving the OSD's own background permanently
-    //      transparent after the glass effect was turned off.
-    //   2. bgActor.destroy() being skipped, leaving a stale glass background
-    //      actor stuck on screen (most visible after suspend/resume).
-    // Every step here is already wrapped in try/catch, so it's safe to
-    // always attempt it rather than pre-checking disposal state.
 
     // Disconnect destroy watcher
     if (state.osdWindow && state._destroyId) {
@@ -773,7 +727,7 @@ export class OsdManager {
         this._applyAdaptiveColorMap(colorMap, isFirst);
       })
       .catch(e => {
-        console.error(`[Liquid Glass] OSD adaptive color update failed: ${e}`);
+        this._logger.error(`[Liquid Glass] OSD adaptive color update failed: ${e}`);
       })
       .finally(() => {
         this._adaptiveInFlight = false;

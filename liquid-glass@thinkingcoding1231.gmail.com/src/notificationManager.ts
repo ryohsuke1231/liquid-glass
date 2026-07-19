@@ -8,12 +8,13 @@ import { LiquidEffect } from './liquidEffect.js';
 import { StageContrastSampler, AdaptiveContrastConfig } from './contrastSampler.js';
 import Gio from 'gi://Gio';
 import {
-  UnpickableClone,
   UnpickableActor,
   UILayerSampler,
-  UnpickableWidget,
   WindowCloneManager,
 } from './utils.js';
+
+import { Logger } from './logger.js';
+
 
 // ========== Configuration Parameters (Defaults, overridden by settings) ==========
 const SHADER_PADDING = 20;
@@ -27,11 +28,12 @@ interface CustomBannerActor extends St.Widget {
 export class NotificationManager {
   private extensionPath: string;
   private _settings: Gio.Settings;
+  private _logger: Logger;
   private tray: St.Widget;
 
   private currentBanner: St.Widget | null = null;
 
-  // [CHANGED] Full-screen FBO actor hierarchy (matches dockManager pattern)
+  // Full-screen FBO actor hierarchy (matches dockManager pattern)
   //   bgActor (full monitor, no effect)
   //     └─ liquidBox  ← LiquidEffect with built-in dual-Kawase blur
   //          ├─ _cloneContainer ← WindowCloneManager + UILayerSampler deposits here
@@ -41,7 +43,6 @@ export class NotificationManager {
   private _cloneContainer: Clutter.Actor | null = null;
   private effect: LiquidEffect | null = null;
 
-  // [CHANGED] WindowCloneManager + UILayerSampler replace manual clone tracking
   private _windowCloneManager: WindowCloneManager | null = null;
   private _uiSampler: UILayerSampler | null = null;
 
@@ -56,7 +57,6 @@ export class NotificationManager {
   private _lastBgX: number | undefined;
   private _lastBgY: number | undefined;
 
-  // [NEW] Cached monitor dimensions for change detection
   private _lastScreenW: number | undefined;
   private _lastScreenH: number | undefined;
 
@@ -73,9 +73,10 @@ export class NotificationManager {
 
   private _isFirstAdaptiveRun: boolean = true;
 
-  constructor(extensionPath: string, settings: Gio.Settings) {
+  constructor(extensionPath: string, settings: Gio.Settings, logger: Logger) {
     this.extensionPath = extensionPath;
     this._settings = settings;
+    this._logger = logger;
     this.tray = Main.messageTray;
 
     this._signals = [];
@@ -164,7 +165,7 @@ export class NotificationManager {
       }
     });
 
-    // [NEW] Brightness / Saturation / Contrast — dynamic application from settings
+    // Brightness / Saturation / Contrast — dynamic application from settings
     connectSetting('notification-brightness', () => {
       if (this.effect && this._isEffectActive) {
         this.effect.setBrightness(this._settings.get_double('notification-brightness'));
@@ -203,7 +204,7 @@ export class NotificationManager {
     // @ts-expect-error: _bannerBin is an internal property
     let bannerBin = this.tray._bannerBin;
     if (!bannerBin) {
-      console.error('[Liquid Glass] _bannerBin is not found. GNOME internal structure might have changed.');
+      this._logger.error('[Liquid Glass] _bannerBin is not found. GNOME internal structure might have changed.');
       return;
     }
 
@@ -663,7 +664,7 @@ export class NotificationManager {
         this._isFirstAdaptiveRun = false;
       })
       .catch(e => {
-        console.error(`[Liquid Glass] Notification adaptive color update failed: ${e}`);
+        this._logger.error(`[Liquid Glass] Notification adaptive color update failed: ${e}`);
       })
       .finally(() => {
         this._adaptiveInFlight = false;

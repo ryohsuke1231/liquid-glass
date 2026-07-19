@@ -9,7 +9,6 @@ const SHADER_PADDING = 20;
 // Utility: Convert HEX color string (e.g., "#ffffff") to normalized RGB array [1.0, 1.0, 1.0]
 function hexToColorArray(hex) {
     if (!hex || typeof hex !== 'string' || !hex.startsWith('#') || hex.length !== 7) {
-        console.warn(`[Liquid Glass] Invalid color format received: ${hex}`);
         return [1.0, 1.0, 1.0];
     }
     let r = parseInt(hex.slice(1, 3), 16) / 255.0;
@@ -25,15 +24,11 @@ export class DashManager {
     bgActor = null;
     // Delete Shell.BlurEffect and use custom blur (dual kawase) — now handled inside LiquidEffect
     effect = null;
-    // [NEW] Separate actor layers for liquid-glass effect.
-    //
     // Nesting order (outermost → innermost):
     //   bgActor (full monitor, no effect)
     //     └─ liquidBox  ← LiquidEffect with built-in dual-Kawase blur
     //          └─ _cloneContainer  ← bgClone + windowClones + uiClones
     liquidBox = null;
-    // [NEW] Cached monitor dimensions — used to detect monitor-resize events
-    // so the full-screen actors and clips are rebuilt when needed.
     _lastScreenW;
     _lastScreenH;
     _glassExpand;
@@ -61,16 +56,14 @@ export class DashManager {
     _marginValue = 0;
     _uiSampler = null;
     _windowCloneManager = null;
+    _logger;
     // コンストラクタに settings を追加
-    constructor(extensionPath, targetActor, settings) {
+    constructor(extensionPath, targetActor, settings, logger) {
         this.extensionPath = extensionPath;
         this.targetActor = targetActor;
         this._settings = settings; // GSettings object
-        // this.bgActor = null;
-        // this.effect = null;
+        this._logger = logger; // Logger object
         this._glassExpand = 0; // ガラスエリアの拡張量（ピクセル）
-        // this.bgClone = null;
-        // this.windowClonesContainer = null;
         this._signals = [];
         this._settingsSignals = []; // GSettingsのイベントリスナーを管理
         this._frameSyncId = 0;
@@ -166,7 +159,7 @@ export class DashManager {
         if (monitorIndex < 0)
             monitorIndex = Main.layoutManager.primaryIndex;
         let monitor = Main.layoutManager.monitors[monitorIndex] || Main.layoutManager.primaryMonitor;
-        // 【修正】w > h の判定をやめ、画面の各エッジとの距離から配置場所を特定する
+        // 画面の各エッジとの距離から配置場所を特定する
         let distLeft = x - monitor.x;
         let distRight = (monitor.x + monitor.width) - (x + w);
         let distTop = y - monitor.y;
@@ -195,7 +188,6 @@ export class DashManager {
         this._currentMarginStyle = marginStyle;
         this.targetActor.set_style(`${this._originalStyle} ${marginStyle}`);
     }
-    // 実際にエフェクトを描画し始める処理（元の setup() の中身）
     _applyEffect() {
         if (this._isEffectActive)
             return;
@@ -205,26 +197,17 @@ export class DashManager {
         if (this._dockParent) {
             this._dockParent.add_style_class_name('liquid-glass-transparent');
         }
-        /*
-        this.bgActor = new UnpickableWidget({
-          style_class: 'liquid-glass-bg-actor',
-          clip_to_allocation: false,
-          reactive: false
-        });
-        */
         this.bgActor = new UnpickableActor();
         this.bgActor.set_name('liquid-glass-bg-actor');
-        // [CHANGED] bgActor starts at 1×1; _syncGeometry() will immediately expand
-        // it to full monitor size on the first frame tick.
         this.bgActor.set_size(1.0, 1.0);
-        // [NEW] liquidBox: full-monitor-sized actor that holds the LiquidEffect.
+        // liquidBox: full-monitor-sized actor that holds the LiquidEffect.
         // LiquidEffect internally runs dual-Kawase blur passes before the glass composite,
         // so no separate blurBox/Shell.BlurEffect is needed.
         this.liquidBox = new UnpickableActor();
         this.liquidBox.set_name("liquid-box");
         this.liquidBox.set_clip_to_allocation(true);
         this.bgActor.add_child(this.liquidBox);
-        // [NEW] dummyBreaker: dummy actor to break the BMS bug
+        // dummyBreaker: dummy actor to break the BMS bug
         let dummyBreaker = new UnpickableActor();
         dummyBreaker.set_name("optimization-breaker");
         dummyBreaker.set_size(1.0, 1.0);
@@ -262,7 +245,7 @@ export class DashManager {
         let brightness = this._settings.get_double('dock-brightness');
         let contrast = this._settings.get_double('dock-contrast');
         let saturation = this._settings.get_double('dock-saturation');
-        this.effect = new LiquidEffect({ extensionPath: this.extensionPath, settings: this._settings });
+        this.effect = new LiquidEffect({ extensionPath: this.extensionPath, settings: this._settings, logger: this._logger });
         this.effect.setPadding(SHADER_PADDING);
         this.effect.setTintColor(...hexToColorArray(tintColorStr));
         this.effect.setTintStrength(tintStrength);
@@ -368,15 +351,13 @@ export class DashManager {
                 baseH = (tY + tH) - absY;
             }
         }
-        if (this._outputLogs)
-            log(`[Raw] ${absX}, ${absY}, ${baseW}, ${baseH}`);
+        // this._logger.log(`[Raw] ${absX}, ${absY}, ${baseW}, ${baseH}`);
         let monitorIndex = Main.layoutManager.findIndexForActor(this.targetActor);
         if (monitorIndex < 0) {
             monitorIndex = Main.layoutManager.primaryIndex;
         }
         let monitor = Main.layoutManager.monitors[monitorIndex] || Main.layoutManager.primaryMonitor;
         let minCenterDist = -1;
-        // let distLeftCenter: number, distRightCenter: number, distTopCenter: number, distBottomCenter: number;
         let distLeftCenter = 0;
         let distRightCenter = 0;
         let distTopCenter = 0;
@@ -413,13 +394,10 @@ export class DashManager {
         if (refActor) {
             let [refW, refH] = refActor.get_size();
             let [refX, refY] = refActor.get_transformed_position();
-            if (this._outputLogs)
-                log(`refActor [Raw]: ${refX}, ${refY}, ${refW}, ${refH}`);
+            // this._logger.log(`refActor [Raw]: ${refX}, ${refY}, ${refW}, ${refH}`);
             if (!Number.isNaN(refX) && !Number.isNaN(refY) && refW > 0 && refH > 0) {
                 let topGap = refY - absY;
                 let bottomGap = (absY + baseH) - (refY + refH);
-                // let leftGap = refX - absX;
-                // let rightGap = (absX + baseW) - (refX + refW);
                 // For when the dock is upside down
                 if (topGap < 0 || bottomGap < 0) {
                     // 原点が下端にあるため、真の左上Y座標は refY - refH になる
@@ -456,16 +434,6 @@ export class DashManager {
                     // ▼ 縦長ドック（左・右ドック）▼
                     let diff = Math.abs(rightGap - leftGap);
                     if (diff > 0 && diff < baseW / 2) {
-                        /*
-                        if (rightGap > leftGap) {
-                          // 右の隙間の方が広い -> 右を削る
-                          baseW -= diff;
-                        } else {
-                          // 左の隙間の方が広い -> 開始位置(左)を右にズラして、幅も削る
-                          absX += diff;
-                          baseW -= diff;
-                        }
-                        */
                         if (minCenterDist === distLeftCenter) {
                             // 左ドック: 中央方向（右側）の余白のみ削る
                             // leftGap > rightGap になっても absX を右にズラしてはいけない
@@ -488,25 +456,11 @@ export class DashManager {
                 }
             }
         }
-        if (this._outputLogs)
-            log(`[Gap] ${absX}, ${absY}, ${baseW}, ${baseH}`);
+        // this._logger.log(`[Gap] ${absX}, ${absY}, ${baseW}, ${baseH}`);
         // --------------------------------------------------------------------
         // --------------------------------------------------------------------
         let marginValue = this._settings.get_int('dock-margin-bottom') || 0;
         if (monitor && marginValue > 0) {
-            /*
-            // Dockの中心座標を算出
-            let dockCenterX = absX + (baseW / 2);
-            let dockCenterY = absY + (baseH / 2);
-       
-            // 中心座標から各エッジへの距離を測ることで、全幅・全高Dockでも誤認しない
-            let distLeftCenter = dockCenterX - monitor.x;
-            let distRightCenter = (monitor.x + monitor.width) - dockCenterX;
-            let distTopCenter = dockCenterY - monitor.y;
-            let distBottomCenter = (monitor.y + monitor.height) - dockCenterY;
-       
-            let minCenterDist = Math.min(distLeftCenter, distRightCenter, distTopCenter, distBottomCenter);
-            */
             // アプリ起動時の微小揺れ（誤動作の元）を完全に無視するため、閾値を大きく設定
             let isMoving = false;
             if (this._lastAbsX !== undefined && this._lastAbsY !== undefined) {
@@ -576,8 +530,7 @@ export class DashManager {
                 }
             }
         }
-        if (this._outputLogs)
-            log(`[Final] ${absX}, ${absY}, ${baseW}, ${baseH}`);
+        // this._logger.log(`[Final] ${absX}, ${absY}, ${baseW}, ${baseH}`);
         // --------------------------------------------------------------------
         // 補正されたサイズを適用
         let w = Math.max(1.0, baseW);
@@ -625,7 +578,7 @@ export class DashManager {
         let bgH = Math.max(1.0, h + (SHADER_PADDING * 2) + (this._glassExpand * 2));
         let bgX = absX - SHADER_PADDING - this._glassExpand;
         let bgY = absY - SHADER_PADDING - this._glassExpand;
-        // [NEW] Full-screen FBO geometry.
+        // Full-screen FBO geometry.
         // bgActor and liquidBox are both sized to cover the entire monitor.
         // This makes the FBO coordinate system match what BMS expects (full-screen
         // absolute coordinates), eliminating the BMS blur offset and cache-pollution
@@ -641,18 +594,12 @@ export class DashManager {
         if (this._lastBgW !== bgW || this._lastBgH !== bgH ||
             this._lastBgX !== bgX || this._lastBgY !== bgY ||
             this._lastScreenW !== screenW || this._lastScreenH !== screenH) {
-            // [CHANGED] bgActor now occupies the full monitor (was dock-sized).
-            // Positioning it at the monitor's absolute origin aligns the FBO coordinate
-            // system with BMS's global-absolute sampling assumptions.
             this.bgActor.remove_transition('size');
             this.bgActor.remove_transition('position');
             this.bgActor.set_position(monitor.x, monitor.y);
             this.bgActor.set_size(screenW, screenH);
             this.bgActor.remove_transition('size');
             this.bgActor.remove_transition('position');
-            // [NEW] liquidBox fills the entire bgActor (full monitor size).
-            // Being at (0,0) relative to bgActor it occupies the same absolute space,
-            // so every pixel of the monitor can participate in the FBO capture.
             this.liquidBox?.set_position(0, 0);
             this.liquidBox?.set_size(screenW, screenH);
             this._lastBgW = bgW;
@@ -662,7 +609,7 @@ export class DashManager {
             this._lastScreenW = screenW;
             this._lastScreenH = screenH;
         }
-        // [NEW] Soft clipping via set_clip — limits GPU fragment-shader execution
+        // Soft clipping via set_clip — limits GPU fragment-shader execution
         // to the dock region + a generous margin for drop-shadow decay, without
         // using clip_to_allocation (which hard-clips child actors and severs shadows).
         //
@@ -672,35 +619,27 @@ export class DashManager {
         // Clip only bgActor; liquidBox has no separate clip
         // this.liquidBox?.remove_clip();
         this.bgActor.set_clip(localBgX - CLIP_PADDING, localBgY - CLIP_PADDING, bgW + CLIP_PADDING * 2, bgH + CLIP_PADDING * 2);
-        // [FIX] The shader used to clamp shadow_radius against the small,
-        // fixed optical 'padding' uniform (20px — meant only for refraction/blur
-        // headroom), silently capping the effective shadow radius at ~18px no
-        // matter what the 0-100 'shadow-radius' slider in prefs.js was set to,
-        // and unrelated to how much room the bgActor's own clip actually has.
-        // Feed the shader a dedicated ceiling derived from CLIP_PADDING instead
-        // (with a small safety margin so the penumbra can still fully decay to
-        // 0 a few px before the clip edge, avoiding a hard cutoff there).
         const SHADOW_MAX_RADIUS = CLIP_PADDING - 20;
         this.effect?.setShadowMaxRadius(SHADOW_MAX_RADIUS);
+        /*
         if (this._outputLogs) {
-            const shadowRadiusSetting = this._settings.get_double('shadow-radius');
-            const shadowIntensitySetting = this._settings.get_double('shadow-intensity');
-            log(`[Shadow Debug] dock(local)=(${localBgX.toFixed(1)}, ${localBgY.toFixed(1)}, ${bgW.toFixed(1)}x${bgH.toFixed(1)}) ` +
-                `clip=(${(localBgX - CLIP_PADDING).toFixed(1)}, ${(localBgY - CLIP_PADDING).toFixed(1)}, ` +
-                `${(bgW + CLIP_PADDING * 2).toFixed(1)}x${(bgH + CLIP_PADDING * 2).toFixed(1)}) ` +
-                `shadow_max_radius=${SHADOW_MAX_RADIUS} shadow-radius=${shadowRadiusSetting} shadow-intensity=${shadowIntensitySetting} ` +
-                `screen=${screenW}x${screenH}`);
+          const shadowRadiusSetting = this._settings.get_double('shadow-radius');
+          const shadowIntensitySetting = this._settings.get_double('shadow-intensity');
+          this._logger.log(`[Shadow Debug] dock(local)=(${localBgX.toFixed(1)}, ${localBgY.toFixed(1)}, ${bgW.toFixed(1)}x${bgH.toFixed(1)}) ` +
+            `clip=(${(localBgX - CLIP_PADDING).toFixed(1)}, ${(localBgY - CLIP_PADDING).toFixed(1)}, ` +
+            `${(bgW + CLIP_PADDING * 2).toFixed(1)}x${(bgH + CLIP_PADDING * 2).toFixed(1)}) ` +
+            `shadow_max_radius=${SHADOW_MAX_RADIUS} shadow-radius=${shadowRadiusSetting} shadow-intensity=${shadowIntensitySetting} ` +
+            `screen=${screenW}x${screenH}`);
         }
-        // [CHANGED] setResolution now receives the full monitor dimensions (was bgW/bgH).
+        */
+        // setResolution receives the full monitor dimensions (was bgW/bgH).
         // The shader uses resolution to compute UV-to-pixel mapping over the full FBO.
         this.effect?.setResolution(screenW, screenH);
-        // [NEW] Inform the shader where the dock lives within the full-screen FBO.
+        // Inform the shader where the dock lives within the full-screen FBO.
         // The shader uses these to compute dock_center and box_size, replacing
         // the old "resolution * 0.5" center assumption that only worked when
         // the FBO was dock-sized.
         this.effect?.setGlassGeometry(localBgX, localBgY, bgW, bgH);
-        // [CHANGED] Clone offset uses monitor origin instead of dock origin.
-        //
         // Clones in WindowCloneManager are placed at (w.x, w.y) — absolute screen
         // coordinates. The container shift of (-monitor.x, -monitor.y) makes each
         // clone appear at (w.x - monitor.x, w.y - monitor.y) inside the full-screen
@@ -719,8 +658,7 @@ export class DashManager {
         // .x, .y, .width を直接読まず、計算済みの「画面上の絶対座標」と「サイズ」を関数で取得
         let [absX, absY] = source.get_transformed_position();
         let [w, h] = source.get_size();
-        // 必須：NaN（非数）や異常なマイナス値が紛れ込んだ場合は同期をキャンセルして描画を止める
-        // （これがログのエラーと真っ黒になる原因を防ぎます）
+        // NaN（非数）や異常なマイナス値が紛れ込んだ場合は同期をキャンセルして描画を止める
         if (Number.isNaN(absX) || Number.isNaN(absY) || Number.isNaN(w) || Number.isNaN(h) || w <= 0 || h <= 0) {
             clone.visible = false;
             return;
@@ -737,9 +675,6 @@ export class DashManager {
         let pX = source.pivot_point ? source.pivot_point.x : 0;
         let pY = source.pivot_point ? source.pivot_point.y : 0;
         clone.set_pivot_point(pX, pY);
-        // ※ get_transformed_position() はすでに translation（アニメーション移動量）を含んだ
-        // 最終的な座標を返すため、ここで再度 translation を設定すると二重にズレてしまいます。
-        // なのでクローン側の translation は常に 0 にリセットしておきます。
         clone.translation_x = 0;
         clone.translation_y = 0;
         // 透明度と表示状態

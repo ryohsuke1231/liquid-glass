@@ -13,8 +13,6 @@ I love the look of Apple's Liquid Glass, but since I don't own any Apple product
 ### Demo
 Overview:
 
-![GNOME Desktop Screenshot](assets/demo1.png)
-
 Dash to Dock:
 
 ![Dash to Dock Screenshot](assets/demo2.png)

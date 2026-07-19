@@ -13,9 +13,10 @@ const HIDE_SAFETY_MARGIN = 7;
 export class NotificationManager {
     extensionPath;
     _settings;
+    _logger;
     tray;
     currentBanner = null;
-    // [CHANGED] Full-screen FBO actor hierarchy (matches dockManager pattern)
+    // Full-screen FBO actor hierarchy (matches dockManager pattern)
     //   bgActor (full monitor, no effect)
     //     └─ liquidBox  ← LiquidEffect with built-in dual-Kawase blur
     //          ├─ _cloneContainer ← WindowCloneManager + UILayerSampler deposits here
@@ -24,7 +25,6 @@ export class NotificationManager {
     liquidBox = null;
     _cloneContainer = null;
     effect = null;
-    // [CHANGED] WindowCloneManager + UILayerSampler replace manual clone tracking
     _windowCloneManager = null;
     _uiSampler = null;
     _signals;
@@ -36,7 +36,6 @@ export class NotificationManager {
     _lastBgH;
     _lastBgX;
     _lastBgY;
-    // [NEW] Cached monitor dimensions for change detection
     _lastScreenW;
     _lastScreenH;
     _contrastSampler;
@@ -49,9 +48,10 @@ export class NotificationManager {
     _currentTint;
     _notificationYOffset;
     _isFirstAdaptiveRun = true;
-    constructor(extensionPath, settings) {
+    constructor(extensionPath, settings, logger) {
         this.extensionPath = extensionPath;
         this._settings = settings;
+        this._logger = logger;
         this.tray = Main.messageTray;
         this._signals = [];
         this._settingsSignals = [];
@@ -129,7 +129,7 @@ export class NotificationManager {
                 this._glassExpand = this._settings.get_int('notification-glass-expand');
             }
         });
-        // [NEW] Brightness / Saturation / Contrast — dynamic application from settings
+        // Brightness / Saturation / Contrast — dynamic application from settings
         connectSetting('notification-brightness', () => {
             if (this.effect && this._isEffectActive) {
                 this.effect.setBrightness(this._settings.get_double('notification-brightness'));
@@ -162,7 +162,7 @@ export class NotificationManager {
         // @ts-expect-error: _bannerBin is an internal property
         let bannerBin = this.tray._bannerBin;
         if (!bannerBin) {
-            console.error('[Liquid Glass] _bannerBin is not found. GNOME internal structure might have changed.');
+            this._logger.error('[Liquid Glass] _bannerBin is not found. GNOME internal structure might have changed.');
             return;
         }
         // Apply settings initially
@@ -565,7 +565,7 @@ export class NotificationManager {
             this._isFirstAdaptiveRun = false;
         })
             .catch(e => {
-            console.error(`[Liquid Glass] Notification adaptive color update failed: ${e}`);
+            this._logger.error(`[Liquid Glass] Notification adaptive color update failed: ${e}`);
         })
             .finally(() => {
             this._adaptiveInFlight = false;
