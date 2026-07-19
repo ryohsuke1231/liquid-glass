@@ -404,8 +404,19 @@ export class OsdManager {
         // OSD-specific margin-bottom bloat compensation (icon switch glitch)
         let themeNode = state.targetBox.get_theme_node();
         let mB = themeNode ? themeNode.get_margin(St.Side.BOTTOM) : 0;
-        if (state._stableBaseH === undefined)
-            state._stableBaseH = h;
+        if (state._stableBaseH === undefined) {
+            let initH = h;
+            try {
+                let [_, naturalH] = state.targetBox.get_preferred_height(-1);
+                if (naturalH > 0) {
+                    initH = naturalH;
+                }
+            }
+            catch (e) {
+                this._logger.warn(`[Liquid Glass] Failed to get preferred height for OSD initialization: ${e}`);
+            }
+            state._stableBaseH = initH;
+        }
         let isHeightBloated = Math.abs(h - (state._stableBaseH + mB)) <= 1;
         let visualW = w;
         let visualH = isHeightBloated ? h - mB : h;
