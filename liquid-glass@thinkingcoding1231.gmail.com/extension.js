@@ -10,13 +10,12 @@ import GLib from 'gi://GLib';
 
 export default class LiquidGlassExtension extends Extension {
   enable() {
+    this._settings = this.getSettings("org.gnome.shell.extensions.liquid-glass@thinkingcoding1231.gmail.com");
 
     // Initialize the logger
     this._logger = new Logger(this._settings);
 
     this._logger.log(`[Liquid Glass] Enabled. UUID: ${this.uuid}`);
-
-    this._settings = this.getSettings("org.gnome.shell.extensions.liquid-glass@thinkingcoding1231.gmail.com");
 
     // Initialize the UI manager for the top panel (e.g., Date Menu)
     // Pass the extension path so it can properly load the GLSL shader files

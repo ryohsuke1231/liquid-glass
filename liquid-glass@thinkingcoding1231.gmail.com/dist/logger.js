@@ -5,19 +5,16 @@ export class Logger {
     _settingsIds = [];
     constructor(settings) {
         this._settings = settings;
-        this._outputLogs = settings.get_boolean('output-logs');
+        this._outputLogs = this._settings.get_boolean('output-logs');
         this._bindSettings();
     }
     _bindSettings() {
-        const settings = this._settings;
-        if (!settings)
-            return;
         const connectSetting = (key, callback) => {
-            let id = settings.connect(`changed::${key}`, callback.bind(this));
+            let id = this._settings.connect(`changed::${key}`, callback.bind(this));
             this._settingsIds.push(id);
         };
         connectSetting('output-logs', () => {
-            this._outputLogs = settings.get_boolean('output-logs');
+            this._outputLogs = this._settings.get_boolean('output-logs');
         });
     }
     log(...args) {
