@@ -44,4 +44,13 @@ export class Logger {
     if (!this._outputLogs) return;
     console.debug(...args);
   }
+
+  cleanup() {
+    if (this._settings) {
+      for (const id of this._settingsIds) {
+        this._settings.disconnect(id);
+      }
+      this._settingsIds = [];
+    }
+  }
 }
