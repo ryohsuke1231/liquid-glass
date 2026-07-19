@@ -8,20 +8,18 @@ export class Logger {
 
   constructor(settings: Gio.Settings) {
     this._settings = settings;
-    this._outputLogs = settings.get_boolean('output-logs');
+    this._outputLogs = this._settings.get_boolean('output-logs');
     this._bindSettings();
   }
 
   _bindSettings() {
-    const settings = this._settings;
-    if (!settings) return;
 
     const connectSetting = (key: string, callback: Function) => {
-      let id = settings.connect(`changed::${key}`, callback.bind(this));
+      let id = this._settings.connect(`changed::${key}`, callback.bind(this));
       this._settingsIds.push(id);
     };
     connectSetting('output-logs', () => {
-      this._outputLogs = settings.get_boolean('output-logs');
+      this._outputLogs = this._settings.get_boolean('output-logs');
     });
   }
 
@@ -43,5 +41,14 @@ export class Logger {
   debug(...args: any[]) {
     if (!this._outputLogs) return;
     console.debug(...args);
+  }
+
+  cleanup() {
+    if (this._settings) {
+      for (const id of this._settingsIds) {
+        this._settings.disconnect(id);
+      }
+      this._settingsIds = [];
+    }
   }
 }

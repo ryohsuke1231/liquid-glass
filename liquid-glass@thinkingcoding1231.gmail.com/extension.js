@@ -10,9 +10,12 @@ import GLib from 'gi://GLib';
 
 export default class LiquidGlassExtension extends Extension {
   enable() {
-    this._logger.log(`[Liquid Glass] Enabled. UUID: ${this.uuid}`);
-
     this._settings = this.getSettings("org.gnome.shell.extensions.liquid-glass@thinkingcoding1231.gmail.com");
+
+    // Initialize the logger
+    this._logger = new Logger(this._settings);
+
+    this._logger.log(`[Liquid Glass] Enabled. UUID: ${this.uuid}`);
 
     // Initialize the UI manager for the top panel (e.g., Date Menu)
     // Pass the extension path so it can properly load the GLSL shader files
@@ -26,9 +29,6 @@ export default class LiquidGlassExtension extends Extension {
     // Initialize the OSD manager to apply effects to on-screen displays (like volume changes)
     this._osdManager = new OsdManager(this.dir.get_path(), this._settings, this._logger);
     this._osdManager.setup();
-
-    // Initialize the logger
-    this._logger = new Logger(this._settings);
 
     this._quickSettingsTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 1500, () => {
       this._quickSettingsManager = new QuickSettingsManager(this.dir.get_path(), this._settings, this._logger);
@@ -178,5 +178,10 @@ export default class LiquidGlassExtension extends Extension {
     }
 
     this._settings = null;
+
+    if (this._logger) {
+      this._logger.cleanup();
+      this._logger = null;
+    }
   }
 }
