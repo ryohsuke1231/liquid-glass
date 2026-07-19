@@ -54,16 +54,6 @@ import Mtk from 'gi://Mtk';
 export class SelfExcludingSnapshotCapture {
     _content = null;
     _rectGetter;
-    // [CHANGED] A single shared capture (keyed by BMS source actor, see
-    // acquireSelfExcludingSnapshot) can be used by *multiple* Liquid Glass
-    // instances at once (e.g. dock glass + menu glass both on). Every
-    // instance's own root actor must be hidden during the snapshot, not just
-    // whichever instance happened to create the capture first — otherwise
-    // instances created later stay visible in the shared snapshot, get
-    // captured into it, and since that snapshot is what they redraw with
-    // every frame, each new capture already contains the previous one's
-    // rendered glass, nested one level deeper: a runaway feedback loop that
-    // washes the panel out to white ("複数個ある場合は自己参照して真っ白になる").
     _hideActors = new Set();
     _stage;
     _refCount = 0;
@@ -93,7 +83,6 @@ export class SelfExcludingSnapshotCapture {
             });
         }
         catch (e) {
-            console.error(`[Liquid Glass] SelfExcludingSnapshotCapture: failed to connect to 'after-paint': ${e}`);
         }
     }
     retain() { this._refCount++; }
@@ -119,7 +108,7 @@ export class SelfExcludingSnapshotCapture {
         const [x, y, w, h] = this._rectGetter();
         if (w <= 0 || h <= 0)
             return;
-        // [CHANGED] Hide every registered instance's root, not just a single
+        // Hide every registered instance's root, not just a single
         // one, so a shared capture never leaks any glass instance into itself.
         const hidden = [];
         try {
@@ -143,7 +132,6 @@ export class SelfExcludingSnapshotCapture {
                 this._content = content;
         }
         catch (e) {
-            console.error(`[Liquid Glass] SelfExcludingSnapshotCapture: paint_to_content failed: ${e}`);
         }
         finally {
             for (const actor of hidden) {
@@ -179,11 +167,6 @@ function acquireSelfExcludingSnapshot(sourceActor, stage, hideActor, rectGetter)
         _selfExcludingSnapshotRegistry.set(sourceActor, cap);
     }
     else {
-        // [CHANGED] The capture already exists (created by another Liquid Glass
-        // instance, e.g. the dock glass while this is the menu glass, or vice
-        // versa). We must still register *our* root as a hide target, or our
-        // glass stays visible during every future capture and ends up
-        // recursively baked into its own panel snapshot.
         cap.addHideActor(hideActor);
     }
     cap.retain();
@@ -259,7 +242,6 @@ export const TextureBlitActor = GObject.registerClass({
             return backend.get_cogl_context();
         }
         catch (e) {
-            console.error(`[Liquid Glass][TextureBlitActor] failed to get Cogl context: ${e}`);
             return null;
         }
     }
@@ -307,7 +289,6 @@ export const TextureBlitActor = GObject.registerClass({
             fb.draw_textured_rectangle(this._pipeline, 0, 0, w, h, uMin, vMin, uMax, vMax);
         }
         catch (e) {
-            console.error(`[Liquid Glass][TextureBlitActor] paint failed: ${e}`);
         }
     }
 });
@@ -323,7 +304,7 @@ export class UILayerSampler {
     _extraExclusions;
     _selfRoot = null;
     _clones = new Map();
-    _uiClonesContainer;
+    _uiClonesContainer = null;
     // Read-only cache: for each uiGroup child, either the (actor, effect) pair
     // of an existing Clutter.OffscreenEffect found in its subtree, or null if
     // none was found. Never written to by us (no actor tree mutation), so
@@ -347,6 +328,10 @@ export class UILayerSampler {
         this._selfRoot = this._findUiGroupAncestor(selfActor);
         this._uiClonesContainer = new UnpickableActor();
         this._uiClonesContainer.set_name("ui-clones-container");
+        // Connect to the destroy signal and assign null
+        this._uiClonesContainer.connect('destroy', () => {
+            this._uiClonesContainer = null;
+        });
         if (cloneContainer) {
             cloneContainer.add_child(this._uiClonesContainer);
         }
@@ -459,7 +444,6 @@ export class UILayerSampler {
                 afterPaintId = stage.connect('after-paint', applyContent);
             }
             catch (e) {
-                console.error(`[Liquid Glass] SelfExcludingSnapshotActor: failed to connect to 'after-paint': ${e}`);
             }
             applyContent();
             this._delayedCaptureOwners.set(actor, { source: child, hideActor: selfRoot });
@@ -480,7 +464,6 @@ export class UILayerSampler {
             return actor;
         }
         catch (e) {
-            console.error(`[Liquid Glass] Failed to create SelfExcludingSnapshotCapture actor: ${e}`);
             return null;
         }
     }
@@ -590,6 +573,8 @@ export class UILayerSampler {
      * container's internal ordering.)
      */
     _insertCloneInZOrder(child, clone) {
+        if (!this._uiClonesContainer)
+            return;
         try {
             const uiGroup = Main.layoutManager.uiGroup;
             const siblings = uiGroup.get_children();
@@ -614,7 +599,6 @@ export class UILayerSampler {
             }
         }
         catch (e) {
-            console.error(`[Liquid Glass] _insertCloneInZOrder failed: ${e}`);
         }
     }
     /**
@@ -679,7 +663,7 @@ export class UILayerSampler {
                 sourceClone.connect('destroy', () => {
                     this._clones.delete(child);
                 });
-                this._uiClonesContainer.add_child(sourceClone);
+                this._uiClonesContainer?.add_child(sourceClone);
                 this._clones.set(child, sourceClone);
                 this._insertCloneInZOrder(child, sourceClone);
             }
@@ -795,15 +779,15 @@ export class UILayerSampler {
         }
         // Always bring the UI clones container to the front, regardless of its parent.
         // This prevents WindowCloneManager's rebuilds from placing windows above the UI.
-        const parent = this._uiClonesContainer.get_parent();
-        if (parent) {
+        const parent = this._uiClonesContainer?.get_parent();
+        if (parent && this._uiClonesContainer) {
             const siblings = parent.get_children();
             if (siblings[siblings.length - 1] !== this._uiClonesContainer) {
                 parent.set_child_above_sibling(this._uiClonesContainer, null);
             }
         }
         // Sign is flipped relative to WindowCloneManager.setOffset(x, y).
-        this._uiClonesContainer.set_position(-contAbsX, -contAbsY);
+        this._uiClonesContainer?.set_position(-contAbsX, -contAbsY);
         for (const [actor, sourceClone] of this._clones) {
             this.syncProperties(actor, sourceClone, contW, contH, contAbsX, contAbsY);
         }
@@ -830,7 +814,9 @@ export class WindowCloneManager {
         this.container = container;
         this._windowClones = new Map();
         this.bgClone = new UnpickableClone({ source: Main.layoutManager._backgroundGroup });
+        this.bgClone.connect('destroy', () => { this.bgClone = null; });
         this.windowClonesContainer = new UnpickableActor();
+        this.windowClonesContainer.connect('destroy', () => { this.windowClonesContainer = null; });
         this.cloneContainer = cloneContainer;
         // windowClonesContainer can only have one parent, so it's added either
         // to cloneContainer or to container directly — never both. As long as
@@ -850,14 +836,14 @@ export class WindowCloneManager {
             return;
         if (this.bgClone) {
             this.bgClone.destroy();
-            this.bgClone = null;
         }
         if (this.windowClonesContainer) {
             this.windowClonesContainer.destroy();
-            this.windowClonesContainer = null;
         }
         this.bgClone = new UnpickableClone({ source: Main.layoutManager._backgroundGroup });
+        this.bgClone.connect('destroy', () => { this.bgClone = null; });
         this.windowClonesContainer = new UnpickableActor();
+        this.windowClonesContainer.connect('destroy', () => { this.windowClonesContainer = null; });
         if (this.cloneContainer) {
             this.cloneContainer.add_child(this.windowClonesContainer);
         }
@@ -935,28 +921,11 @@ export class WindowCloneManager {
     destroy() {
         if (this.windowClonesContainer) {
             this.windowClonesContainer.destroy();
-            this.windowClonesContainer = null;
         }
         this._windowClones.clear();
         if (this.bgClone) {
             this.bgClone.destroy();
-            this.bgClone = null;
         }
         this.container = null;
     }
 }
-// Pass-through shader effect: outputs its input texture unchanged. Useful
-// as a minimal no-op effect when one is needed structurally.
-export const PassThroughEffect = GObject.registerClass({
-    GTypeName: 'LiquidGlassPassThroughEffect',
-}, class PassThroughEffect extends Clutter.ShaderEffect {
-    _init(params = {}) {
-        super._init(params);
-        this.set_shader_source(`
-      uniform sampler2D tex;
-      void main() {
-        cogl_color_out = texture2D(tex, cogl_tex_coord_in[0].st);
-      }
-    `);
-    }
-});

@@ -18,13 +18,12 @@ const SAMPLE_PER_ELEMENT = false;
 export class UIManager {
     extensionPath;
     _settings;
+    _logger;
     targetActor;
     menu;
     animActor;
     bgActor;
     effect;
-    // [CHANGED] Replaced fboContainer / bgClone / windowClonesContainer / overviewCloneContainer
-    // and all manual clone maps with WindowCloneManager + UILayerSampler (dockManager pattern).
     _cloneContainer = null;
     _windowCloneManager = null;
     _signals;
@@ -71,9 +70,10 @@ export class UIManager {
     _uiSampler = null;
     _lastScreenW;
     _lastScreenH;
-    constructor(extensionPath, settings) {
+    constructor(extensionPath, settings, logger) {
         this.extensionPath = extensionPath;
         this._settings = settings;
+        this._logger = logger;
         // Target the main container of the Date/Calendar menu
         this.targetActor = Main.panel.statusArea.dateMenu.menu.actor;
         this.menu = Main.panel.statusArea.dateMenu.menu;
@@ -125,7 +125,7 @@ export class UIManager {
         this._springPos.updateParams(this._springStiffness, this._springDamping, this._springMass);
         this._interfaceSettings = new Gio.Settings({ schema_id: 'org.gnome.desktop.interface' });
         this._accentColorSignalId = this._interfaceSettings.connect('changed::accent-color', () => {
-            console.log(`[Liquid Glass] System accent color changed.`);
+            // console.log(`[Liquid Glass] System accent color changed.`);
             GLib.timeout_add(GLib.PRIORITY_DEFAULT, 200, () => {
                 this._applySystemAccentColor();
                 return GLib.SOURCE_REMOVE;
@@ -155,7 +155,7 @@ export class UIManager {
         parent.destroy();
         // 5. HEXに変換
         const colorStr = this._rgbToHex(bgColor.red, bgColor.green, bgColor.blue);
-        console.log(`[Liquid Glass] Set system accent color to ${colorStr}`);
+        // console.log(`[Liquid Glass] Set system accent color to ${colorStr}`);
         const cssContent = `
       .liquid-glass-menu-root .calendar-today,
       .liquid-glass-menu-root .calendar-today:hover,
@@ -177,10 +177,10 @@ export class UIManager {
             }
             this._dynamicCssFile = Gio.File.new_for_path(filePath);
             theme.load_stylesheet(this._dynamicCssFile);
-            console.log(`[Liquid Glass] 動的CSSの注入に成功しました。適用色: ${colorStr}`);
+            this._logger.log(`[Liquid Glass] [UIManager] System accent color applied: ${colorStr}`);
         }
         catch (e) {
-            console.log(`[Liquid Glass] 動的CSSの適用に失敗しました: ${e}`);
+            this._logger.error(`[Liquid Glass] [UIManager] Failed to apply system accent color: ${e}`);
         }
     }
     // Utility: Convert HEX color string to normalized RGB array
@@ -384,36 +384,6 @@ export class UIManager {
         this.effect.setSaturation(saturation);
         this.effect.setBlurRadius(blurRadius);
         this.liquidBox.add_effect(this.effect);
-        // [FIX] Root cause of "the whole screen darkens by a flat amount as soon
-        // as the Menu glass toggle is turned on, until the menu is opened once".
-        //
-        // This used to unconditionally call `this.bgActor.show()` right here,
-        // regardless of whether the date menu was open. Showing bgActor makes it
-        // paint every frame from that point on (it's a permanent uiGroup child,
-        // not parented under the menu itself). But its LiquidEffect uniforms
-        // (resolution_x/y, dock_x/y/w/h) only ever get synced to real values
-        // inside _syncGeometry(), which only runs once the render loop is
-        // started by startFrameSync() below — and that only happens once
-        // `this.targetActor.mapped` becomes true, i.e. once the menu is actually
-        // opened for the first time.
-        //
-        // Meanwhile, WindowCloneManager (constructed above) has already inserted
-        // a full-monitor-sized background clone into liquidBox, so liquidBox's
-        // real on-screen allocation balloons to the monitor's size immediately
-        // — well before the menu is ever opened. With bgActor visible but the
-        // shader still holding its tiny constructor defaults (resolution ~1x1,
-        // dock_w/dock_h = 0), glass.frag's local_pos/box_size math collapses to
-        // nearly the same value for every pixel across that much larger real
-        // draw area, producing a spatially flat, constant darkening across the
-        // entire monitor (scaling with shadow_radius/shadow_intensity) — not an
-        // actual out-of-bounds shadow (the shadow's own math is correctly capped
-        // at shadow_max_radius; this darkening comes from upstream of it).
-        //
-        // Fix: keep bgActor hidden until _syncGeometry() has actually run and
-        // synced real geometry into the shader. _syncGeometry() itself already
-        // shows bgActor once it's safe to do so, and the `notify::mapped`
-        // handler above hides it again once the menu closes — so no explicit
-        // show() is needed or correct here.
         this.bgActor.hide();
         // Helper functions to hook into GNOME's render pipeline
         const laterAdd = (laterType, callback) => {
@@ -779,7 +749,7 @@ export class UIManager {
             this._applyAdaptiveColorMap(colorMap, skipAnimations);
         })
             .catch(e => {
-            console.error(`[Liquid Glass] Menu adaptive color update failed: ${e}`);
+            this._logger.error(`[Liquid Glass] Menu adaptive color update failed: ${e}`);
         })
             .finally(() => {
             this._adaptiveInFlight = false;
@@ -1048,6 +1018,13 @@ export class UIManager {
         this._stableBaseH = undefined;
     }
     cleanup() {
+        for (let sigId of this._settingsSignals) {
+            try {
+                this._settings.disconnect(sigId);
+            }
+            catch (e) { }
+        }
+        this._settingsSignals = [];
         if (!this.targetActor)
             return;
         this._removeEffect();

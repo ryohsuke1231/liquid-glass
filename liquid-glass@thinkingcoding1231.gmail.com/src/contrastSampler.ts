@@ -116,14 +116,12 @@ async function _captureAreaToFile(screenshot: Shell.Screenshot, rect: { x: numbe
             stream.close(null);
             resolve(success);
           } catch (e) {
-            console.error(`[Liquid Glass] Screenshot finish failed: ${e}`);
             stream.close(null); // エラー時も確実に閉じる
             resolve(false);
           }
         }
       );
     } catch (e) {
-      console.error(`[Liquid Glass] Screenshot API failed: ${e}`);
       resolve(false);
     }
   });
@@ -192,7 +190,6 @@ export class StageContrastSampler {
 
       return _trimmedMean(values, 0.10);
     } catch (e) {
-      console.error(`[Liquid Glass] Failed to analyze screenshot luminance: ${e}`);
       return null;
     } finally {
       try {

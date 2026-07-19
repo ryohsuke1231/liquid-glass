@@ -52,9 +52,8 @@ import GObject from 'gi://GObject';
 import Clutter from 'gi://Clutter';
 import Cogl from 'gi://Cogl';
 import Gio from 'gi://Gio';
-import GLib from 'gi://GLib';
-import * as Main from 'resource:///org/gnome/shell/ui/main.js';
-import Graphene from 'gi://Graphene';
+
+import { Logger } from './logger.js';
 
 // ─── Type helpers ───────────────────────────────────────────────────────────
 // In GJS, Cogl.Offscreen inherits from Cogl.Framebuffer, but TypeScript's
@@ -64,6 +63,7 @@ type CoglFB = Cogl.Framebuffer;
 interface LiquidEffectParams {
   extensionPath?: string;
   settings?: Gio.Settings;
+  logger?: Logger;
   [key: string]: any; // spread into super._init(params)
 }
 
@@ -102,6 +102,7 @@ export const LiquidEffect = GObject.registerClass({
   declare private _extensionPath: string | undefined;
   declare private _settings: Gio.Settings | undefined;
   declare private _settingsIds: number[];
+  declare private _logger: Logger | undefined;
 
   // ── Blur texture pool ──
   // Index 0 = w/2 × h/2 (first half-res level)
@@ -177,13 +178,21 @@ export const LiquidEffect = GObject.registerClass({
   // The last radius requested by the caller (before method-specific mapping).
   declare private _targetRadius: number;
 
+  // ── Shader Sources ──
+  declare private _downsampleSource: string | null;
+  declare private _upsampleSource: string | null;
+  declare private _glassSource: string | null;
+  declare private _shadersLoaded: boolean;
+
   // ─── _init ──────────────────────────────────────────────────────────────────
 
   _init(params: LiquidEffectParams) {
     const extensionPath = params.extensionPath;
     const settings = params.settings;
+    const logger = params.logger;
     delete params.extensionPath;
     delete params.settings;
+    delete params.logger;
 
     super._init(params);
 
@@ -218,8 +227,15 @@ export const LiquidEffect = GObject.registerClass({
     this._gaussianScale = 1.0;
     this._gaussianFetchPairs = 0;
 
+
+    this._downsampleSource = null;
+    this._upsampleSource = null;
+    this._glassSource = null;
+    this._shadersLoaded = false;
+
     this._extensionPath = extensionPath;
     this._settings = settings;
+    this._logger = logger;
 
     // ── Default values for the composite shader's uniforms ──
     // The pipeline doesn't exist yet at this point, so these are buffered
@@ -235,7 +251,7 @@ export const LiquidEffect = GObject.registerClass({
     this._setFloat('contrast', 1.0);
     this._setFloat('saturation', 1.0);
     this._setFloat('padding', 20.0);
-    // [FIX] Distinct from the small optical 'padding' uniform (20px, only
+    // Distinct from the small optical 'padding' uniform (20px, only
     // meant to give the refraction/blur shader room past the actor's strict
     // bounds). shadow_max_radius instead reflects how much room the drop
     // shadow actually has to render outward before it would run into the
@@ -275,7 +291,7 @@ export const LiquidEffect = GObject.registerClass({
       this._setFloat('light_angle_deg', 0.0);
       this._setFloat('shadow_radius', 8.0);
       this._setFloat('shadow_intensity', 0.55);
-      // [NEW] Inner edge AO darkening (independent of rim_width/shadow_radius).
+      // Inner edge AO darkening (independent of rim_width/shadow_radius).
       // ~7.5px matches the old rim_width*1.5-derived falloff at the default
       // rim_width of 5.0, so the look is unchanged until the user retunes it.
       this._setFloat('ao_intensity', 0.25);
@@ -285,6 +301,46 @@ export const LiquidEffect = GObject.registerClass({
       this._setFloat('tint_g', 1.0);
       this._setFloat('tint_b', 1.0);
     }
+    this._loadAllShadersAsync();
+  }
+
+  /**
+  * Load all shader files asynchronously.
+  */
+  private async _loadAllShadersAsync(): Promise<void> {
+    try {
+      this._downsampleSource = await this._readFileAsync(`${this._extensionPath}/shaders/downsample.frag`);
+      this._upsampleSource = await this._readFileAsync(`${this._extensionPath}/shaders/upsample.frag`);
+      this._glassSource = await this._readFileAsync(`${this._extensionPath}/shaders/glass.frag`);
+
+      this._shadersLoaded = true;
+
+      // 読み込み完了後に再描画をリクエストし、パイプラインを初期化させる
+      this.queue_repaint();
+    } catch (e) {
+      this._logger?.error(`[Liquid Glass] Failed to load shaders asynchronously: ${e}`);
+    }
+  }
+
+  /**
+  * Gio.File を使ってファイルを非同期で読み込み、文字列として返すPromise関数
+  */
+  private _readFileAsync(path: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const file = Gio.File.new_for_path(path);
+      file.load_contents_async(null, (_, res) => {
+        try {
+          const [ok, bytes] = file.load_contents_finish(res);
+          if (!ok) {
+            reject(new Error(`load_contents_finish returned false for ${path}`));
+          } else {
+            resolve(new TextDecoder('utf-8').decode(bytes));
+          }
+        } catch (e) {
+          reject(e);
+        }
+      });
+    });
   }
 
   // ─── Pipeline initialization (deferred until the first frame, once a Cogl context exists) ──
@@ -298,10 +354,8 @@ export const LiquidEffect = GObject.registerClass({
     this._downsamplePipeline = Cogl.Pipeline.new(ctx);
     this._configureSamplerLayer(this._downsamplePipeline, 0);
 
-    const downSnippet = this._loadShaderSnippet(
-      `${this._extensionPath}/shaders/downsample.frag`
-    );
-    if (downSnippet) {
+    if (this._downsampleSource) {
+      const downSnippet = this._splitShader(this._downsampleSource);
       const s = Cogl.Snippet.new(Cogl.SnippetHook.FRAGMENT, downSnippet.decl, null);
       s.set_replace(downSnippet.body);
       this._downsamplePipeline.add_snippet(s);
@@ -311,15 +365,12 @@ export const LiquidEffect = GObject.registerClass({
     this._upsamplePipeline = Cogl.Pipeline.new(ctx);
     this._configureSamplerLayer(this._upsamplePipeline, 0);
 
-    const upSnippet = this._loadShaderSnippet(
-      `${this._extensionPath}/shaders/upsample.frag`
-    );
-    if (upSnippet) {
+    if (this._upsampleSource) {
+      const upSnippet = this._splitShader(this._upsampleSource);
       const s = Cogl.Snippet.new(Cogl.SnippetHook.FRAGMENT, upSnippet.decl, null);
       s.set_replace(upSnippet.body);
       this._upsamplePipeline.add_snippet(s);
     }
-
     // ── Gaussian H/V pipelines ───────────────────────────────────────────────
     // Not precompiled here: the separable Gaussian blur builds its shader
     // source dynamically from the kernel computed in setBlurRadius(), and
@@ -356,35 +407,12 @@ export const LiquidEffect = GObject.registerClass({
   }
 
   /**
-   * Loads a shader file and parses it into a ShaderSnippet, splitting on
-   * "void main()" into:
-   *   decl = the declaration section (uniforms / helper functions)
-   *   body = the body of main()
-   * Returns null on failure.
-   */
-  private _loadShaderSnippet(path: string): ShaderSnippet | null {
-    const file = Gio.File.new_for_path(path);
-    let bytes: Uint8Array;
-    try {
-      const [ok, b] = file.load_contents(null);
-      if (!ok) throw new Error('load_contents returned false');
-      bytes = b;
-    } catch (e) {
-      console.error(`[Liquid Glass] Failed to load shader: ${path}\n${e}`);
-      return null;
-    }
-
-    const src = new TextDecoder('utf-8').decode(bytes);
-    return this._splitShader(src);
-  }
-
-  /**
    * Splits a GLSL source string into { decl, body } at the "void main()" boundary.
    */
   private _splitShader(src: string): ShaderSnippet {
     const match = src.match(/void\s+main\s*\(\s*\)\s*\{/);
     if (!match || match.index === undefined) {
-      console.warn('[Liquid Glass] void main() not found; treating entire source as decl.');
+      this._logger?.warn('[Liquid Glass] void main() not found; treating entire source as decl.');
       return { decl: src, body: '' };
     }
 
@@ -415,14 +443,9 @@ export const LiquidEffect = GObject.registerClass({
    * since cogl_sampler0 is already declared automatically by Cogl.
    */
   private _loadCompositeShader(): void {
-    if (!this._compositePipeline) return;
+    if (!this._compositePipeline || !this._glassSource) return;
 
-    const snippetData = this._loadShaderSnippet(
-      `${this._extensionPath}/shaders/glass.frag`
-    );
-    if (!snippetData) return;
-
-    let { decl, body } = snippetData;
+    let { decl, body } = this._splitShader(this._glassSource);
 
     // Rewrite the ShaderEffect-style sampler name to the FRAGMENT-hook name.
     decl = decl.replace(/uniform\s+sampler2D\s+cogl_sampler\d*\s*;[^\n]*/g, '');
@@ -572,7 +595,7 @@ export const LiquidEffect = GObject.registerClass({
         this._gaussianTempTextures.push(tmpTex);
         this._gaussianTempFbos.push(tmpFbo);
       } catch (e) {
-        console.error(`[Liquid Glass] Failed to build texture pool at pass ${i} (${pw}x${ph}): ${e}`);
+        this._logger?.error(`[Liquid Glass] Failed to build texture pool at pass ${i} (${pw}x${ph}): ${e}`);
         this._destroyTexturePool();
         return;
       }
@@ -772,7 +795,7 @@ export const LiquidEffect = GObject.registerClass({
       this._cropPoolH = h;
       return true;
     } catch (e) {
-      console.error(`[Liquid Glass] Failed to create crop texture (${w}x${h}): ${e}`);
+      this._logger?.error(`[Liquid Glass] Failed to create crop texture (${w}x${h}): ${e}`);
       return false;
     }
   }
@@ -859,7 +882,11 @@ export const LiquidEffect = GObject.registerClass({
    * @param paintContext Current paint context, holding a reference to the on-screen framebuffer
    */
   vfunc_paint_target(_paintNode: Clutter.PaintNode, paintContext: Clutter.PaintContext): void {
-
+    // ── Wait for async shaders ──────────────────────────────────────────────
+    if (!this._shadersLoaded) {
+      super.vfunc_paint_target(_paintNode, paintContext);
+      return;
+    }
     // ── Deferred pipeline initialization ─────────────────────────────────────
     if (!this._compositePipeline) {
       try {
@@ -867,7 +894,7 @@ export const LiquidEffect = GObject.registerClass({
         if (!ctx) throw new Error('Could not obtain a Cogl context');
         this._initPipelines(ctx);
       } catch (e) {
-        console.error(`[Liquid Glass] Pipeline initialization failed: ${e}`);
+        this._logger?.error(`[Liquid Glass] Pipeline initialization failed: ${e}`);
         // Fall back to OffscreenEffect's default drawing.
         super.vfunc_paint_target(_paintNode, paintContext);
         return;
@@ -896,7 +923,7 @@ export const LiquidEffect = GObject.registerClass({
         this._gaussianVPipeline = null;
         this._compileGaussianPipelines(ctx, this._pendingGaussianKernel);
       } catch (e) {
-        console.error(`[Liquid Glass] Failed to build Gaussian pipelines: ${e}`);
+        this._logger?.error(`[Liquid Glass] Failed to build Gaussian pipelines: ${e}`);
       }
     }
 
@@ -943,7 +970,7 @@ export const LiquidEffect = GObject.registerClass({
           effectiveH = allocH;
         }
       } catch (e) {
-        console.error(`[Liquid Glass] Crop pass failed; continuing with the padded texture: ${e}`);
+        this._logger?.error(`[Liquid Glass] Crop pass failed; continuing with the padded texture: ${e}`);
       }
     }
 
@@ -957,7 +984,7 @@ export const LiquidEffect = GObject.registerClass({
         if (!ctx) throw new Error('Could not obtain a Cogl context');
         this._buildTexturePool(ctx, effectiveW, effectiveH);
       } catch (e) {
-        console.error(`[Liquid Glass] Failed to rebuild the texture pool: ${e}`);
+        this._logger?.error(`[Liquid Glass] Failed to rebuild the texture pool: ${e}`);
         super.vfunc_paint_target(_paintNode, paintContext);
         return;
       }
@@ -1092,7 +1119,7 @@ export const LiquidEffect = GObject.registerClass({
       const backend = Clutter.get_default_backend();
       return backend.get_cogl_context() as Cogl.Context;
     } catch (e) {
-      console.error(`[Liquid Glass] Failed to obtain the Cogl context: ${e}`);
+      this._logger?.error(`[Liquid Glass] Failed to obtain the Cogl context: ${e}`);
       return null;
     }
   }
@@ -1118,7 +1145,7 @@ export const LiquidEffect = GObject.registerClass({
       { key: 'glass-light-angle-deg', uniform: 'light_angle_deg' },
       { key: 'shadow-radius', uniform: 'shadow_radius' },
       { key: 'shadow-intensity', uniform: 'shadow_intensity' },
-      // [NEW] Inner edge AO darkening — independent of rim_width and of the
+      // Inner edge AO darkening — independent of rim_width and of the
       // outer drop shadow's radius/intensity pair above.
       { key: 'glass-ao-intensity', uniform: 'ao_intensity' },
       { key: 'glass-ao-radius', uniform: 'ao_radius' },
@@ -1146,6 +1173,7 @@ export const LiquidEffect = GObject.registerClass({
     applyBlurMethod();
     const blurMethodId = settings.connect('changed::blur-method', applyBlurMethod);
     this._settingsIds.push(blurMethodId);
+
   }
 
   // ─── Public API (compatible with the previous ShaderEffect-based interface) ──
@@ -1189,7 +1217,7 @@ export const LiquidEffect = GObject.registerClass({
   }
 
   /**
-   * [FIX] Tells the shader how much room (in px) the drop shadow actually
+   * Tells the shader how much room (in px) the drop shadow actually
    * has to render outward, independent of the small optical `padding`
    * uniform. Should be kept in sync with dockManager's CLIP_PADDING (minus
    * a small safety margin) so shadow_radius can use its full prefs.js
@@ -1405,10 +1433,11 @@ export const LiquidEffect = GObject.registerClass({
     // small radii.
     const kernelSigma = Math.max(sigmaTexel, MIN_SIGMA_TEXEL);
 
-    // Number of one-sided taps needed to satisfy the 3-sigma rule, converted
-    // to fetch pairs (2 taps per fetch). At least 2 pairs (5-tap equivalent)
+    // Number of one-sided taps needed to satisfy the 4-sigma rule (changed from 3
+    // to prevent abrupt truncation ringing/grid artifacts at integer multiples),
+    // converted to fetch pairs (2 taps per fetch). At least 2 pairs (5-tap equivalent)
     // are guaranteed so bilinear-downsample aliasing is reliably absorbed.
-    const sideTaps = Math.max(2, Math.ceil(kernelSigma * 3));
+    const sideTaps = Math.max(2, Math.ceil(kernelSigma * 4));
     const fetchPairs = Math.max(2, Math.ceil(sideTaps / 2));
 
     const needsRecompile =
@@ -1505,3 +1534,4 @@ export const LiquidEffect = GObject.registerClass({
 });
 
 export type LiquidEffect = InstanceType<typeof LiquidEffect>;
+

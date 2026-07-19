@@ -64,7 +64,7 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
     menuPage.add(menuGroup);
 
     this._addSwitchRow(menuGroup, settings, 'enable-menu-glass', 'Enable Glass Effect', 'Apply to menus and popups');
-    this._addSwitchRow(menuGroup, settings, "enable-menu-animation", "Enable Menu Animation", "Apply to menus and popups");
+    this._addSwitchRow(menuGroup, settings, "enable-menu-animation", "Enable Menu Animation", "Animate menu transitions using spring physics");
 
     this._addSliderRow(menuGroup, settings, 'menu-glass-expand', 'Glass Expand', 'Extra area for the effect', 0, 50, 1);
     this._addSliderRow(menuGroup, settings, 'menu-x-offset', 'X Offset', 'Horizontal offset adjustment', -200, 200, 1);
@@ -238,7 +238,7 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
     });
     window.add(shaderPage);
 
-    const physGroup = new Adw.PreferencesGroup({ title: 'Physical & Optical Properties' });
+    const physGroup = new Adw.PreferencesGroup({ title: 'Physical &amp; Optical Properties' });
     shaderPage.add(physGroup);
 
     // Blur Method を選択する ComboRow を追加し、GSettingsにバインド
@@ -259,7 +259,7 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
     this._addSliderRow(physGroup, settings, 'glass-ior', 'Index of Refraction', 'Optical density (1.5 - 2.4)', 1.0, 4.0, 0.01);
     this._addSliderRow(physGroup, settings, 'glass-chroma-strength', 'Chroma Strength', 'RGB color separation', 0.0, 0.1, 0.001);
 
-    const lightGroup = new Adw.PreferencesGroup({ title: 'Lighting & Reflections' });
+    const lightGroup = new Adw.PreferencesGroup({ title: 'Lighting &amp; Reflections' });
     shaderPage.add(lightGroup);
 
     this._addSliderRow(lightGroup, settings, 'glass-specular-intensity', 'Specular Intensity', 'Brightness of highlights', 0.0, 5.0, 0.1);
