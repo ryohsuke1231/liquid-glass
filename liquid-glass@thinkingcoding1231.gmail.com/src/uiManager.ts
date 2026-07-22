@@ -8,7 +8,7 @@ import Meta from 'gi://Meta';
 import Gio from 'gi://Gio';
 import { LiquidEffect } from './liquidEffect.js';
 import { StageContrastSampler, AdaptiveContrastConfig } from './contrastSampler.js';
-import { UnpickableClone, UnpickableActor } from './utils.js';
+import { UnpickableClone, UnpickableActor, getWindowActors } from './utils.js';
 
 // ========== Configuration Parameters ==========
 
@@ -519,7 +519,7 @@ export class UIManager {
       this._searchClone = null;
 
       // Iterate through all windows managed by the compositor
-      let windows = global.get_window_actors();
+      let windows = getWindowActors();
       for (let w of windows) {
         let metaWindow = w.get_meta_window();
 
@@ -826,7 +826,7 @@ export class UIManager {
 
       // Efficient window synchronization logic.
       let isOverview = Main.overview.visible || Main.overview.animationInProgress;
-      let windows = global.get_window_actors();
+      let windows = getWindowActors();
       let activeWindows = new Set();
       let zIndex = 0; // Tracks the stacking order
 

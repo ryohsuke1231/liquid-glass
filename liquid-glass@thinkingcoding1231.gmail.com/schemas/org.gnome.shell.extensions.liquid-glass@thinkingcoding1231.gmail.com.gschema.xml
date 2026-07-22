@@ -248,6 +248,20 @@
       <summary>Enable glass effect for application windows</summary>
       <description>Apply the liquid glass effect to whitelisted application windows.</description>
     </key>
+    <!-- Whether to apply the effect to all application windows or only whitelisted ones -->
+    <!-- Define si aplicar el efecto a todas las ventanas de aplicación o solo a las de la whitelist -->
+    <key name="application-glass-all-windows" type="b">
+      <default>false</default>
+      <summary>Apply to all windows</summary>
+      <description>Apply the glass effect to all application windows, bypassing the whitelist.</description>
+    </key>
+    <!-- Opacity of the application window contents (0.0 to 1.0) to make the glass effect visible -->
+    <!-- Opacidad del contenido de la ventana (0.0 a 1.0) para que se aprecie el efecto cristal -->
+    <key name="application-content-opacity" type="d">
+      <default>0.85</default>
+      <summary>Window content opacity</summary>
+      <description>Opacity of the window content layer to let the glass effect show through (0.0 to 1.0).</description>
+    </key>
     <key name="application-window-whitelist" type="as">
       <default>[]</default>
       <summary>Whitelisted window classes</summary>

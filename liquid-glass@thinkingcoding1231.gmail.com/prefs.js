@@ -158,12 +158,16 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
     });
     appPage.add(appGroup);
 
-    this._addSwitchRow(appGroup, settings, 'enable-application-glass', 'Enable Glass Effect', 'Apply to whitelisted application windows');
+    this._addSwitchRow(appGroup, settings, 'enable-application-glass', 'Enable Glass Effect', 'Apply to application windows');
+    // Switch to apply to all windows bypassing the whitelist
+    // Interruptor para aplicar a todas las ventanas omitiendo la lista blanca
+    this._addSwitchRow(appGroup, settings, 'application-glass-all-windows', 'Apply to All Windows', 'Apply to all application windows, bypassing the whitelist');
     this._addWhitelistEditor(appPage, settings, 'application-window-whitelist');
     this._addColorRow(appGroup, settings, 'application-tint-color', 'Tint Color', 'Color of the glass tint');
     this._addSpinRow(appGroup, settings, 'application-tint-strength', 'Tint Strength', 'Intensity of the color tint', 0.0, 1.0, 0.01);
     this._addSpinRow(appGroup, settings, 'application-blur-radius', 'Blur Radius', 'Background blur intensity', 0, 100, 1);
     this._addSpinRow(appGroup, settings, 'application-corner-radius', 'Corner Radius', 'Roundness of the corners', 0, 200, 1);
+    this._addSpinRow(appGroup, settings, 'application-content-opacity', 'Window Content Opacity', 'Opacity of the window content layer to let the glass show through', 0.0, 1.0, 0.01);
 
     // --- Glass Properties タブ ---
     const shaderPage = new Adw.PreferencesPage({

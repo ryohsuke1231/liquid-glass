@@ -6,7 +6,7 @@ import Meta from 'gi://Meta';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { LiquidEffect } from './liquidEffect.js';
 import GLib from 'gi://GLib';
-import { UnpickableClone, UnpickableActor, InverseCornerEffect } from './utils.js';
+import { UnpickableClone, UnpickableActor, InverseCornerEffect, getWindowActors, isActorValid } from './utils.js';
 const SHADER_PADDING = 10;
 // Inward padding for corner rounding
 const CORNER_PADDING = 3;
@@ -29,12 +29,22 @@ export class ApplicationManager {
         this._restackedId = 0;
     }
     setup() {
+        console.log("[Liquid Glass] ApplicationManager setup starting...");
         this._bindSettings();
         this._windowCreatedId = global.display.connect('window-created', (_d, metaWindow) => {
+            console.log(`[Liquid Glass] window-created event: window title = "${metaWindow.get_title()}", class = "${metaWindow.get_wm_class()}"`);
             const obj = metaWindow.get_compositor_private();
-            if (!(obj instanceof Meta.WindowActor))
+            if (!obj) {
+                console.log("[Liquid Glass] get_compositor_private() returned null");
                 return;
+            }
+            if (!(obj instanceof Meta.WindowActor)) {
+                console.log("[Liquid Glass] compositor object is not instance of Meta.WindowActor");
+                return;
+            }
+            console.log("[Liquid Glass] window compositor actor found. Connecting to first-frame.");
             obj.connect('first-frame', () => {
+                console.log("[Liquid Glass] first-frame event fired for window: " + metaWindow.get_title());
                 if (this._shouldApplyToWindow(obj)) {
                     this._setupWindow(obj);
                     this._rebuildAllClones();
@@ -44,6 +54,7 @@ export class ApplicationManager {
         this._restackedId = global.display.connect('restacked', () => {
             this._rebuildAllClones();
         });
+        console.log("[Liquid Glass] checking if effect enabled in setup: " + this._isEffectEnabled());
         if (this._isEffectEnabled())
             this._applyEffects();
     }
@@ -66,19 +77,37 @@ export class ApplicationManager {
             this._settingsSignals.push(id);
         };
         connectSetting('enable-application-glass', () => {
+            console.log("[Liquid Glass] enable-application-glass setting changed to: " + this._isEffectEnabled());
             if (this._isEffectEnabled())
                 this._applyEffects();
             else
                 this._removeAllEffects();
         });
+        connectSetting('application-glass-all-windows', () => this._syncWhitelist());
+        connectSetting('application-content-opacity', () => this._updateWindowOpacities());
         connectSetting('application-window-whitelist', () => this._syncWhitelist());
         connectSetting('application-tint-color', () => this._updateEffectParams());
         connectSetting('application-tint-strength', () => this._updateEffectParams());
         connectSetting('application-blur-radius', () => this._updateEffectParams());
         connectSetting('application-corner-radius', () => this._updateEffectParams());
     }
+    _getContentOpacity() {
+        return this._settings.get_double('application-content-opacity');
+    }
+    _updateWindowOpacities() {
+        const targetOpacity = Math.round(this._getContentOpacity() * 255);
+        console.log("[Liquid Glass] Updating window content opacities to: " + targetOpacity);
+        for (let state of this._states.values()) {
+            let surfaceActor = state.windowActor.get_first_child();
+            if (surfaceActor) {
+                surfaceActor.opacity = targetOpacity;
+            }
+        }
+    }
     _isEffectEnabled() {
-        return this._settings.get_boolean('enable-application-glass');
+        const enabled = this._settings.get_boolean('enable-application-glass');
+        console.log("[Liquid Glass] _isEffectEnabled called, returning: " + enabled);
+        return enabled;
     }
     _getWhitelist() {
         let whitelist = this._settings.get_strv('application-window-whitelist');
@@ -86,15 +115,18 @@ export class ApplicationManager {
     }
     _windowMatchesWhitelist(metaWindow) {
         const whitelist = this._getWhitelist();
-        if (whitelist.length === 0)
-            return false;
         const appName = metaWindow.get_wm_class();
+        console.log(`[Liquid Glass] _windowMatchesWhitelist: appName = "${appName}", whitelist = [${whitelist.join(', ')}]`);
+        if (whitelist.length === 0) {
+            console.log("[Liquid Glass] whitelist is empty, so match is false");
+            return false;
+        }
         let ret = !!appName && whitelist.includes(appName);
         if (!ret) {
             console.log("[Liquid Glass] window is not in whitelist. name = " + appName);
         }
         else {
-            console.log("[Liquid Glass] window is n whitelist. name = " + appName);
+            console.log("[Liquid Glass] window is in whitelist. name = " + appName);
         }
         return ret;
     }
@@ -108,9 +140,26 @@ export class ApplicationManager {
             console.log("[Liquid Glass] could not get metaWindow");
             return false;
         }
+        // Check if "apply to all windows" is active
+        // Comprobar si "aplicar a todas las ventanas" está activo
+        const applyAll = this._settings.get_boolean('application-glass-all-windows');
+        if (applyAll) {
+            // Apply only to normal/dialog/modal windows, skip desktop backgrounds, panels, etc.
+            // Aplicar solo a ventanas normales/diálogos/modales, omitir fondos de escritorio, paneles, etc.
+            const windowType = metaWindow.get_window_type();
+            const isNormal = windowType === Meta.WindowType.NORMAL ||
+                windowType === Meta.WindowType.DIALOG ||
+                windowType === Meta.WindowType.MODAL_DIALOG;
+            if (!isNormal) {
+                console.log(`[Liquid Glass] window "${metaWindow.get_title()}" has special type ${windowType}, skipping...`);
+                return false;
+            }
+            return true;
+        }
         return this._windowMatchesWhitelist(metaWindow);
     }
     _applyEffects() {
+        console.log("[Liquid Glass] _applyEffects called");
         this._buildForExistingWindows();
         this._startFrameSync();
     }
@@ -135,7 +184,7 @@ export class ApplicationManager {
                 this._states.delete(actor);
             }
         }
-        for (let actor of global.get_window_actors()) {
+        for (let actor of getWindowActors()) {
             if (this._shouldApplyToWindow(actor) && !this._states.has(actor))
                 this._setupWindow(actor);
         }
@@ -180,7 +229,7 @@ export class ApplicationManager {
         });
     }
     _buildForExistingWindows() {
-        for (let actor of global.get_window_actors()) {
+        for (let actor of getWindowActors()) {
             if (this._shouldApplyToWindow(actor))
                 this._setupWindow(actor);
         }
@@ -197,6 +246,10 @@ export class ApplicationManager {
         let parent = windowActor.get_parent();
         if (!parent)
             return;
+        // Store original opacity and apply the configured glass opacity
+        // Almacenar la opacidad original y aplicar la opacidad de cristal configurada
+        let originalOpacity = surfaceActor.opacity;
+        surfaceActor.opacity = Math.round(this._getContentOpacity() * 255);
         // Defer until actor has valid dimensions and allocation
         //if (windowActor.width <= 0 || windowActor.height <= 0 || !windowActor.has_allocation()) {
         //    let id = windowActor.connect('notify::allocation', () => {
@@ -292,7 +345,8 @@ export class ApplicationManager {
             roundingEffect,
             cornerOverlay,
             cornerOverlayClone,
-            signals: []
+            signals: [],
+            originalOpacity
         };
         this._states.set(windowActor, state);
         this._rebuildWindowClones(state);
@@ -307,6 +361,12 @@ export class ApplicationManager {
                 obj: metaWin,
                 id: metaWin.connect('size-changed', () => {
                     this._rebuildWindowClones(state);
+                    this._syncState(state);
+                })
+            });
+            state.signals.push({
+                obj: metaWin,
+                id: metaWin.connect('position-changed', () => {
                     this._syncState(state);
                 })
             });
@@ -340,7 +400,7 @@ export class ApplicationManager {
         state.baseClones.clear();
         state.baseWindowsContainer.remove_all_children();
         // Get windows in stacking order (bottom to top)
-        for (let actor of global.get_window_actors()) {
+        for (let actor of getWindowActors()) {
             // STOP iterating once we reach our own window.
             // This ensures we ONLY render what is actually BEHIND the app.
             if (actor === state.windowActor)
@@ -429,31 +489,35 @@ export class ApplicationManager {
         state.baseWindowsContainer.set_position(-baseScreenX, -baseScreenY);
         // Sync blurred clones
         for (let [src, clone] of state.clones.entries()) {
-            if (!src || !src.visible || !src.mapped || !src.has_allocation()) {
-                if (clone.visible)
+            if (!isActorValid(src) || !src.visible || !src.mapped || !src.has_allocation()) {
+                if (isActorValid(clone) && clone.visible)
                     clone.hide();
                 continue;
             }
-            if (!clone.visible)
-                clone.show();
-            clone.set_position(src.x, src.y);
-            clone.set_size(src.width, src.height);
-            clone.set_scale(src.scale_x, src.scale_y);
-            clone.opacity = src.opacity;
+            if (isActorValid(clone)) {
+                if (!clone.visible)
+                    clone.show();
+                clone.set_position(src.x, src.y);
+                clone.set_size(src.width, src.height);
+                clone.set_scale(src.scale_x, src.scale_y);
+                clone.opacity = src.opacity;
+            }
         }
         // Sync base clones (unblurred)
         for (let [src, clone] of state.baseClones.entries()) {
-            if (!src || !src.visible || !src.mapped || !src.has_allocation()) {
-                if (clone.visible)
+            if (!isActorValid(src) || !src.visible || !src.mapped || !src.has_allocation()) {
+                if (isActorValid(clone) && clone.visible)
                     clone.hide();
                 continue;
             }
-            if (!clone.visible)
-                clone.show();
-            clone.set_position(src.x, src.y);
-            clone.set_size(src.width, src.height);
-            clone.set_scale(src.scale_x, src.scale_y);
-            clone.opacity = src.opacity;
+            if (isActorValid(clone)) {
+                if (!clone.visible)
+                    clone.show();
+                clone.set_position(src.x, src.y);
+                clone.set_size(src.width, src.height);
+                clone.set_scale(src.scale_x, src.scale_y);
+                clone.opacity = src.opacity;
+            }
         }
         if (!state.cornerOverlay.visible) {
             state.cornerOverlay.show();
@@ -474,7 +538,9 @@ export class ApplicationManager {
             try {
                 this._syncState(state);
             }
-            catch (_e) { }
+            catch (e) {
+                console.error(`[Liquid Glass] Error in _syncState: ${e}`);
+            }
         }
         this._frameSyncId = global.compositor.get_laters().add(Meta.LaterType.BEFORE_REDRAW, () => {
             this._frameTick();
@@ -484,6 +550,14 @@ export class ApplicationManager {
     _cleanupState(state) {
         if (!state)
             return;
+        // Restore original window content layer's opacity
+        // Restaurar la opacidad original del contenido de la ventana
+        if (state.windowActor) {
+            let surfaceActor = state.windowActor.get_first_child();
+            if (surfaceActor) {
+                surfaceActor.opacity = state.originalOpacity;
+            }
+        }
         if (state.signals) {
             state.signals.forEach(sig => {
                 try {

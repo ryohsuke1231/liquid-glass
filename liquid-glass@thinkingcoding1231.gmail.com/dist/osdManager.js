@@ -7,7 +7,7 @@ import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import { LiquidEffect } from './liquidEffect.js';
 import { StageContrastSampler, AdaptiveContrastConfig } from './contrastSampler.js';
-import { UnpickableClone } from './utils.js';
+import { UnpickableClone, getWindowActors } from './utils.js';
 // ========== Configuration Parameters (Defaults, overridden by settings) ==========
 const SHADER_PADDING = 20;
 export class OsdManager {
@@ -380,7 +380,7 @@ export class OsdManager {
                 state.overviewCloneContainer.set_position(-bgX_abs, -bgY_abs);
             }
             let isOverview = Main.overview.visible || Main.overview.animationInProgress;
-            let windows = global.get_window_actors();
+            let windows = getWindowActors();
             let activeWindows = new Set();
             let zIndex = 0;
             if (!isOverview) {
@@ -477,7 +477,7 @@ export class OsdManager {
         state._overviewClone = null;
         state._appDisplayClone = null;
         state._searchClone = null;
-        let windows = global.get_window_actors();
+        let windows = getWindowActors();
         for (let w of windows) {
             let metaWindow = w.get_meta_window();
             if (!metaWindow || metaWindow.minimized || !w.visible)

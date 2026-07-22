@@ -8,7 +8,7 @@ import Meta from 'gi://Meta';
 import { LiquidEffect } from './liquidEffect.js';
 import { StageContrastSampler, AdaptiveContrastConfig } from './contrastSampler.js';
 import Gio from 'gi://Gio';
-import { UnpickableClone } from './utils.js';
+import { UnpickableClone, getWindowActors } from './utils.js';
 // ========== Configuration Parameters (Defaults, overridden by settings) ==========
 const SHADER_PADDING = 20;
 const HIDE_SAFETY_MARGIN = 7;
@@ -428,7 +428,7 @@ export class NotificationManager {
       }
 
       let isOverview = Main.overview.visible || Main.overview.animationInProgress;
-      let windows = global.get_window_actors();
+      let windows = getWindowActors();
       let activeWindows = new Set();
       let zIndex = 0;
 
@@ -517,7 +517,7 @@ export class NotificationManager {
     this._appDisplayClone = null;
     this._searchClone = null;
 
-    let windows = global.get_window_actors();
+    let windows = getWindowActors();
     for (let w of windows) {
       let metaWindow = w.get_meta_window();
       if (!metaWindow || metaWindow.minimized || !w.visible) continue;
