@@ -299,6 +299,8 @@ export class NotificationManager {
     _syncGeometry() {
         if (!this.bgActor || !this.currentBanner)
             return;
+        if (!this.bgActor.get_stage())
+            return; // detached during teardown - see uiManager._syncGeometry
         let [w, h] = this.currentBanner.get_size();
         let [absX, absY] = this.currentBanner.get_transformed_position();
         if (Number.isNaN(absX) || Number.isNaN(absY))
@@ -585,6 +587,23 @@ export class NotificationManager {
             GLib.source_remove(actor._colorTweenId);
             actor._colorTweenId = undefined;
         }
+        // Belt-and-suspenders for a real crash: the notification banner (and
+        // its text/icon actors) can be destroyed by the shell at any point
+        // mid-tween - e.g. the notification auto-expires or is dismissed
+        // while the 380ms fade is still running. `Object.keys(actor).length
+        // === 0` does not reliably detect a disposed GObject, so the 16ms
+        // timeout kept firing into a dead actor and crashing repeatedly
+        // (seen as a GJS backtrace at this file's set_style call). Stopping
+        // the source from the actor's own 'destroy' signal removes it at the
+        // moment of disposal, so there is no later tick left to crash on.
+        if (!actor._colorTweenDestroyId) {
+            actor._colorTweenDestroyId = actor.connect('destroy', () => {
+                if (actor._colorTweenId) {
+                    GLib.source_remove(actor._colorTweenId);
+                    actor._colorTweenId = undefined;
+                }
+            });
+        }
         let themeNode = actor.get_theme_node();
         let startColor = themeNode.get_foreground_color();
         let targetRgb = this._hexToRgb(targetHexColor);
@@ -594,23 +613,31 @@ export class NotificationManager {
             return;
         }
         actor._colorTweenId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 16, () => {
-            if (!actor || Object.keys(actor).length === 0)
-                return GLib.SOURCE_REMOVE;
-            let currentTime = GLib.get_monotonic_time();
-            let elapsedMs = (currentTime - startTime) / 1000;
-            let progress = Math.min(elapsedMs / durationMs, 1.0);
-            let ease = progress < 0.5
-                ? 2 * progress * progress
-                : 1 - Math.pow(-2 * progress + 2, 2) / 2;
-            let r = Math.round(startColor.red + (targetRgb.r - startColor.red) * ease);
-            let g = Math.round(startColor.green + (targetRgb.g - startColor.green) * ease);
-            let b = Math.round(startColor.blue + (targetRgb.b - startColor.blue) * ease);
-            actor.set_style(`color: ${this._rgbToHex(r, g, b)}; -st-icon-foreground-color: ${this._rgbToHex(r, g, b)};`);
-            if (progress >= 1.0) {
+            // Retained as a second line of defense in case some destruction
+            // path doesn't emit 'destroy' before this tick is already queued.
+            try {
+                if (!actor || Object.keys(actor).length === 0)
+                    return GLib.SOURCE_REMOVE;
+                let currentTime = GLib.get_monotonic_time();
+                let elapsedMs = (currentTime - startTime) / 1000;
+                let progress = Math.min(elapsedMs / durationMs, 1.0);
+                let ease = progress < 0.5
+                    ? 2 * progress * progress
+                    : 1 - Math.pow(-2 * progress + 2, 2) / 2;
+                let r = Math.round(startColor.red + (targetRgb.r - startColor.red) * ease);
+                let g = Math.round(startColor.green + (targetRgb.g - startColor.green) * ease);
+                let b = Math.round(startColor.blue + (targetRgb.b - startColor.blue) * ease);
+                actor.set_style(`color: ${this._rgbToHex(r, g, b)}; -st-icon-foreground-color: ${this._rgbToHex(r, g, b)};`);
+                if (progress >= 1.0) {
+                    actor._colorTweenId = undefined;
+                    return GLib.SOURCE_REMOVE;
+                }
+                return GLib.SOURCE_CONTINUE;
+            }
+            catch (e) {
                 actor._colorTweenId = undefined;
                 return GLib.SOURCE_REMOVE;
             }
-            return GLib.SOURCE_CONTINUE;
         });
     }
     _hasStyleClass(actor, className) {
