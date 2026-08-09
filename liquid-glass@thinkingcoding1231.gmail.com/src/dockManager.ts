@@ -378,6 +378,8 @@ export class DashManager {
 
   _syncGeometry() {
     if (!this.bgActor || !this.targetActor || !this.targetActor.mapped) return;
+    // detached during teardown - see uiManager._syncGeometry
+    if (!this.bgActor.get_stage()) return;
 
     let sourceActor = this.targetActor;
     let children = this.targetActor.get_children() as St.Widget[];

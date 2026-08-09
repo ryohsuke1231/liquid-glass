@@ -486,6 +486,16 @@ export class UIManager {
             }
             return;
         }
+        // A queued sync (timer / signal / later) can still fire after bgActor
+        // has been unparented or destroyed during teardown. Resizing or
+        // repositioning a detached actor queues a relayout on something that
+        // is no longer under the stage, which Mutter reports as
+        // "Spurious clutter_actor_allocate called for actor
+        //  liquid-glass-bg-actor ... which isn't a descendent of the stage!".
+        // get_stage() is null exactly in that state, so bail before touching
+        // geometry.
+        if (!this.bgActor.get_stage())
+            return;
         if (!this.bgActor.visible) {
             this.bgActor.show();
         }
