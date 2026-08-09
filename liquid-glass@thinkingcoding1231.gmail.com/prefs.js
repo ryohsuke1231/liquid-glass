@@ -231,6 +231,31 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
     this._addSliderRow(osdAdvanced, settings, 'osd-saturation', 'Saturation', 'Adjusts saturation', 0.0, 2.0, 0.01);
 
 
+    // --- Applications タブ ---
+    const appPage = new Adw.PreferencesPage({
+      title: 'Applications',
+      icon_name: 'applications-system-symbolic',
+    });
+    window.add(appPage);
+
+    const appGroup = new Adw.PreferencesGroup({
+      title: 'Application Window Settings',
+      description: 'Apply the liquid glass effect to application windows',
+    });
+    appPage.add(appGroup);
+
+    this._addSwitchRow(appGroup, settings, 'enable-application-glass', 'Enable Glass Effect', 'Apply to application windows');
+    // Switch to apply to all windows, bypassing the whitelist below.
+    this._addSwitchRow(appGroup, settings, 'application-glass-all-windows', 'Apply to All Windows', 'Apply to all application windows, bypassing the whitelist below');
+    this._addWhitelistEditor(appPage, settings, 'application-window-whitelist');
+    this._addColorRow(appGroup, settings, 'application-tint-color', 'Tint Color', 'Color of the glass tint');
+    this._addSliderRow(appGroup, settings, 'application-tint-strength', 'Tint Strength', 'Intensity of the color tint', 0.0, 1.0, 0.01);
+    const appBlurRow = this._addSliderRow(appGroup, settings, 'application-blur-radius', 'Blur Radius', '', 0, 30, 1);
+    blurRadiusRows.push(appBlurRow);
+    this._addSliderRow(appGroup, settings, 'application-corner-radius', 'Corner Radius', 'Roundness of the corners', 0, 200, 1);
+    this._addSliderRow(appGroup, settings, 'application-content-opacity', 'Window Content Opacity', 'Opacity of the window content layer, so the glass shows through it', 0.0, 1.0, 0.01);
+
+
     // --- Glass Properties タブ ---
     const shaderPage = new Adw.PreferencesPage({
       title: 'Glass',
@@ -396,6 +421,80 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
     this._addRowToContainer(container, row);
     settings.bind(key, row, 'value', Gio.SettingsBindFlags.DEFAULT);
     return row;
+  }
+
+  // アプリケーションウィンドウのホワイトリスト編集UI（WM_CLASS の追加/削除）
+  _addWhitelistEditor(page, settings, key) {
+    const listGroup = new Adw.PreferencesGroup({
+      title: 'Whitelisted Windows',
+      description: 'WM_CLASS values (run: xprop WM_CLASS on a window). Matching is case-insensitive. Ignored while "Apply to All Windows" is on.',
+    });
+    page.add(listGroup);
+
+    const listBox = new Gtk.ListBox({
+      selection_mode: Gtk.SelectionMode.NONE,
+    });
+    listBox.add_css_class('boxed-list');
+
+    const refreshList = () => {
+      let child = listBox.get_first_child();
+      while (child) {
+        const next = child.get_next_sibling();
+        listBox.remove(child);
+        child = next;
+      }
+
+      const items = settings.get_strv(key);
+      for (const item of items) {
+        const row = new Adw.ActionRow({ title: item });
+        const removeButton = new Gtk.Button({
+          icon_name: 'user-trash-symbolic',
+          valign: Gtk.Align.CENTER,
+          css_classes: ['flat', 'error'],
+        });
+        removeButton.connect('clicked', () => {
+          const current = settings.get_strv(key).filter((v) => v !== item);
+          settings.set_strv(key, current);
+          refreshList();
+        });
+        row.add_suffix(removeButton);
+        listBox.append(row);
+      }
+
+      if (items.length === 0) {
+        const emptyRow = new Adw.ActionRow({
+          title: 'No windows whitelisted',
+          subtitle: 'Add a WM_CLASS below to enable the effect on that application',
+        });
+        emptyRow.add_css_class('dim-label');
+        listBox.append(emptyRow);
+      }
+    };
+
+    settings.connect(`changed::${key}`, refreshList);
+    refreshList();
+
+    listGroup.add(listBox);
+
+    const entryGroup = new Adw.PreferencesGroup({ title: 'Add Window Class' });
+    page.add(entryGroup);
+
+    const entryRow = new Adw.EntryRow({
+      title: 'WM_CLASS',
+      show_apply_button: true,
+    });
+    entryRow.connect('apply', () => {
+      const value = entryRow.get_text().trim();
+      if (!value) return;
+
+      const normalized = value.toLowerCase();
+      const items = settings.get_strv(key);
+      if (!items.some((v) => v.toLowerCase() === normalized)) {
+        settings.set_strv(key, [...items, value.trim()]);
+      }
+      entryRow.set_text('');
+    });
+    entryGroup.add(entryRow);
   }
 
   // 色選択
