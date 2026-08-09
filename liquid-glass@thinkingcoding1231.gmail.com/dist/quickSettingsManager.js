@@ -448,6 +448,8 @@ export class QuickSettingsManager {
     // Full-screen FBO approach: bgActor covers the entire monitor, shader is told
     // where the menu lives within that FBO via setGlassGeometry().
     _syncGeometry() {
+        if (this.bgActor && !this.bgActor.get_stage())
+            return; // detached during teardown - see uiManager._syncGeometry
         if (!this.bgActor || !this.targetActor || !this.targetActor.mapped) {
             if (this.bgActor && this.bgActor.visible)
                 this.bgActor.hide();
