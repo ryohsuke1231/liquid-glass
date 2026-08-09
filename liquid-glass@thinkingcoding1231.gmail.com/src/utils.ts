@@ -11,6 +11,20 @@ import Cogl from 'gi://Cogl';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import St from 'gi://St';
 import Mtk from 'gi://Mtk';
+// @ts-ignore - no typings ship for the Shell's internal config module
+import * as Config from 'resource:///org/gnome/shell/misc/config.js';
+
+/**
+ * Major GNOME Shell version, used to pick between API signatures that changed
+ * across releases (see SelfExcludingSnapshotCapture._captureOnce). Falls back
+ * to 49 - the version this extension's metadata targets - if the version
+ * string is ever missing or unparseable, so a bad probe degrades to the
+ * newer/expected API rather than silently selecting a legacy path.
+ */
+const SHELL_MAJOR: number = (() => {
+  const v = parseInt(String((Config as any)?.PACKAGE_VERSION ?? '').split('.')[0], 10);
+  return Number.isFinite(v) ? v : 49;
+})();
 
 
 /**
@@ -124,11 +138,26 @@ export class SelfExcludingSnapshotCapture {
       const rect = new Mtk.Rectangle({ x: Math.round(x), y: Math.round(y), width: Math.round(w), height: Math.round(h) });
       const scale = 1; // TODO: honor per-monitor resource scale if this is ever used on HiDPI setups.
 
-      // Signature is (rect, scale, color_state, paint_flags); color_state
-      // of null uses the default color space. NO_CURSORS excludes the
-      // mouse pointer sprite from the snapshot (see class doc comment).
+      // clutter_stage_paint_to_content()'s signature is version dependent, so
+      // the argument list has to be chosen at runtime:
+      //
+      //   Mutter 48:  (rect, scale, paint_flags, **error)
+      //   Mutter 49+: (rect, scale, color_state, paint_flags, **error)
+      //
+      // (The trailing GError** is consumed by GJS and is invisible to JS
+      // callers.) Verified against the Debian mutter 48.7-0+deb13u1 source,
+      // clutter/clutter/clutter-stage.c.
+      //
+      // Passing the 49+ form on 48 trips GJS's "Too many arguments" path: the
+      // call still runs, but paint_flags never reaches the real function, so
+      // NO_CURSORS is silently lost and the mouse pointer gets baked into the
+      // snapshot. Passing the 48 form on 49+ would instead land paint_flags in
+      // the color_state slot. NO_CURSORS excludes the pointer sprite (see
+      // class doc comment).
       const paintFlags = (Clutter as any).PaintFlag?.NO_CURSORS ?? 0;
-      const content = (this._stage as any).paint_to_content?.(rect, scale, null, paintFlags);
+      const content = SHELL_MAJOR >= 49
+        ? (this._stage as any).paint_to_content?.(rect, scale, null, paintFlags)
+        : (this._stage as any).paint_to_content?.(rect, scale, paintFlags);
       if (content) this._content = content;
     } catch (e) {
     } finally {
