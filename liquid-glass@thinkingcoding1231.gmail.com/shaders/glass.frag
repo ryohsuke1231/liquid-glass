@@ -27,6 +27,14 @@ uniform float rim_power;
 uniform float rim_light_color_intensity;
 uniform float sheen_intensity;
 uniform float shininess;
+// Master on/off for the rim/specular/sheen "glass surface glint" group,
+// set via LiquidEffect.setSurfaceLightEnabled(). Defaults to 1.0 (on) when
+// unset, so surfaces that never call the setter (dock, menu, notification,
+// quick-settings, OSD) are unaffected. applicationManager.ts sets this to
+// 0.0 for application windows, which should read as plain "shadow + AO"
+// (both computed independently of this uniform, see main()) rather than a
+// dock-style glass glint hugging the window edge.
+uniform float surface_light_enabled;
 // [NEW] Inner edge ambient-occlusion darkening, independent of rim_width and
 // of the outer drop shadow (shadow_radius / shadow_intensity above). Lets
 // the user tune the "shadow under the glass" band on its own instead of it
@@ -572,7 +580,17 @@ void main() {
     // (edge0 = rim_width > edge1 = 0.0). Rewritten with increasing edges and
     // complemented, so it's well-defined on every driver instead of only
     // "happening to work" with the textbook smoothstep formula.
-    float edgeBand = 1.0 - smoothstep(0.0, rim_width, abs(d));
+    // [FIX 2] The above rewrite still hit smoothstep(0.0, rim_width, ...)
+    // with rim_width == 0.0, i.e. edge0 == edge1 — GLSL spec: "results are
+    // undefined if edge0 >= edge1", which includes equality. In practice
+    // this meant setting "Rim Width" to 0 in prefs did NOT reliably disable
+    // the rim highlight (observed: driver-dependent, could keep rendering
+    // a full-strength or garbage edgeBand instead of 0). Clamp the width
+    // used inside smoothstep away from 0, and separately force-zero the
+    // whole band with an explicit step() gate on the *unclamped* rim_width,
+    // so "0 truly means off" regardless of what the clamped smoothstep does.
+    float safeRimWidth = max(rim_width, 0.001);
+    float edgeBand = (1.0 - smoothstep(0.0, safeRimWidth, abs(d))) * step(0.0005, rim_width);
     
     float rimDot = 1.0 - max(dot(normal, viewDir), 0.0);
     float rimFresnel = pow(max(rimDot, 0.0), max(rim_power, 0.001));
@@ -619,7 +637,11 @@ void main() {
     // --- Light Blending Strategy ---
     
     // 1. Group all additive lighting components together
-    vec3 addedLight = vec3(specularLight + finalRimLight + idleRim) + sheenColor;
+    // Gated by surface_light_enabled: application windows turn this whole
+    // group off (see LiquidEffect.setSurfaceLightEnabled) so only the
+    // (already-independent) outer drop shadow and inner AO darkening in
+    // baseColor remain — no rim/specular/sheen glint hugging the edge.
+    vec3 addedLight = (vec3(specularLight + finalRimLight + idleRim) + sheenColor) * surface_light_enabled;
 
     // 2. Screen Blend Mode (A + B - A*B)
     // Instead of simply adding lights (which causes intense overexposure and blows out 
@@ -659,4 +681,5 @@ void main() {
     // Output with premultiplied alpha format, required by Clutter/Cogl pipeline.
     cogl_color_out = vec4(finalRgb, finalAlpha) * cogl_color_in;
 }
+
 

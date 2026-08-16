@@ -94,6 +94,9 @@ export class ApplicationManager {
         connectSetting('application-tint-strength', () => this._updateEffectParams());
         connectSetting('application-blur-radius', () => this._updateEffectParams());
         connectSetting('application-corner-radius', () => this._updateEffectParams());
+        connectSetting('application-brightness', () => this._updateEffectParams());
+        connectSetting('application-contrast', () => this._updateEffectParams());
+        connectSetting('application-saturation', () => this._updateEffectParams());
     }
     _getContentOpacity() {
         return this._settings.get_double('application-content-opacity');
@@ -102,9 +105,11 @@ export class ApplicationManager {
         const targetOpacity = Math.round(this._getContentOpacity() * 255);
         this._logger.log("[Liquid Glass] Updating window content opacities to: " + targetOpacity);
         for (let state of this._states.values()) {
-            let surfaceActor = state.windowActor.get_first_child();
-            if (surfaceActor) {
-                surfaceActor.opacity = targetOpacity;
+            // Use the cached reference, NOT windowActor.get_first_child() — after
+            // _setupWindow inserts baseActor below it, get_first_child() returns
+            // baseActor instead of the real surface, so it stopped being live-updated.
+            if (isActorValid(state.surfaceActor)) {
+                state.surfaceActor.opacity = targetOpacity;
             }
         }
     }
@@ -194,17 +199,33 @@ export class ApplicationManager {
         let tintStrength = this._settings.get_double('application-tint-strength');
         let blurRadius = this._settings.get_int('application-blur-radius');
         let cornerRadius = this._settings.get_double('application-corner-radius');
+        let brightness = this._settings.get_double('application-brightness');
+        let contrast = this._settings.get_double('application-contrast');
+        let saturation = this._settings.get_double('application-saturation');
         for (let state of this._states.values()) {
             state.effect.setTintColor(...this._hexToColorArray(tintColorStr));
             state.effect.setTintStrength(tintStrength);
             state.effect.setCornerRadius(cornerRadius);
             state.effect.setBlurRadius(blurRadius);
+            state.effect.setBrightness(brightness);
+            state.effect.setContrast(contrast);
+            state.effect.setSaturation(saturation);
             state.roundingEffect.setRadius(cornerRadius + CORNER_PADDING);
             state.roundingEffect.setInset(this._cornerOverlayInset());
         }
     }
+    // [FIX] This used to be SHADER_PADDING + CORNER_PADDING, and
+    // InverseCornerEffect used it to shrink its rounded-rect cut inward by the
+    // same amount on every side (straight edges included), instead of only
+    // pulling the 4 actual corners inward. That revealed a uniform band of
+    // raw, unblurred/unshadowed background all the way around the window —
+    // see InverseCornerEffect._updateShader() in utils.ts for the full
+    // explanation. The overlay now derives the window's true edge from this
+    // value alone (it equals SHADER_PADDING, the outward padding this actor
+    // has beyond the real window bounds), while CORNER_PADDING is applied
+    // only to the radius (below) so it exclusively affects the corner arcs.
     _cornerOverlayInset() {
-        return SHADER_PADDING + CORNER_PADDING;
+        return SHADER_PADDING;
     }
     _startFrameSync() {
         if (this._frameSyncId === 0)
@@ -263,6 +284,18 @@ export class ApplicationManager {
             visible: true,
         });
         windowActor.insert_child_above(bgActor, baseActor);
+        // Both actors sit entirely behind surfaceActor (the window's own content),
+        // which is what makes the glass show "through" it once its opacity is
+        // dialed down below. Clutter's own occlusion culling doesn't know that
+        // surfaceActor is translucent, though -- it treats it as opaque and, on
+        // a window's first paint (before anything else has forced a relayout),
+        // can conclude baseActor/bgActor are fully covered and skip painting
+        // them entirely. That produced a black background behind the window's
+        // translucent chrome until something else (resize, move, opening
+        // another window, defocusing) forced Clutter to reconsider. Explicitly
+        // inhibiting culling on both actors keeps them painting unconditionally.
+        baseActor.inhibit_culling();
+        bgActor.inhibit_culling();
         let clipBox = new St.Widget({
             clip_to_allocation: true,
             reactive: false,
@@ -295,12 +328,29 @@ export class ApplicationManager {
         let tintStrength = this._settings.get_double('application-tint-strength');
         let cornerRadius = this._settings.get_double('application-corner-radius');
         let blurRadius = this._settings.get_int('application-blur-radius');
+        let brightness = this._settings.get_double('application-brightness');
+        let contrast = this._settings.get_double('application-contrast');
+        let saturation = this._settings.get_double('application-saturation');
         effect.setPadding(SHADER_PADDING);
         effect.setTintColor(...this._hexToColorArray(tintColorStr));
         effect.setTintStrength(tintStrength);
         effect.setCornerRadius(cornerRadius);
         effect.setBlurRadius(blurRadius);
+        effect.setBrightness(brightness);
+        effect.setContrast(contrast);
+        effect.setSaturation(saturation);
         effect.setIsDock(false);
+        // Application windows should read as plain "drop shadow + AO" at the
+        // edge (like dockManager's shadow treatment), not the dock/menu-style
+        // rim + specular + sheen glass glint — that glint sits right at the
+        // window's true edge and, combined with the window's own (often
+        // non-opaque) content, reads as a distracting bright frame around the
+        // window. Blur/tint/refraction are unaffected; only this glint group
+        // is turned off, and only for this per-window effect instance — the
+        // shared glass-rim-*/glass-sheen-*/glass-specular-* settings still
+        // apply normally to the dock, menu, notification, quick-settings and
+        // OSD glass.
+        effect.setSurfaceLightEnabled(false);
         // Keep the drop-shadow within the small padded border around the window,
         // rather than the huge margin dockManager uses for its full-screen FBO.
         effect.setShadowMaxRadius(SHADER_PADDING);
@@ -320,6 +370,7 @@ export class ApplicationManager {
         windowActor.add_child(cornerOverlay);
         let state = {
             windowActor,
+            surfaceActor,
             bgActor,
             clipBox,
             bgClone,
@@ -538,11 +589,13 @@ export class ApplicationManager {
         if (!state)
             return;
         // Restore the original opacity of the window's own content layer.
-        if (state.windowActor) {
+        // Uses the cached surfaceActor reference (see WindowState) rather than
+        // windowActor.get_first_child(), which no longer points at the real
+        // surface once baseActor has been inserted below it.
+        if (state.surfaceActor) {
             try {
-                let surfaceActor = state.windowActor.get_first_child();
-                if (surfaceActor) {
-                    surfaceActor.opacity = state.originalOpacity;
+                if (isActorValid(state.surfaceActor)) {
+                    state.surfaceActor.opacity = state.originalOpacity;
                 }
             }
             catch (e) {

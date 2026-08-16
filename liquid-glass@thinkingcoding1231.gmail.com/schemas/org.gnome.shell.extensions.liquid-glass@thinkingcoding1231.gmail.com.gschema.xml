@@ -356,6 +356,21 @@
       <summary>Window content opacity</summary>
       <description>Opacity of the window content layer to let the glass effect show through (0.0 to 1.0).</description>
     </key>
+    <key name="application-brightness" type="d">
+      <default>1.0</default>
+      <summary>Brightness</summary>
+      <description>Adjusts the brightness of the glass effect behind application windows.</description>
+    </key>
+    <key name="application-contrast" type="d">
+      <default>1.0</default>
+      <summary>Contrast</summary>
+      <description>Adjusts the contrast of the glass effect behind application windows.</description>
+    </key>
+    <key name="application-saturation" type="d">
+      <default>1.0</default>
+      <summary>Saturation</summary>
+      <description>Adjusts the saturation of the glass effect behind application windows.</description>
+    </key>
 
     <key name="blur-method" type="i">
       <default>0</default>

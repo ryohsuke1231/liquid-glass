@@ -1043,9 +1043,39 @@ export const InverseCornerEffect = GObject.registerClass(
           vec2 st = cogl_tex_coord_in[0].st;
           vec2 resolution = vec2(width, height);
           vec2 p = (st * resolution) - (resolution * 0.5);
-          vec2 innerHalf = max((resolution - vec2(inset * 2.0)) * 0.5, vec2(1.0));
 
-          float d = sdRoundRect(p, innerHalf, radius);
+          // [FIX] Box half-size at the window's TRUE edge, not shrunk by
+          // "inset" on every side. This overlay's actor is padded by
+          // SHADER_PADDING beyond the real window bounds on all sides, and
+          // "inset" here is exactly that padding — so windowHalf lands
+          // precisely on the real window edge.
+          //
+          // Previously this used (resolution - inset*2)*0.5 with
+          // inset = SHADER_PADDING + CORNER_PADDING, which shrank the box by
+          // the SAME amount on every side, not just near the corners. Per
+          // sdRoundRect's construction, its straight-edge (non-corner)
+          // zero-crossing sits exactly at the box half-size regardless of
+          // "radius" — only points within "radius" of an actual corner get
+          // pulled inward. So shrinking the box itself (rather than only
+          // widening "radius") revealed a uniform band along the ENTIRE
+          // perimeter — straight edges included — instead of just the 4
+          // corners. That band unconditionally painted this overlay's raw,
+          // unblurred/untinted/un-shadowed source at full alpha, erasing the
+          // drop shadow right next to the window on every edge (reported as
+          // an unnatural halo/"frame" around the window), and — since its
+          // width is a fixed pixel count independent of actor scale — became
+          // sharply more visible whenever GNOME Shell's open/close animation
+          // scaled the window down (the same fixed-pixel band read as a much
+          // larger fraction of the shrunk window).
+          //
+          // "radius" (cornerRadius + CORNER_PADDING, set by the caller) is
+          // intentionally a couple pixels larger than the glass shape's own
+          // corner_radius so the cut safely over-reveals past the glass's
+          // own antialiased corner — but that over-cut should only pull the
+          // 4 corners inward, not shift the straight edges too.
+          vec2 windowHalf = max(resolution * 0.5 - vec2(inset), vec2(1.0));
+
+          float d = sdRoundRect(p, windowHalf, radius);
 
           // Sharper transition for the corner cut to avoid dark fringes
           float alpha = smoothstep(-0.5, 0.5, d);

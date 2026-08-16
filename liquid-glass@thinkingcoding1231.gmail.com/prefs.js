@@ -255,6 +255,17 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
     this._addSliderRow(appGroup, settings, 'application-corner-radius', 'Corner Radius', 'Roundness of the corners', 0, 200, 1);
     this._addSliderRow(appGroup, settings, 'application-content-opacity', 'Window Content Opacity', 'Opacity of the window content layer, so the glass shows through it', 0.0, 1.0, 0.01);
 
+    // Advancedグループ (開閉可能)
+    const appAdvanced = new Adw.ExpanderRow({
+      title: 'Advanced',
+      subtitle: 'Color adjustments (Brightness, Contrast, Saturation)'
+    });
+    appGroup.add(appAdvanced);
+
+    this._addSliderRow(appAdvanced, settings, 'application-brightness', 'Brightness', 'Adjusts brightness', 0.5, 1.5, 0.01);
+    this._addSliderRow(appAdvanced, settings, 'application-contrast', 'Contrast', 'Adjusts contrast', 0.5, 1.5, 0.01);
+    this._addSliderRow(appAdvanced, settings, 'application-saturation', 'Saturation', 'Adjusts saturation', 0.0, 2.0, 0.01);
+
 
     // --- Glass Properties タブ ---
     const shaderPage = new Adw.PreferencesPage({

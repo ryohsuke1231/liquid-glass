@@ -51,6 +51,7 @@ import GObject from 'gi://GObject';
 import Clutter from 'gi://Clutter';
 import Cogl from 'gi://Cogl';
 import Gio from 'gi://Gio';
+import GLib from 'gi://GLib';
 // ─── Main class ───────────────────────────────────────────────────────────────
 export const LiquidEffect = GObject.registerClass({
     GTypeName: 'LiquidGlassEffect',
@@ -96,6 +97,10 @@ export const LiquidEffect = GObject.registerClass({
         this._upsampleSource = null;
         this._glassSource = null;
         this._shadersLoaded = false;
+        this._diagPaintCount = 0;
+        this._diagCompositedPaintCount = 0;
+        this._diagLastPaintLogAt = 0;
+        this._diagFirstPaintLogged = false;
         this._extensionPath = extensionPath;
         this._settings = settings;
         this._logger = logger;
@@ -123,6 +128,15 @@ export const LiquidEffect = GObject.registerClass({
         // default only matters before the first sync.
         this._setFloat('shadow_max_radius', 180.0);
         this._setFloat('isDock', 0.0);
+        // Rim/specular/sheen "glass surface glint" terms, gated together by
+        // setSurfaceLightEnabled(). Defaults to enabled (1.0) so dock/menu/
+        // notification/quick-settings/osd — which never call the setter — keep
+        // their existing look unchanged. applicationManager.ts turns this off
+        // for application windows, which should only show the outer drop
+        // shadow and the inner AO darkening (both already independent of this
+        // uniform — see the addedLight gating in glass.frag), not the
+        // dock-style rim/specular/sheen highlight.
+        this._setFloat('surface_light_enabled', 1.0);
         // Full-screen FBO mode: lets the shader know where the dock sits.
         this._setFloat('dock_x', 0.0);
         this._setFloat('dock_y', 0.0);
@@ -167,11 +181,25 @@ export const LiquidEffect = GObject.registerClass({
     * Load all shader files asynchronously.
     */
     async _loadAllShadersAsync() {
+        // [DIAG] Black-background investigation: each LiquidEffect instance loads
+        // its own copy of the 3 shader files independently (no cross-instance
+        // cache), so a brand-new window's glass literally cannot render until
+        // this completes. Log start/duration to see how long this actually takes
+        // relative to the window's own open animation, and to correlate with the
+        // applicationManager diag logs (search for "[Liquid Glass][diag]").
+        const diagStart = GLib.get_monotonic_time();
+        this._logger?.log(`[Liquid Glass][diag] LiquidEffect: starting async shader load at t=${diagStart}us ` +
+            `(extensionPath=${this._extensionPath})`);
         try {
             this._downsampleSource = await this._readFileAsync(`${this._extensionPath}/shaders/downsample.frag`);
             this._upsampleSource = await this._readFileAsync(`${this._extensionPath}/shaders/upsample.frag`);
             this._glassSource = await this._readFileAsync(`${this._extensionPath}/shaders/glass.frag`);
             this._shadersLoaded = true;
+            const elapsedMs = (GLib.get_monotonic_time() - diagStart) / 1000;
+            this._logger?.log(`[Liquid Glass][diag] LiquidEffect: async shader load finished in ${elapsedMs.toFixed(1)}ms, ` +
+                `calling queue_repaint() now. If the on-screen black-background bug is still visible ` +
+                `after this point, the shader load itself is not the (sole) cause -- the issue is in ` +
+                `getting this repaint request actually flushed to the display.`);
             // 読み込み完了後に再描画をリクエストし、パイプラインを初期化させる
             this.queue_repaint();
         }
@@ -656,6 +684,36 @@ export const LiquidEffect = GObject.registerClass({
      * @param paintContext Current paint context, holding a reference to the on-screen framebuffer
      */
     vfunc_paint_target(_paintNode, paintContext) {
+        // ── [DIAG] Black-background investigation ──────────────────────────────
+        // If Clutter culls/skips this actor entirely (e.g. because it decides
+        // it's fully occluded by the window content painted above it), this
+        // function never runs at all -- which would show up here as a call count
+        // that never advances past whatever it was when the window opened, even
+        // though _frameTick keeps calling set_size()/queue_redraw() at 60fps.
+        this._diagPaintCount++;
+        {
+            const now = GLib.get_monotonic_time();
+            const actorTitle = (() => {
+                try {
+                    const a = this.get_actor();
+                    return a?.get_meta_window?.()?.get_title?.() ?? a?.get_name?.() ?? '?';
+                }
+                catch (e) {
+                    return '?';
+                }
+            })();
+            if (!this._diagFirstPaintLogged) {
+                this._diagFirstPaintLogged = true;
+                this._diagLastPaintLogAt = now;
+                this._logger?.log(`[Liquid Glass][diag] LiquidEffect.vfunc_paint_target: FIRST call for "${actorTitle}" ` +
+                    `(paintCount=${this._diagPaintCount}, shadersLoaded=${this._shadersLoaded})`);
+            }
+            else if (now - this._diagLastPaintLogAt > 2000 * 1000) {
+                this._logger?.log(`[Liquid Glass][diag] LiquidEffect.vfunc_paint_target: heartbeat for "${actorTitle}", ` +
+                    `paintCount=${this._diagPaintCount}, compositedCount=${this._diagCompositedPaintCount}`);
+                this._diagLastPaintLogAt = now;
+            }
+        }
         // ── Wait for async shaders ──────────────────────────────────────────────
         if (!this._shadersLoaded) {
             super.vfunc_paint_target(_paintNode, paintContext);
@@ -819,6 +877,12 @@ export const LiquidEffect = GObject.registerClass({
         const screenFb = paintContext.get_framebuffer();
         screenFb.draw_textured_rectangle(this._compositePipeline, 0, 0, effectiveW, effectiveH, 0, 0, 1, 1);
         compFb.pop_matrix();
+        // [DIAG] This is the actual "real glass" draw path (not a super.vfunc_paint_target()
+        // fallback). If the black-background bug is visible on screen while this counter
+        // keeps advancing at 60fps, the composite pass itself is running fine and drawing
+        // into the on-screen framebuffer every frame -- the bug is not about painting
+        // being skipped/culled or about stale content, it's about what's being composited.
+        this._diagCompositedPaintCount++;
     }
     // ─── Uniform helpers ─────────────────────────────────────────────────────────
     /**
@@ -954,6 +1018,20 @@ export const LiquidEffect = GObject.registerClass({
     }
     setIsDock(isDock) {
         this._setFloat('isDock', isDock ? 1.0 : 0.0);
+    }
+    /**
+     * Enables/disables the rim light + specular + sheen "glass surface
+     * glint" terms as a group (see addedLight in glass.frag). The outer
+     * drop shadow and inner AO edge-darkening are unaffected either way —
+     * they're computed independently of this uniform. Used by
+     * applicationManager.ts to give application windows a plainer
+     * "shadow + AO only" edge instead of the dock/menu-style glass glint,
+     * without touching the shared rim/specular/sheen settings that dock,
+     * menu, notification, quick-settings and OSD still use.
+     */
+    setSurfaceLightEnabled(enabled) {
+        this._setFloat('surface_light_enabled', enabled ? 1.0 : 0.0);
+        this.queue_repaint();
     }
     setPadding(pad) {
         this._setFloat('padding', pad);
