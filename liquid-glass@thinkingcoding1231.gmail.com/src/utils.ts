@@ -8,6 +8,7 @@
 import GObject from 'gi://GObject';
 import Clutter from 'gi://Clutter';
 import Cogl from 'gi://Cogl';
+import Meta from 'gi://Meta';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import St from 'gi://St';
 import Mtk from 'gi://Mtk';
@@ -221,6 +222,81 @@ export const UnpickableWidget = GObject.registerClass(
     }
   }
 );
+
+/**
+ * Returns an actor that renders just the wallpaper — the Meta.BackgroundActor
+ * children of `Main.layoutManager._backgroundGroup` — positioned exactly as a
+ * whole-group clone would be. Returns null if the group or its background
+ * actors are unavailable, in which case callers fall back to cloning the group.
+ *
+ * WHY NOT clone `_backgroundGroup` directly: extensions such as PaperWM
+ * reparent their window-clone trees into it (PaperWM's tiling.js does
+ * `backgroundGroup.add_child(spaceContainer)`, and `spaceContainer` holds a
+ * `Clutter.Clone` of every window actor). Cloning the group then closes an
+ * infinite paint-recursion once a Liquid Glass window is visible:
+ *
+ *     bgClone → _backgroundGroup → PaperWM window clone → window actor →
+ *     glass chrome (cornerOverlay/baseActor) → bgClone → ...
+ *
+ * Each cycle re-paints the same actors forever → stack overflow / SEGV.
+ * Sampling only the Meta.BackgroundActor children keeps the wallpaper while
+ * excluding every extension-added subtree, so the loop can never close.
+ */
+function _wallpaperBackgroundActors(): Clutter.Actor[] {
+  const bgGroup = Main.layoutManager._backgroundGroup as unknown as Clutter.Actor | null;
+  if (!bgGroup) return [];
+  try {
+    return (bgGroup.get_children() ?? []).filter(c => c instanceof Meta.BackgroundActor);
+  } catch (_) {
+    return [];
+  }
+}
+
+function _rebuildWallpaperSamplerClones(sampler: Clutter.Actor): void {
+  const wallpapers = _wallpaperBackgroundActors();
+  (sampler as any)._wallpaperSources = wallpapers;
+  try {
+    sampler.remove_all_children();
+  } catch (_) {
+    return;
+  }
+  for (const wp of wallpapers) {
+    const clone = new UnpickableClone({ source: wp });
+    try { clone.set_size(wp.get_width(), wp.get_height()); } catch (_) { }
+    try { sampler.add_child(clone); } catch (_) { }
+  }
+}
+
+/**
+ * Creates a wallpaper sampler sized like the background group. The returned
+ * actor is a plain container (not a Clutter.Clone), so callers keep using
+ * set_position()/set_size() exactly as they did with the old whole-group clone.
+ */
+export function createWallpaperSampler(): Clutter.Actor | null {
+  const bgGroup = Main.layoutManager._backgroundGroup as unknown as Clutter.Actor | null;
+  if (!bgGroup) return null;
+  if (_wallpaperBackgroundActors().length === 0) return null;
+
+  const sampler = new UnpickableActor();
+  (sampler as any)._isWallpaperSampler = true;
+  try { sampler.set_size(bgGroup.get_width(), bgGroup.get_height()); } catch (_) { }
+  _rebuildWallpaperSamplerClones(sampler);
+  return sampler;
+}
+
+/**
+ * Rebuilds a wallpaper sampler's clones in place if the set of wallpaper
+ * actors changed (wallpaper changes swap Meta.BackgroundActor instances).
+ * Cheap: compares the stored source list each call; rebuilds only on change.
+ * No-op for actors that were not created by createWallpaperSampler().
+ */
+export function refreshWallpaperSampler(sampler: Clutter.Actor | null): void {
+  if (!sampler || !(sampler as any)._isWallpaperSampler) return;
+  const cur = (sampler as any)._wallpaperSources as Clutter.Actor[] | null;
+  const wallpapers = _wallpaperBackgroundActors();
+  if (cur && cur.length === wallpapers.length && cur.every((a, i) => a === wallpapers[i])) return;
+  _rebuildWallpaperSamplerClones(sampler);
+}
 
 /**
  * Paints a captured texture stretched to fill its own allocation, without
@@ -856,7 +932,7 @@ export class UILayerSampler {
 export class WindowCloneManager {
   private windowClonesContainer: Clutter.Actor | null = null;
   private _windowClones: Map<Clutter.Actor, Clutter.Clone>;
-  private bgClone: Clutter.Clone | null = null;
+  private bgClone: Clutter.Actor | null = null;
 
   private container: Clutter.Actor | null = null;
   private cloneContainer: Clutter.Actor | null = null;
@@ -865,7 +941,10 @@ export class WindowCloneManager {
     this.container = container;
     this._windowClones = new Map();
 
-    this.bgClone = new UnpickableClone({ source: Main.layoutManager._backgroundGroup });
+    // Wallpaper-only sampler: cloning _backgroundGroup as a whole is unsafe
+    // with PaperWM active (PaperWM nests window clones inside it, which
+    // closes an infinite paint-recursion through visible glass chrome).
+    this.bgClone = createWallpaperSampler() ?? new UnpickableClone({ source: Main.layoutManager._backgroundGroup });
     this.bgClone.connect('destroy', () => { this.bgClone = null; });
 
     this.windowClonesContainer = new UnpickableActor();
@@ -893,7 +972,7 @@ export class WindowCloneManager {
     if (this.bgClone) { this.bgClone.destroy(); }
     if (this.windowClonesContainer) { this.windowClonesContainer.destroy(); }
 
-    this.bgClone = new UnpickableClone({ source: Main.layoutManager._backgroundGroup });
+    this.bgClone = createWallpaperSampler() ?? new UnpickableClone({ source: Main.layoutManager._backgroundGroup });
     this.bgClone.connect('destroy', () => { this.bgClone = null; });
 
     this.windowClonesContainer = new UnpickableActor();

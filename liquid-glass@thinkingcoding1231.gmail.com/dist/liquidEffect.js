@@ -101,6 +101,8 @@ export const LiquidEffect = GObject.registerClass({
         this._diagCompositedPaintCount = 0;
         this._diagLastPaintLogAt = 0;
         this._diagFirstPaintLogged = false;
+        this._lastPaintSig = null;
+        this._lastCropLog = null;
         this._extensionPath = extensionPath;
         this._settings = settings;
         this._logger = logger;
@@ -267,6 +269,9 @@ export const LiquidEffect = GObject.registerClass({
         this._loadCompositeShader();
         // Apply any uniforms that were buffered before the pipeline existed.
         this._applyPendingUniforms();
+        this._logger?.log(`[Liquid Glass][Debug] _initPipelines: pipelines compiled ` +
+            `(composite=${!!this._compositePipeline}, down=${!!this._downsamplePipeline}, ` +
+            `up=${!!this._upsamplePipeline}, gaussian=${!!this._gaussianHPipeline && !!this._gaussianVPipeline})`);
     }
     /**
      * Shared helper: sets bilinear filtering and clamp-to-edge wrapping on
@@ -455,6 +460,9 @@ export const LiquidEffect = GObject.registerClass({
         }
         this._poolWidth = w;
         this._poolHeight = h;
+        this._logger?.log(`[Liquid Glass][Debug] _buildTexturePool: ${this.PASS_COUNT} passes built for ${w}x${h} ` +
+            `(top level ${this._blurTextures[0]?.get_width?.() ?? '?'}x${this._blurTextures[0]?.get_height?.() ?? '?'}, ` +
+            `textures=${this._blurTextures.length}, gaussianTemp=${this._gaussianTempTextures.length})`);
     }
     /**
      * Runs the Dual Kawase blur.
@@ -593,6 +601,11 @@ export const LiquidEffect = GObject.registerClass({
      * one if the size hasn't changed.
      */
     _ensureCropTarget(ctx, w, h) {
+        // Never create a 0-size texture: Cogl asserts width/height >= 1 and returns
+        // NULL otherwise (cogl_texture_2d_new_with_size: assertion 'width >= 1'
+        // failed), and the resulting NULL texture would crash Offscreen.new_with_texture.
+        w = Math.max(Math.round(w), 1);
+        h = Math.max(Math.round(h), 1);
         if (this._cropTexture && this._cropFbo &&
             this._cropPoolW === w && this._cropPoolH === h) {
             return true;
@@ -610,6 +623,7 @@ export const LiquidEffect = GObject.registerClass({
             this._cropFbo = fbo;
             this._cropPoolW = w;
             this._cropPoolH = h;
+            this._logger?.log(`[Liquid Glass][Debug] _ensureCropTarget: created crop texture ${w}x${h}`);
             return true;
         }
         catch (e) {
@@ -782,6 +796,22 @@ export const LiquidEffect = GObject.registerClass({
             if (Number.isFinite(ah) && ah > 0)
                 allocH = Math.round(ah);
         }
+        // [Debug] Log the per-frame paint geometry, but only when it changes so
+        // journalctl isn't flooded at 60fps.
+        {
+            let actorName = '?';
+            try {
+                actorName = (actor?.get_name?.() ?? actor?.constructor?.name ?? '?');
+            }
+            catch (e) { }
+            const paintSig = `src=${srcW}x${srcH} alloc=${allocW}x${allocH} ` +
+                `cropPool=${this._cropPoolW}x${this._cropPoolH} pool=${this._poolWidth}x${this._poolHeight} ` +
+                `blurMethod=${this._blurMethod} passCount=${this.PASS_COUNT} shadersLoaded=${this._shadersLoaded}`;
+            if (this._lastPaintSig !== paintSig) {
+                this._lastPaintSig = paintSig;
+                this._logger?.log(`[Liquid Glass][Debug] vfunc_paint_target["${actorName}"]: ${paintSig}`);
+            }
+        }
         // ── Only run the crop pass when padding is actually present ─────────────
         // (When sizes match, _cropSourceTexture just returns srcTex unchanged,
         //  so the normal-case overhead is a single size comparison.)
@@ -800,6 +830,11 @@ export const LiquidEffect = GObject.registerClass({
                 if (effectiveTex !== srcTex) {
                     effectiveW = allocW;
                     effectiveH = allocH;
+                    const cropLog = `${srcW}x${srcH}->${allocW}x${allocH}`;
+                    if (this._lastCropLog !== cropLog) {
+                        this._lastCropLog = cropLog;
+                        this._logger?.log(`[Liquid Glass][Debug] crop applied: ${cropLog}`);
+                    }
                 }
             }
             catch (e) {

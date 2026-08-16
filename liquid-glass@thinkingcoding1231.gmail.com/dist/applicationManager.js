@@ -5,7 +5,7 @@ import Meta from 'gi://Meta';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { LiquidEffect } from './liquidEffect.js';
 import GLib from 'gi://GLib';
-import { UnpickableClone, UnpickableActor, InverseCornerEffect, getWindowActors, isActorValid } from './utils.js';
+import { UnpickableClone, UnpickableActor, InverseCornerEffect, getWindowActors, isActorValid, createWallpaperSampler, refreshWallpaperSampler } from './utils.js';
 // Padding to allow the shader to draw effects (like refraction and blur) outside the actor's strict bounds.
 const SHADER_PADDING = 10;
 // Inward padding for corner rounding
@@ -227,6 +227,33 @@ export class ApplicationManager {
     _cornerOverlayInset() {
         return SHADER_PADDING;
     }
+    // ─── [Debug] helpers ──────────────────────────────────────────────────────
+    _winTitle(state) {
+        try {
+            const meta = state.windowActor?.get_meta_window?.();
+            return meta?.get_title?.() ?? state.windowActor?.get_name?.() ?? '?';
+        }
+        catch (e) {
+            return '?';
+        }
+    }
+    _winTitleOfActor(windowActor) {
+        try {
+            const meta = windowActor?.get_meta_window?.();
+            return meta?.get_title?.() ?? windowActor?.get_name?.() ?? '?';
+        }
+        catch (e) {
+            return '?';
+        }
+    }
+    // _syncState runs every frame; log only when the outcome changes so
+    // journalctl isn't flooded at 60fps.
+    _debugSync(state, msg) {
+        if (state._lastSyncLog === msg)
+            return;
+        state._lastSyncLog = msg;
+        this._logger.log(`[Liquid Glass][Debug] _syncState["${this._winTitle(state)}"]: ${msg}`);
+    }
     _startFrameSync() {
         if (this._frameSyncId === 0)
             this._frameTick();
@@ -266,22 +293,25 @@ export class ApplicationManager {
         let parent = windowActor.get_parent();
         if (!parent)
             return;
+        this._logger.log(`[Liquid Glass][Debug] _setupWindow: setting up glass for window "${this._winTitleOfActor(windowActor)}", ` +
+            `surface="${surfaceActor.get_name?.() ?? surfaceActor.constructor.name}", parent="${parent.get_name?.() ?? parent.constructor.name}"`);
         // Store the surface's original opacity and dial it down so the glass behind
         // it is actually visible; restored in _cleanupState when the effect is removed.
         let originalOpacity = surfaceActor.opacity;
         surfaceActor.opacity = Math.round(this._getContentOpacity() * 255);
+        this._logger.log(`[Liquid Glass][Debug] _setupWindow: surface opacity ${originalOpacity} -> ${surfaceActor.opacity}`);
         let baseActor = new St.Widget({
             style_class: 'liquid-glass-base-actor',
             reactive: false,
             clip_to_allocation: true,
-            visible: true,
+            visible: false,
         });
         windowActor.insert_child_below(baseActor, surfaceActor);
         let bgActor = new St.Widget({
             style_class: 'liquid-glass-bg-actor',
             reactive: false,
             clip_to_allocation: false,
-            visible: true,
+            visible: false,
         });
         windowActor.insert_child_above(bgActor, baseActor);
         // Both actors sit entirely behind surfaceActor (the window's own content),
@@ -303,18 +333,18 @@ export class ApplicationManager {
         bgActor.add_child(clipBox);
         // Size the clones to cover the full monitor so the wallpaper fills correctly.
         let monitor = Main.layoutManager.primaryMonitor;
-        let baseClone = new UnpickableClone({
-            source: Main.layoutManager._backgroundGroup,
-        });
+        // Wallpaper-only sampler: cloning _backgroundGroup as a whole is unsafe
+        // with PaperWM active (PaperWM nests its window clones inside it, which
+        // closes an infinite paint-recursion through the glass chrome →
+        // _backgroundGroup → PaperWM window clone → window chrome → ...).
+        let baseClone = createWallpaperSampler() ?? new UnpickableClone({ source: Main.layoutManager._backgroundGroup });
         if (monitor) {
             baseClone.set_size(monitor.width, monitor.height);
         }
         baseActor.add_child(baseClone);
         let baseWindowsContainer = new Clutter.Actor();
         baseActor.add_child(baseWindowsContainer);
-        let bgClone = new UnpickableClone({
-            source: Main.layoutManager._backgroundGroup,
-        });
+        let bgClone = createWallpaperSampler() ?? new UnpickableClone({ source: Main.layoutManager._backgroundGroup });
         if (monitor) {
             bgClone.set_size(monitor.width, monitor.height);
         }
@@ -360,6 +390,7 @@ export class ApplicationManager {
         let cornerOverlay = new UnpickableActor({
             clip_to_allocation: true,
             reactive: false,
+            visible: false,
         });
         let cornerOverlayClone = new UnpickableClone({ source: baseActor });
         cornerOverlay.add_child(cornerOverlayClone);
@@ -388,6 +419,9 @@ export class ApplicationManager {
             originalOpacity,
         };
         this._states.set(windowActor, state);
+        this._logger.log(`[Liquid Glass][Debug] _setupWindow: state registered for "${this._winTitleOfActor(windowActor)}", ` +
+            `bgActor="${state.bgActor.get_name?.() ?? state.bgActor.constructor.name}", ` +
+            `baseActor="${state.baseActor.get_name?.() ?? state.baseActor.constructor.name}"`);
         this._rebuildWindowClones(state);
         // Immediate sync connections for resize/move using allocation property
         state.signals.push({
@@ -413,6 +447,7 @@ export class ApplicationManager {
         // Use a later to ensure the initial sync happens after actors are properly added to stage
         global.compositor.get_laters().add(Meta.LaterType.IDLE, () => {
             if (this._states.has(windowActor)) {
+                this._logger.log(`[Liquid Glass][Debug] _setupWindow: IDLE initial sync for "${this._winTitle(state)}"`);
                 this._syncState(state);
             }
             return false;
@@ -453,26 +488,39 @@ export class ApplicationManager {
             state.baseWindowsContainer.add_child(baseClone);
             state.baseClones.set(actor, baseClone);
         }
+        this._logger.log(`[Liquid Glass][Debug] _rebuildWindowClones["${this._winTitle(state)}"]: ` +
+            `${state.clones.size} blurred clones, ${state.baseClones.size} base clones`);
     }
     _syncState(state) {
         let actor = state.windowActor;
         if (!actor || !actor.get_stage() || !actor.mapped) {
+            this._debugSync(state, 'window not mapped / off-stage; glass hidden');
             state.bgActor.visible = false;
             state.baseActor.visible = false;
             state.cornerOverlay.visible = false;
             return;
         }
         if (!actor.has_allocation()) {
+            this._debugSync(state, 'no allocation yet; glass hidden');
+            state.bgActor.visible = false;
+            state.baseActor.visible = false;
+            state.cornerOverlay.visible = false;
             return;
         }
         const metaWin = actor.get_meta_window();
-        if (!metaWin)
+        if (!metaWin) {
+            this._debugSync(state, 'no meta-window; glass hidden');
+            state.bgActor.visible = false;
+            state.baseActor.visible = false;
+            state.cornerOverlay.visible = false;
             return;
+        }
         // PERFORMANCE: Only sync windows on the current active workspace.
         const workspaceManager = global.workspace_manager;
         const activeWorkspace = workspaceManager.get_active_workspace();
         const winWorkspace = metaWin.get_workspace();
         if (winWorkspace && winWorkspace !== activeWorkspace) {
+            this._debugSync(state, 'not on active workspace; glass hidden');
             if (state.bgActor.visible)
                 state.bgActor.visible = false;
             if (state.baseActor.visible)
@@ -484,6 +532,7 @@ export class ApplicationManager {
         const rect = metaWin.get_frame_rect();
         const bufferRect = metaWin.get_buffer_rect();
         if (!rect || !bufferRect || rect.width <= 0 || rect.height <= 0) {
+            this._debugSync(state, `invalid frame rect (${rect?.x},${rect?.y} ${rect?.width}x${rect?.height}); glass hidden`);
             if (state.bgActor.visible)
                 state.bgActor.visible = false;
             if (state.baseActor.visible)
@@ -492,10 +541,19 @@ export class ApplicationManager {
                 state.cornerOverlay.visible = false;
             return;
         }
+        this._debugSync(state, `showing glass: frame=(${rect.x},${rect.y} ${rect.width}x${rect.height}) ` +
+            `buffer=(${bufferRect.x},${bufferRect.y} ${bufferRect.width}x${bufferRect.height}) ` +
+            `bg=${rect.width + (SHADER_PADDING * 2)}x${rect.height + (SHADER_PADDING * 2)} ` +
+            `base=${rect.width + (SHADER_PADDING * 2)}x${rect.height + (SHADER_PADDING * 2)} ` +
+            `clones=${state.clones.size}/${state.baseClones.size} surfaceOpacity=${state.surfaceActor.opacity}`);
         if (!state.bgActor.visible)
             state.bgActor.visible = true;
         if (!state.baseActor.visible)
             state.baseActor.visible = true;
+        // Rebuild the wallpaper samplers in place if the wallpaper actors were
+        // swapped (wallpaper/monitor changes). Cheap identity check per frame.
+        refreshWallpaperSampler(state.bgClone);
+        refreshWallpaperSampler(state.baseClone);
         // Local offset of the visible frame within the window actor's full buffer.
         const frameLocalX = rect.x - bufferRect.x;
         const frameLocalY = rect.y - bufferRect.y;
@@ -588,6 +646,8 @@ export class ApplicationManager {
     _cleanupState(state) {
         if (!state)
             return;
+        this._logger.log(`[Liquid Glass][Debug] _cleanupState["${this._winTitle(state)}"]: removing glass, ` +
+            `restoring surface opacity ${state.surfaceActor?.opacity} -> ${state.originalOpacity}`);
         // Restore the original opacity of the window's own content layer.
         // Uses the cached surfaceActor reference (see WindowState) rather than
         // windowActor.get_first_child(), which no longer points at the real
