@@ -318,6 +318,60 @@
       <description>Adjusts the saturation of the on-screen displays.</description>
     </key>
 
+    <key name="enable-application-glass" type="b">
+      <default>false</default>
+      <summary>Enable glass effect for application windows</summary>
+      <description>Apply the liquid glass effect to whitelisted application windows.</description>
+    </key>
+    <!-- Whether to apply the effect to all application windows or only whitelisted ones -->
+    <key name="application-glass-all-windows" type="b">
+      <default>false</default>
+      <summary>Apply to all windows</summary>
+      <description>Apply the glass effect to all application windows, bypassing the whitelist.</description>
+    </key>
+    <key name="application-window-whitelist" type="as">
+      <default>[]</default>
+      <summary>Whitelisted window classes</summary>
+      <description>WM_CLASS names (from xprop) that receive the glass effect. Only listed windows are affected when "apply to all windows" is off.</description>
+    </key>
+    <key name="application-tint-color" type="s">
+      <default>"#ffffff"</default>
+      <summary>Tint color (Hex)</summary>
+    </key>
+    <key name="application-tint-strength" type="d">
+      <default>0.20</default>
+      <summary>Tint strength</summary>
+    </key>
+    <key name="application-blur-radius" type="i">
+      <default>8</default>
+      <summary>Blur radius</summary>
+    </key>
+    <key name="application-corner-radius" type="d">
+      <default>30.0</default>
+      <summary>Corner radius</summary>
+    </key>
+    <!-- Opacity of the application window's own content layer (0.0-1.0), so the glass shows through it -->
+    <key name="application-content-opacity" type="d">
+      <default>0.85</default>
+      <summary>Window content opacity</summary>
+      <description>Opacity of the window content layer to let the glass effect show through (0.0 to 1.0).</description>
+    </key>
+    <key name="application-brightness" type="d">
+      <default>1.0</default>
+      <summary>Brightness</summary>
+      <description>Adjusts the brightness of the glass effect behind application windows.</description>
+    </key>
+    <key name="application-contrast" type="d">
+      <default>1.0</default>
+      <summary>Contrast</summary>
+      <description>Adjusts the contrast of the glass effect behind application windows.</description>
+    </key>
+    <key name="application-saturation" type="d">
+      <default>1.0</default>
+      <summary>Saturation</summary>
+      <description>Adjusts the saturation of the glass effect behind application windows.</description>
+    </key>
+
     <key name="blur-method" type="i">
       <default>0</default>
       <summary>Blur method</summary>
