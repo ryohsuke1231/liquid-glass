@@ -265,6 +265,21 @@
       <summary>Saturation</summary>
       <description>Adjusts the saturation of the quick settings.</description>
     </key>
+    <key name="quick-settings-apply-to" type="i">
+      <default>0</default>
+      <summary>Apply glass effect to</summary>
+      <description>0 = Background (whole panel), 1 = Toggles (individual toggle buttons only)</description>
+    </key>
+    <key name="quick-settings-toggle-tint-strength" type="d">
+      <default>0.5</default>
+      <summary>Toggle tint strength</summary>
+      <description>Blend strength between each toggle's own original color and quick-settings-tint-color. Only used when quick-settings-apply-to is Toggles.</description>
+    </key>
+    <key name="quick-settings-toggle-corner-radius" type="d">
+      <default>18.0</default>
+      <summary>Toggle corner radius</summary>
+      <description>Corner radius applied to each individual toggle's glass shape. Only used when quick-settings-apply-to is Toggles.</description>
+    </key>
 
     <key name="enable-osd-glass" type="b">
       <default>true</default>

@@ -204,6 +204,48 @@ export const UnpickableActor = GObject.registerClass(class UnpickableActor exten
     }
 });
 /**
+ * [FIX-5] "Quick Settings turns into a full-screen dark rectangle, Toggles
+ * show nothing" the moment bgActor became a child of animActor (a real
+ * St.BoxLayout, used for the actual quick-settings grid).
+ *
+ * Root cause: unlike a plain Clutter.Actor (which — absent an explicit
+ * LayoutManager — does NOT roll its children's sizes into its own reported
+ * preferred size; this is exactly why bgActor's own many manually-sized
+ * descendants, or bgActor itself sitting under uiGroup, never caused any
+ * such ballooning before), St.BoxLayout DOES actively query each direct
+ * child's own get_preferred_width()/height() and stacks/sums them to
+ * compute ITS OWN size. bgActor has an EXPLICIT fixed size set on it
+ * directly (set_size(screenW, screenH) — see _syncToggleRegions()/
+ * resolution-update code), and an actor's own explicitly-set size is
+ * exactly what get_preferred_width()/height() reports back to a querying
+ * parent, regardless of any layout manager. So animActor's BoxLayout was
+ * faithfully doing its job: stacking a "child" that claims to want
+ * 1920x1080, on top of the real ~1920x198 toggle content — hence the
+ * ballooned (1958x1316) allocation and the screen-covering dark panel.
+ *
+ * Fix: LayoutOpaqueActor unconditionally reports (0,0) for both min and
+ * natural size in both dimensions, no matter what its own children (e.g.
+ * bgActor) request. A querying parent's LayoutManager takes exactly what
+ * get_preferred_width()/height() returns as authoritative — it never looks
+ * past that return value into the subtree — so this is a hard, guaranteed
+ * "don't count anything below me towards your own size" boundary, usable
+ * to wrap any actor (like bgActor) that must be dropped into a real
+ * layout-managed container (like animActor) purely for z-order, with its
+ * own geometry fully hand-managed instead of participating in that
+ * container's size negotiation. Its own on-screen ORIGIN (x,y) still comes
+ * from wherever the parent's layout manager decides to place a 0-sized
+ * child — callers reposition it explicitly every frame regardless (see
+ * quickSettingsManager.ts's animActor counter-transform), so that's fine.
+ */
+export const LayoutOpaqueActor = GObject.registerClass(class LayoutOpaqueActor extends UnpickableActor {
+    vfunc_get_preferred_width(_forHeight) {
+        return [0, 0];
+    }
+    vfunc_get_preferred_height(_forWidth) {
+        return [0, 0];
+    }
+});
+/**
  * St.Widget variant of the same "invisible to picking" behavior, for cases
  * that need St's styling/layout features.
  */

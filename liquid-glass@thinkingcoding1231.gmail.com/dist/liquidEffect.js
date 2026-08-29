@@ -56,6 +56,8 @@ import GLib from 'gi://GLib';
 export const LiquidEffect = GObject.registerClass({
     GTypeName: 'LiquidGlassEffect',
 }, class LiquidEffect extends Clutter.OffscreenEffect {
+    // Must match glass.frag's `#define MAX_GLASS_REGIONS 16`.
+    static MAX_GLASS_REGIONS = 16;
     // ─── _init ──────────────────────────────────────────────────────────────────
     _init(params) {
         const extensionPath = params.extensionPath;
@@ -76,6 +78,8 @@ export const LiquidEffect = GObject.registerClass({
         this._compositePipeline = null;
         this._compUniforms = new Map();
         this._pendingUniforms = new Map();
+        this._compUniformArrays = new Map();
+        this._pendingUniformArrays = new Map();
         this._poolWidth = 0;
         this._poolHeight = 0;
         this._cropTexture = null;
@@ -142,6 +146,13 @@ export const LiquidEffect = GObject.registerClass({
         this._setFloat('dock_y', 0.0);
         this._setFloat('dock_w', 0.0);
         this._setFloat('dock_h', 0.0);
+        // Multi-region compositing (Quick Settings "Toggles" apply-to mode).
+        // Disabled by default so every other consumer (dock, menu, notification,
+        // OSD, application, and Quick Settings' own "Background" mode) is
+        // completely unaffected. See setMultiRegionMode()/setGlassRegions().
+        this._setFloat('multi_region_mode', 0.0);
+        this._setFloat('region_count', 0.0);
+        this._setFloat('fast_mode', LiquidEffect.DRAG_PERF_MODE_ENABLED ? 1.0 : 0.0);
         this._settingsIds = [];
         if (this._settings) {
             this._bindSettings();
@@ -873,6 +884,35 @@ export const LiquidEffect = GObject.registerClass({
         // Without this, values like dock_x would stay at 0 and the whole screen
         // would be misdetected as being inside the dock mask.
         this._applyPendingUniforms();
+        // [FIX] Feed the actor's real, cascaded paint opacity into the pipeline
+        // color used for the final draw. glass.frag's very last line already
+        // does `cogl_color_out = vec4(finalRgb, finalAlpha) * cogl_color_in;`
+        // — i.e. it was ALWAYS ready to respect the actor's opacity — but
+        // nothing on the JS/Cogl side was ever setting this pipeline's color,
+        // so Cogl defaulted it to opaque white (255,255,255,255) and that
+        // multiply was a permanent no-op. get_paint_opacity() (rather than the
+        // actor's own local .opacity) is used because it already returns the
+        // value cascaded through the actor's ancestors, so a child of an
+        // animating windowActor fades correctly without any extra plumbing.
+        //
+        // IMPORTANT — this must be (op, op, op, op), NOT (255, 255, 255, op):
+        // finalRgb is already PREMULTIPLIED by the shape's own alpha (see
+        // `finalRgb = litColor * alpha + shadowColor * shadowContribution`
+        // above). Fading premultiplied color by an additional opacity factor
+        // requires scaling BOTH the color and the alpha by that same factor —
+        // `vec4(finalRgb, finalAlpha) * vec4(1,1,1,op)` only scales alpha and
+        // leaves finalRgb at full brightness, which breaks the premultiplied
+        // invariant (rgb should never exceed alpha) and — combined with the
+        // ADD-based premultiplied blend function above — reads as abnormally
+        // bright/washed-out at any opacity below 255, exactly matching the
+        // "glass looks way too bright while the window is fading" symptom seen
+        // during open/close animations. Scaling all four channels by the same
+        // factor keeps it correctly premultiplied at every opacity level.
+        const paintOpacity = actor ? actor.get_paint_opacity() : 255;
+        const color = new Cogl.Color();
+        const paintOpacity_f = paintOpacity / 255;
+        color.init_from_4f(paintOpacity_f, paintOpacity_f, paintOpacity_f, paintOpacity_f);
+        this._compositePipeline.set_color(color);
         compFb.push_matrix();
         const screenFb = paintContext.get_framebuffer();
         screenFb.draw_textured_rectangle(this._compositePipeline, 0, 0, effectiveW, effectiveH, 0, 0, 1, 1);
@@ -928,6 +968,32 @@ export const LiquidEffect = GObject.registerClass({
         for (const [name, value] of this._pendingUniforms) {
             this._applyUniform(name, value);
         }
+        for (const [name, values] of this._pendingUniformArrays) {
+            this._applyUniformArray(name, values);
+        }
+    }
+    /**
+     * Sets a float ARRAY uniform on the composite pipeline (e.g.
+     * `uniform float region_x[16];` in glass.frag). Same buffering behavior as
+     * _setFloat(): if the pipeline hasn't been created yet, the value is
+     * buffered and applied later in _applyPendingUniforms().
+     */
+    _setFloatArray(name, values) {
+        this._pendingUniformArrays.set(name, values);
+        if (this._compositePipeline) {
+            this._applyUniformArray(name, values);
+        }
+    }
+    _applyUniformArray(name, values) {
+        if (!this._compositePipeline)
+            return;
+        let loc = this._compUniformArrays.get(name);
+        if (loc === undefined) {
+            loc = this._compositePipeline.get_uniform_location(name);
+            this._compUniformArrays.set(name, loc);
+        }
+        // set_uniform_float(loc, 1 component, count elements, values[])
+        this._compositePipeline.set_uniform_float(loc, 1, values.length, values);
     }
     // ─── Cogl context lookup ─────────────────────────────────────────────────────
     _getCoglContext() {
@@ -1008,6 +1074,8 @@ export const LiquidEffect = GObject.registerClass({
         this._compositePipeline = null;
         this._compUniforms.clear();
         this._pendingUniforms.clear();
+        this._compUniformArrays.clear();
+        this._pendingUniformArrays.clear();
         // Reset the dynamic Gaussian shader generation state too.
         this._gaussianKernel = null;
         this._pendingGaussianKernel = null;
@@ -1073,9 +1141,11 @@ export const LiquidEffect = GObject.registerClass({
         this._gaussianKernel = null;
         this._gaussianFetchPairs = 0;
         this._compUniforms.clear();
-        // _pendingUniforms is intentionally left intact: it holds every uniform
-        // value currently in effect, and _initPipelines() re-applies all of them
-        // to the freshly-compiled pipeline via _applyPendingUniforms().
+        this._compUniformArrays.clear();
+        // _pendingUniforms/_pendingUniformArrays are intentionally left intact:
+        // they hold every uniform value currently in effect, and
+        // _initPipelines() re-applies all of them to the freshly-compiled
+        // pipeline via _applyPendingUniforms().
         // Re-derive the Gaussian kernel (if that's the active blur method) so
         // _gaussianPipelineDirty / _pendingGaussianKernel get set correctly
         // instead of leaving the Gaussian pass permanently skipped.
@@ -1086,6 +1156,30 @@ export const LiquidEffect = GObject.registerClass({
         this._setFloat('tint_r', r);
         this._setFloat('tint_g', g);
         this._setFloat('tint_b', b);
+        this.queue_repaint();
+    }
+    // Sets the flat fallback fill composited underneath the glass/shadow
+    // result, for areas outside every glass region — see glass.frag's
+    // panel_bg_* uniforms for the full rationale. Pass alpha = 0 (the
+    // default) to disable it entirely.
+    setPanelBackgroundColor(r, g, b, a) {
+        this._setFloat('panel_bg_r', r);
+        this._setFloat('panel_bg_g', g);
+        this._setFloat('panel_bg_b', b);
+        this._setFloat('panel_bg_a', a);
+        this.queue_repaint();
+    }
+    // [FIX] The panel's REAL widget bounds (monitor-relative px, no
+    // SHADER_PADDING/CLIP_PADDING/glassExpand) — masks
+    // setPanelBackgroundColor()'s fallback fill to this rect in glass.frag so
+    // it can't bleed into the sampling-headroom margin around bgActor. See
+    // the panel_rect_* uniform comments in glass.frag for the full
+    // rationale. Harmless to call regardless of panel_bg_a.
+    setPanelRect(x, y, w, h) {
+        this._setFloat('panel_rect_x', x);
+        this._setFloat('panel_rect_y', y);
+        this._setFloat('panel_rect_w', w);
+        this._setFloat('panel_rect_h', h);
         this.queue_repaint();
     }
     setTintStrength(strength) {
@@ -1131,6 +1225,105 @@ export const LiquidEffect = GObject.registerClass({
         this._setFloat('dock_y', y);
         this._setFloat('dock_w', w);
         this._setFloat('dock_h', h);
+        this.queue_repaint();
+    }
+    /**
+     * Enables/disables multi-region compositing mode (see glass.frag's
+     * multi_region_mode uniform). When enabled, setGlassRegions() draws up to
+     * MAX_GLASS_REGIONS independent small rounded-rect "windows" instead of
+     * the single dock_x/y/w/h rect. Used by Quick Settings' "Toggles"
+     * apply-to mode; every other consumer leaves this at its default (false)
+     * and is completely unaffected.
+     */
+    setMultiRegionMode(enabled) {
+        this._setFloat('multi_region_mode', enabled ? 1.0 : 0.0);
+        this.queue_repaint();
+    }
+    // [PERF] "Window background rendering gets noticeably more expensive
+    // (CLUTTER_SHOW_FPS: per-frame paint time roughly triples, ~1.8ms ->
+    // ~5-6ms, though FPS itself stays near 60) the moment a window is open,
+    // and moving it is the worst case." Single master switch for every
+    // drag-time cost-reduction change below — false keeps current behavior
+    // byte-for-byte; only flip to true to test the combined effect. Flip
+    // this one line, nothing else, to compare.
+    static DRAG_PERF_MODE_ENABLED = true;
+    beginBatch() {
+        if (!LiquidEffect.DRAG_PERF_MODE_ENABLED)
+            return;
+        this._batchDepth = (this._batchDepth || 0) + 1;
+    }
+    endBatch() {
+        if (!LiquidEffect.DRAG_PERF_MODE_ENABLED)
+            return;
+        if (!this._batchDepth)
+            return; // beginBatch() was never called, or the flag flipped mid-batch
+        this._batchDepth--;
+        if (this._batchDepth === 0 && this._batchDirty) {
+            this._batchDirty = false;
+            // @ts-ignore — calling the inherited Clutter.Effect implementation
+            // directly, bypassing our own override below.
+            Clutter.Effect.prototype.queue_repaint.call(this);
+        }
+    }
+    // Overrides (does not shadow via vfunc_, so this is a plain JS-level
+    // method override — GJS resolves method lookups the normal JS-prototype
+    // way, so every one of this file's existing `this.queue_repaint()` call
+    // sites transparently goes through here without needing to change any
+    // of them individually) the inherited Clutter.Effect.queue_repaint().
+    queue_repaint() {
+        if (LiquidEffect.DRAG_PERF_MODE_ENABLED && this._batchDepth) {
+            this._batchDirty = true;
+            return;
+        }
+        // @ts-ignore
+        super.queue_repaint();
+    }
+    /**
+     * [PERF] See DRAG_PERF_MODE_ENABLED above and glass.frag's fast_mode
+     * uniform: swaps the 4-tap numerical height-gradient estimate for a
+     * 2-tap one using an analytically-known SDF gradient direction, and
+     * skips the outer drop-shadow result. No-op (uniform stays 0) unless the
+     * master flag is also on — callers (applicationManager.ts) can call this
+     * unconditionally every frame regardless of the flag's state.
+     */
+    setFastMode(enabled) {
+        const value = (LiquidEffect.DRAG_PERF_MODE_ENABLED && enabled) ? 1.0 : 0.0;
+        this._setFloat('fast_mode', value);
+    }
+    /**
+     * Supplies the list of glass regions to draw when multi-region mode is
+     * enabled. Each region is a small rounded rect (monitor-relative pixel
+     * coordinates, same space as setGlassGeometry()/setResolution()) with its
+     * own already-blended tint color. Silently truncated to
+     * LiquidEffect.MAX_GLASS_REGIONS (must match glass.frag's
+     * MAX_GLASS_REGIONS #define) if more are supplied.
+     */
+    setGlassRegions(regions) {
+        const clamped = regions.slice(0, LiquidEffect.MAX_GLASS_REGIONS);
+        const rx = new Array(LiquidEffect.MAX_GLASS_REGIONS).fill(0.0);
+        const ry = new Array(LiquidEffect.MAX_GLASS_REGIONS).fill(0.0);
+        const rw = new Array(LiquidEffect.MAX_GLASS_REGIONS).fill(0.0);
+        const rh = new Array(LiquidEffect.MAX_GLASS_REGIONS).fill(0.0);
+        const rTintR = new Array(LiquidEffect.MAX_GLASS_REGIONS).fill(1.0);
+        const rTintG = new Array(LiquidEffect.MAX_GLASS_REGIONS).fill(1.0);
+        const rTintB = new Array(LiquidEffect.MAX_GLASS_REGIONS).fill(1.0);
+        clamped.forEach((region, i) => {
+            rx[i] = region.x;
+            ry[i] = region.y;
+            rw[i] = region.w;
+            rh[i] = region.h;
+            rTintR[i] = region.tintR;
+            rTintG[i] = region.tintG;
+            rTintB[i] = region.tintB;
+        });
+        this._setFloat('region_count', clamped.length);
+        this._setFloatArray('region_x', rx);
+        this._setFloatArray('region_y', ry);
+        this._setFloatArray('region_w', rw);
+        this._setFloatArray('region_h', rh);
+        this._setFloatArray('region_tint_r', rTintR);
+        this._setFloatArray('region_tint_g', rTintG);
+        this._setFloatArray('region_tint_b', rTintB);
         this.queue_repaint();
     }
     setBrightness(brightness) {

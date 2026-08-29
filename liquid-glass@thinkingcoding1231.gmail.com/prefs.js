@@ -154,7 +154,18 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
     qsPage.add(qsGroup);
 
     this._addSwitchRow(qsGroup, settings, 'enable-quick-settings-glass', 'Enable Glass Effect', 'Apply to quick settings panel');
-    this._addSwitchRow(qsGroup, settings, "enable-quick-settings-animation", "Enable Quick Settings Animation", "Apply to quick settings panel");
+    // Apply to (Background / Toggles) を選択する ComboRow を追加し、GSettingsにバインド
+    const qsApplyToRow = new Adw.ComboRow({
+      title: 'Apply to',
+      subtitle: 'Whether the glass effect covers the whole panel or only individual toggles',
+      model: Gtk.StringList.new([
+        'Background',
+        'Toggles'
+      ])
+    });
+    this._addRowToContainer(qsGroup, qsApplyToRow);
+    settings.bind('quick-settings-apply-to', qsApplyToRow, 'selected', Gio.SettingsBindFlags.DEFAULT);
+    const qsEnableAnimRow = this._addSwitchRow(qsGroup, settings, "enable-quick-settings-animation", "Enable Quick Settings Animation", "Apply to quick settings panel");
 
     this._addSwitchRow(qsGroup, settings, 'quick-settings-enable-adaptive-text-color', 'Adaptive Text Color', 'Adjust text contrast automatically');
     const qsSampleIntervalRow = this._addSliderRow(qsGroup, settings, 'quick-settings-sample-interval-ms', 'Sample Interval (ms)', 'Contrast update frequency', 100, 2000, 50);
@@ -162,13 +173,39 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
     settings.bind('quick-settings-enable-adaptive-text-color', qsSampleIntervalRow, 'visible', Gio.SettingsBindFlags.GET);
 
     this._addSliderRow(qsGroup, settings, 'quick-settings-glass-expand', 'Glass Expand', 'Extra area for the effect', 0, 50, 1);
-    this._addSliderRow(qsGroup, settings, 'quick-settings-x-offset', 'X Offset', 'Horizontal offset adjustment', -100, 100, 1);
-    this._addSliderRow(qsGroup, settings, 'quick-settings-y-offset', 'Y Offset', 'Vertical offset adjustment', -100, 100, 1);
+    const qsXOffsetRow = this._addSliderRow(qsGroup, settings, 'quick-settings-x-offset', 'X Offset', 'Horizontal offset adjustment', -100, 100, 1);
+    const qsYOffsetRow = this._addSliderRow(qsGroup, settings, 'quick-settings-y-offset', 'Y Offset', 'Vertical offset adjustment', -100, 100, 1);
+
     this._addColorRow(qsGroup, settings, 'quick-settings-tint-color', 'Tint Color', 'Color of the glass tint');
     this._addSliderRow(qsGroup, settings, 'quick-settings-tint-strength', 'Tint Strength', 'Intensity of the color tint', 0.0, 1.0, 0.01);
     const qsBlurRow = this._addSliderRow(qsGroup, settings, 'quick-settings-blur-radius', 'Blur Radius', '', 0, 30, 1);
     blurRadiusRows.push(qsBlurRow);
-    this._addSliderRow(qsGroup, settings, 'quick-settings-corner-radius', 'Corner Radius', 'Roundness of the corners', 0, 200, 1);
+    const qsCornerRadiusRow = this._addSliderRow(qsGroup, settings, 'quick-settings-corner-radius', 'Corner Radius', 'Roundness of the corners', 0, 200, 1);
+
+    // Toggles モード専用の設定（quick-settings-apply-to が Toggles の時だけ表示）
+    const qsToggleTintStrengthRow = this._addSliderRow(qsGroup, settings, 'quick-settings-toggle-tint-strength', 'Toggle Tint Strength', "Blend between each toggle's own color and the tint color above", 0.0, 1.0, 0.01);
+    const qsToggleCornerRadiusRow = this._addSliderRow(qsGroup, settings, 'quick-settings-toggle-corner-radius', 'Toggle Corner Radius', 'Roundness of each individual toggle glass shape', 0, 60, 1);
+
+    // Toggles モードは各トグルの矩形を毎フレーム個別に追跡するだけで、パネル全体を
+    // 1枚板として動かしたり曲げたりはしない。そのため Corner Radius / X・Y Offset、
+    // および Advanced 内の Spring・Animation 関連は Background モード専用の設定
+    // として扱い、Toggles モードのときは非表示にする。
+    const updateQsApplyToVisibility = () => {
+      const isToggles = settings.get_int('quick-settings-apply-to') === 1;
+      qsToggleTintStrengthRow.visible = isToggles;
+      qsToggleCornerRadiusRow.visible = isToggles;
+
+      qsCornerRadiusRow.visible = !isToggles;
+      qsXOffsetRow.visible = !isToggles;
+      qsYOffsetRow.visible = !isToggles;
+
+      // Spring/Animationはパネル全体を動かす演出なので、Togglesモードでは
+      // スイッチ自体を隠す。Advanced内の各行は「スイッチ ON かつ Backgroundモード」の
+      // 場合だけ表示する（updateQsAnimationSubRowsVisibilityと合わせて判定）。
+      qsEnableAnimRow.visible = !isToggles;
+      updateQsAnimationSubRowsVisibility();
+    };
+    settings.connect('changed::quick-settings-apply-to', updateQsApplyToVisibility);
 
     // Advancedグループ (開閉可能) - Spring関連とカラー調整をここに集約
     const qsAdvanced = new Adw.ExpanderRow({
@@ -182,11 +219,23 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
     const quickSettingsMassRow = this._addSliderRow(qsAdvanced, settings, 'quick-settings-spring-mass', 'Spring Mass', 'Spring mass', 0.0, 1.0, 0.1);
     const quickSettingsIntervalRow = this._addSliderRow(qsAdvanced, settings, 'quick-settings-animation-interval-ms', 'Animation Interval (ms)', 'Animation interval', 0, 1000, 1);
 
-    // アニメーションOFF時に項目を非表示にするバインド
-    settings.bind('enable-quick-settings-animation', quickSettingsStiffnessRow, 'visible', Gio.SettingsBindFlags.GET);
-    settings.bind('enable-quick-settings-animation', quickSettingsDampingRow, 'visible', Gio.SettingsBindFlags.GET);
-    settings.bind('enable-quick-settings-animation', quickSettingsMassRow, 'visible', Gio.SettingsBindFlags.GET);
-    settings.bind('enable-quick-settings-animation', quickSettingsIntervalRow, 'visible', Gio.SettingsBindFlags.GET);
+    // アニメーションOFF、またはTogglesモードのときは非表示にする
+    // (単純な settings.bind だと片方の条件しか見られないため関数化して両方の
+    // 変化を監視する。updateQsApplyToVisibility からも呼ばれる)
+    const updateQsAnimationSubRowsVisibility = () => {
+      const animOn = settings.get_boolean('enable-quick-settings-animation');
+      const isToggles = settings.get_int('quick-settings-apply-to') === 1;
+      const visible = animOn && !isToggles;
+      quickSettingsStiffnessRow.visible = visible;
+      quickSettingsDampingRow.visible = visible;
+      quickSettingsMassRow.visible = visible;
+      quickSettingsIntervalRow.visible = visible;
+    };
+    settings.connect('changed::enable-quick-settings-animation', updateQsAnimationSubRowsVisibility);
+
+    // 両方の関数定義が揃ってから初期状態を反映する
+    updateQsApplyToVisibility();
+    updateQsAnimationSubRowsVisibility();
 
     // カラー調整（Advanced内）
     this._addSliderRow(qsAdvanced, settings, 'quick-settings-brightness', 'Brightness', 'Adjusts brightness', 0.5, 1.5, 0.01);
