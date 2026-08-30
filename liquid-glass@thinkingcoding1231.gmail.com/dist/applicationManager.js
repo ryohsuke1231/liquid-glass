@@ -954,15 +954,29 @@ export class ApplicationManager {
         // while rawX is already live. See _frameTick()'s [bg-lag] comment.
         this._logger.log(`[Liquid Glass] _syncState : window=${metaWin.get_title()}, absX=${absX}, absY=${absY}, mouseX=${mouseX}, mouseY=${mouseY}, mask=${mask}, visualAbsX=${visualAbsX}, visualAbsY=${visualAbsY}, rawX=${actor.x}, rawY=${actor.y}`);
         // Offset for the clipped (blurred) content
-        state.bgClone.set_position(-absX, -absY);
-        state.windowsContainer.set_position(-absX, -absY);
+        // state.bgClone.set_position(-absX, -absY);
+        // state.windowsContainer.set_position(-absX, -absY);
+        // use translation_x/y instead.
+        state.bgClone.set_position(0, 0);
+        state.windowsContainer.set_position(0, 0);
+        state.bgClone.translation_x = -absX;
+        state.bgClone.translation_y = -absY;
+        state.windowsContainer.translation_x = -absX;
+        state.windowsContainer.translation_y = -absY;
         // Offset for the base (unblurred) content (baseActor is inset by SHADER_PADDING).
         const baseScreenX = rect.x - SHADER_PADDING;
         const baseScreenY = rect.y - SHADER_PADDING;
         // const baseScreenX = visualAbsX;
         // const baseScreenY = visualAbsY;
-        state.baseClone.set_position(-baseScreenX, -baseScreenY);
-        state.baseWindowsContainer.set_position(-baseScreenX, -baseScreenY);
+        // use translation_x/y instead.
+        state.baseClone.set_position(0, 0);
+        state.baseWindowsContainer.set_position(0, 0);
+        state.baseClone.translation_x = -baseScreenX;
+        state.baseClone.translation_y = -baseScreenY;
+        state.baseWindowsContainer.translation_x = -baseScreenX;
+        state.baseWindowsContainer.translation_y = -baseScreenY;
+        // state.baseClone.set_position(-baseScreenX, -baseScreenY);
+        // state.baseWindowsContainer.set_position(-baseScreenX, -baseScreenY);
         // [FIX] Same 0x0-preferred-size issue as windowsContainer above.
         state.baseWindowsContainer.set_size(baseActorW, baseActorH);
         // [FIX] 3-2 investigation history ("behind window disappears — not
@@ -988,7 +1002,10 @@ export class ApplicationManager {
             if (isActorValid(clone)) {
                 if (!clone.visible)
                     clone.show();
-                clone.set_position(src.x, src.y);
+                // clone.set_position(src.x, src.y);
+                clone.set_position(0, 0);
+                clone.translation_x = src.x;
+                clone.translation_y = src.y;
                 clone.set_size(src.width, src.height);
                 clone.set_scale(src.scale_x, src.scale_y);
                 clone.opacity = src.opacity;
@@ -1006,7 +1023,10 @@ export class ApplicationManager {
             if (isActorValid(clone)) {
                 if (!clone.visible)
                     clone.show();
-                clone.set_position(src.x, src.y);
+                clone.set_position(0, 0);
+                clone.translation_x = src.x;
+                clone.translation_y = src.y;
+                // clone.set_position(src.x, src.y);
                 clone.set_size(src.width, src.height);
                 clone.set_scale(src.scale_x, src.scale_y);
                 clone.opacity = src.opacity;
