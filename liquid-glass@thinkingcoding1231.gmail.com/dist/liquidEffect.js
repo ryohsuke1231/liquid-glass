@@ -104,6 +104,12 @@ export const LiquidEffect = GObject.registerClass({
         this._diagPaintCount = 0;
         this._diagCompositedPaintCount = 0;
         this._diagLastPaintLogAt = 0;
+        this._diagPipelineTimingArmed = false;
+        this._diagPipelineFrameCount = 0;
+        this._diagPipelineMaxUs = 0;
+        this._diagPipelineSumUs = 0;
+        this._diagPipelineOverBudgetCount = 0;
+        this._diagPipelineLastReportAt = 0;
         this._diagFirstPaintLogged = false;
         this._extensionPath = extensionPath;
         this._settings = settings;
@@ -838,6 +844,13 @@ export const LiquidEffect = GObject.registerClass({
             super.vfunc_paint_target(_paintNode, paintContext);
             return;
         }
+        // [DIAG] Start of the actual per-frame GPU work (downsample/upsample/
+        // composite). Everything above this point is either one-time setup
+        // (pipeline compilation) or cheap bookkeeping that also runs on the
+        // super.vfunc_paint_target() fallback paths, so it's excluded from the
+        // timing to keep the measurement focused on the multi-pass cost this
+        // effect adds on top of a plain texture blit.
+        const diagPipelineStartUs = this._diagPipelineTimingArmed ? GLib.get_monotonic_time() : 0;
         // ─────────────────────────────────────────────────────────────────────
         // Blur pass: which blur method runs depends on _blurMethod
         //   0: Separable Gaussian blur
@@ -917,12 +930,74 @@ export const LiquidEffect = GObject.registerClass({
         const screenFb = paintContext.get_framebuffer();
         screenFb.draw_textured_rectangle(this._compositePipeline, 0, 0, effectiveW, effectiveH, 0, 0, 1, 1);
         compFb.pop_matrix();
-        // [DIAG] This is the actual "real glass" draw path (not a super.vfunc_paint_target()
-        // fallback). If the black-background bug is visible on screen while this counter
-        // keeps advancing at 60fps, the composite pass itself is running fine and drawing
-        // into the on-screen framebuffer every frame -- the bug is not about painting
-        // being skipped/culled or about stale content, it's about what's being composited.
+        // [DIAG] End of the timed region. This is CPU-side wall-clock time to
+        // issue the draw calls (set_layer_texture/draw_textured_rectangle/etc
+        // for every pass) — it does NOT wait for the GPU to actually finish
+        // (that would need an explicit fence/sync, e.g. cogl_framebuffer_finish
+        // or a GL fence sync object, which isn't wired up here to avoid
+        // introducing a stall of its own). A large CPU-side number here is a
+        // sufficient (not necessary) explanation for a dropped/late frame; a
+        // SMALL number here does not rule out the GPU itself still being the
+        // bottleneck downstream of an instant submit — but it's the cheapest
+        // signal available without attaching a GPU profiler, and a strong
+        // correlational one: if the reported drag-lag gets visibly worse when
+        // application-blur-radius / PASS_COUNT is turned up (more passes, more
+        // full-screen-ish reads/writes) and better when turned down or to 0,
+        // that already fingers the pipeline's GPU cost regardless of what this
+        // counter says.
+        if (this._diagPipelineTimingArmed) {
+            const durUs = GLib.get_monotonic_time() - diagPipelineStartUs;
+            // Half of one 60Hz frame (8.3ms) as the "this alone is eating a
+            // meaningful slice of the frame budget" threshold — arbitrary, but a
+            // reasonable enough bar for a single actor's contribution.
+            const BUDGET_US = 8300;
+            this._diagPipelineFrameCount++;
+            this._diagPipelineSumUs += durUs;
+            if (durUs > this._diagPipelineMaxUs)
+                this._diagPipelineMaxUs = durUs;
+            if (durUs > BUDGET_US)
+                this._diagPipelineOverBudgetCount++;
+            const now = GLib.get_monotonic_time();
+            if (this._diagPipelineLastReportAt === 0)
+                this._diagPipelineLastReportAt = now;
+            if (now - this._diagPipelineLastReportAt > 1000 * 1000) {
+                const avgUs = this._diagPipelineFrameCount > 0 ? this._diagPipelineSumUs / this._diagPipelineFrameCount : 0;
+                const actorTitleForLog = (() => {
+                    try {
+                        const a = this.get_actor();
+                        return a?.get_meta_window?.()?.get_title?.() ?? a?.get_name?.() ?? '?';
+                    }
+                    catch (e) {
+                        return '?';
+                    }
+                })();
+                this._logger?.log(`[Liquid Glass][diag][pipeline-timing] window="${actorTitleForLog}" frames=${this._diagPipelineFrameCount} ` +
+                    `avgUs=${avgUs.toFixed(0)} maxUs=${this._diagPipelineMaxUs} overBudgetCount=${this._diagPipelineOverBudgetCount} ` +
+                    `(budgetUs=${BUDGET_US})`);
+                this._diagPipelineFrameCount = 0;
+                this._diagPipelineSumUs = 0;
+                this._diagPipelineMaxUs = 0;
+                this._diagPipelineOverBudgetCount = 0;
+                this._diagPipelineLastReportAt = now;
+            }
+        }
         this._diagCompositedPaintCount++;
+    }
+    /**
+     * [DIAG] Toggles the pipeline-timing measurement added around
+     * vfunc_paint_target's blur+composite passes (see the [pipeline-timing]
+     * log line). Intended to be flipped on right before a drag test and off
+     * right after, from ApplicationManager's grab-op-begin/end handlers.
+     */
+    setPipelineTimingArmed(armed) {
+        this._diagPipelineTimingArmed = armed;
+        if (armed) {
+            this._diagPipelineFrameCount = 0;
+            this._diagPipelineSumUs = 0;
+            this._diagPipelineMaxUs = 0;
+            this._diagPipelineOverBudgetCount = 0;
+            this._diagPipelineLastReportAt = 0;
+        }
     }
     // ─── Uniform helpers ─────────────────────────────────────────────────────────
     /**

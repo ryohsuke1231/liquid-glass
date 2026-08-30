@@ -93,6 +93,17 @@ export class ApplicationManager {
   // would fire after cleanup and touch destroyed state.
   private _rebuildFollowupLaterId: number = 0;
 
+  // [DIAG] "Background clone lags the dragged window" investigation, round 2.
+  // _debugBgLagLogFrames existed but was never armed anywhere (dead code) —
+  // nothing ever set it above 0 — so the [bg-lag] log line was never
+  // actually produced by any prior log capture. Wire it (and the
+  // per-clone [focus-debug] dump, whose call site was commented out) to
+  // the actual grab lifecycle instead of the restacked event, since a
+  // plain drag doesn't necessarily restack anything.
+  private _grabBeginId: number = 0;
+  private _grabEndId: number = 0;
+  private _isDragging: boolean = false;
+
   constructor(extensionPath: string, settings: Gio.Settings, logger: Logger) {
     this.extensionPath = extensionPath;
     this._settings = settings;
@@ -130,6 +141,32 @@ export class ApplicationManager {
       });
     });
 
+    // [DIAG] Arm the bg-lag / per-clone position dump for the actual
+    // duration of an interactive move/resize grab, not just for a few
+    // frames after 'restacked'. GNOME 50 / Meta 18 dropped the (op, window)
+    // args from get_grab_op()/get_grab_window(), and some builds also
+    // changed what the grab-op-begin/end signal itself hands back, so we
+    // read `global.display.get_grab_op()`/`is_grabbed()` defensively rather
+    // than trusting the callback arguments.
+    this._grabBeginId = global.display.connect('grab-op-begin', () => {
+      this._isDragging = true;
+      this._debugBgLagLogFrames = Number.MAX_SAFE_INTEGER;
+      this._debugFocusLogFrames = Number.MAX_SAFE_INTEGER;
+      for (let state of this._states.values()) {
+        state.effect.setPipelineTimingArmed(true);
+      }
+      this._logger.log('[Liquid Glass][bg-lag] ---- grab-op-begin ----');
+    });
+    this._grabEndId = global.display.connect('grab-op-end', () => {
+      this._isDragging = false;
+      this._debugBgLagLogFrames = 0;
+      this._debugFocusLogFrames = 0;
+      for (let state of this._states.values()) {
+        state.effect.setPipelineTimingArmed(false);
+      }
+      this._logger.log('[Liquid Glass][bg-lag] ---- grab-op-end ----');
+    });
+
     this._restackedId = global.display.connect('restacked', () => {
       this._rebuildAllClones();
       // Arm the diagnostic logging for the next few frames — see
@@ -153,6 +190,16 @@ export class ApplicationManager {
     if (this._restackedId) {
       global.display.disconnect(this._restackedId);
       this._restackedId = 0;
+    }
+
+    if (this._grabBeginId) {
+      global.display.disconnect(this._grabBeginId);
+      this._grabBeginId = 0;
+    }
+
+    if (this._grabEndId) {
+      global.display.disconnect(this._grabEndId);
+      this._grabEndId = 0;
     }
 
     this._settingsSignals.forEach(id => this._settings.disconnect(id));
@@ -385,7 +432,13 @@ export class ApplicationManager {
       let [_aX, _aY] = actor.get_transformed_position();
       const visualAbsX = _aX + frameLocalX - SHADER_PADDING;
       const visualAbsY = _aY + frameLocalY - SHADER_PADDING;
-      this._logger.log(`[Liquid Glass] after-paint: window=${metaWin.get_title()}, absX=${absX}, absY=${absY}, mouseX=${mouseX}, mouseY=${mouseY}, mask=${mask}, visualAbsX=${visualAbsX}, visualAbsY=${visualAbsY}`);
+      // [DIAG round 2] rawX/rawY = actor.x/actor.y read directly (no
+      // get_transformed_position()), captured AFTER this frame's paint has
+      // actually happened. Compare against absX/absY (live frameRect,
+      // logged from the SAME tick in _syncState) to tell apart "actor.x
+      // itself really is 1 tick behind" vs "only the transformed-position
+      // query is stale" — see the [bg-lag] comment above _frameTick().
+      this._logger.log(`[Liquid Glass] after-paint: window=${metaWin.get_title()}, absX=${absX}, absY=${absY}, mouseX=${mouseX}, mouseY=${mouseY}, mask=${mask}, visualAbsX=${visualAbsX}, visualAbsY=${visualAbsY}, rawX=${actor.x}, rawY=${actor.y}`);
     }
     this._afterPaintCalls++;
   }
@@ -1029,7 +1082,17 @@ export class ApplicationManager {
     const visualAbsX = _aX + frameLocalX - SHADER_PADDING;
     const visualAbsY = _aY + frameLocalY - SHADER_PADDING;
 
-    this._logger.log(`[Liquid Glass] _syncState : window=${metaWin.get_title()}, absX=${absX}, absY=${absY}, mouseX=${mouseX}, mouseY=${mouseY}, mask=${mask}, visualAbsX=${visualAbsX}, visualAbsY=${visualAbsY}`);
+    // [DIAG round 2] rawX/rawY = actor.x/actor.y (the plain Clutter
+    // property, no get_transformed_position() involved) logged next to
+    // absX (live metaWin.get_frame_rect()) and visualAbsX
+    // (get_transformed_position()) on the SAME tick. Round 1 already
+    // showed visualAbsX trails absX by exactly one tick; this settles
+    // whether that's because the WindowActor's actual on-screen position
+    // (rawX, which is what clone.set_position(src.x, src.y) relies on for
+    // every OTHER window) is itself one tick behind, or whether it's
+    // purely get_transformed_position() returning a stale cached matrix
+    // while rawX is already live. See _frameTick()'s [bg-lag] comment.
+    this._logger.log(`[Liquid Glass] _syncState : window=${metaWin.get_title()}, absX=${absX}, absY=${absY}, mouseX=${mouseX}, mouseY=${mouseY}, mask=${mask}, visualAbsX=${visualAbsX}, visualAbsY=${visualAbsY}, rawX=${actor.x}, rawY=${actor.y}`);
 
     // Offset for the clipped (blurred) content
     state.bgClone.set_position(-absX, -absY);
@@ -1185,15 +1248,16 @@ export class ApplicationManager {
     for (let state of this._states.values()) {
       try {
         const metaWin = state.windowActor?.get_meta_window?.();
+        if (!metaWin) continue;
         // GNOME 50 / Meta 18: get_grab_op()/get_grab_window() no longer
         // exist — use is_grabbed() + focus-window as a proxy instead.
         const isGrabbed = global.display.is_grabbed();
-        const isFocused = metaWin && global.display.get_focus_window() === metaWin;
+        const isFocused = global.display.get_focus_window() === metaWin;
         this._syncState(state);
         state.isDirty = false; // test, now i don't need it
 
-        if (this._debugBgLagLogFrames > 0) {
-          if (isGrabbed && isFocused) {
+        if ((this._debugBgLagLogFrames > 0 || this._isDragging)) {
+          if ((isGrabbed && isFocused) || this._isDragging) {
             const rect = metaWin.get_frame_rect();
             // [FIX] windowsContainer/bgClone position IS the thing that
             // decides which pixels of "what's behind this window" get
@@ -1204,14 +1268,63 @@ export class ApplicationManager {
             // whether the sampled background is genuinely stale, or the
             // lag is purely a compositor/GPU presentation artifact
             // downstream of both being perfectly in sync on the JS side.
+            //
+            // [DIAG round 2] Added rawActorPos: `state.windowActor.x/.y`
+            // read directly (NOT get_transformed_position()). Round 1
+            // showed get_transformed_position() ("visualAbsX/Y" in the
+            // _syncState log) trails frameRect by exactly one tick, and
+            // that swapping windowsContainer's offset to use it made the
+            // symptom WORSE rather than better — the opposite of what
+            // "actor really paints 1 tick behind" would predict. Two
+            // explanations remain live: (a) the WindowActor really is
+            // painted 1 tick behind frameRect (a genuine Mutter-side
+            // grab/paint latency, in which case rawActorPos should ALSO
+            // trail frameRect by one tick, same as visualAbsX did), or
+            // (b) get_transformed_position() is a stale CACHED-matrix
+            // read and the actor's real .x/.y (and hence its actual
+            // paint position) is already live/current every tick, in
+            // which case rawActorPos should match frameRect with ~0 lag
+            // and the "visualAbsX made it worse" result would make sense
+            // (we'd have been deliberately offsetting by a query
+            // artifact that doesn't reflect what's really painted).
+            // rawActorPos vs frameRect settles which of (a)/(b) is true.
             this._logger.log(
               `[Liquid Glass][bg-lag] t=${nowUs} dtSinceLastTick=${deltaMs.toFixed(1)}ms ` +
-              `grabbed=true win="${metaWin.get_title()}" frameRect=(${rect.x},${rect.y},${rect.width}x${rect.height}) ` +
+              `grabbed=${isGrabbed} win="${metaWin.get_title()}" frameRect=(${rect.x},${rect.y},${rect.width}x${rect.height}) ` +
+              `rawActorPos=(${state.windowActor.x},${state.windowActor.y}) ` +
               `bgCloneSampleOrigin=(${(-state.bgClone.x).toFixed(1)},${(-state.bgClone.y).toFixed(1)}) ` +
               `windowsContainerOrigin=(${(-state.windowsContainer.x).toFixed(1)},${(-state.windowsContainer.y).toFixed(1)})`
             );
+
+            // [DIAG round 2] Per-behind-clone comparison. For every clone
+            // of a window BEHIND the dragged one, log: the source
+            // window's own raw .x/.y (what clone.set_position() is fed
+            // every tick — src should be stationary since it's not the
+            // one being dragged), the clone's OWN final position/
+            // get_transformed_position() (its actual screen position
+            // after inheriting windowsContainer's offset), and — the key
+            // number — clone.get_transformed_position() minus src's raw
+            // x/y. If the fix were perfect this delta should be a
+            // constant (SHADER_PADDING-derived) offset that does NOT
+            // change tick-to-tick while dragging; if it visibly drifts in
+            // lockstep with the drag motion, that drift IS the reported
+            // lag, quantified directly instead of inferred from A's own
+            // coordinates alone.
+            for (let [src, clone] of state.clones.entries()) {
+              if (!isActorValid(src) || !isActorValid(clone)) continue;
+              const srcMw = typeof (src as any).get_meta_window === 'function' ? (src as any).get_meta_window() : null;
+              const srcTitle = srcMw ? (srcMw.get_title() || '(untitled)') : '(?)';
+              const [cloneTX, cloneTY] = clone.get_transformed_position();
+              this._logger.log(
+                `[Liquid Glass][bg-lag]   behind src="${srcTitle}" src.(x,y)=(${src.x},${src.y}) ` +
+                `clone.transformedPos=(${cloneTX.toFixed(1)},${cloneTY.toFixed(1)}) ` +
+                `delta=(${(cloneTX - src.x).toFixed(1)},${(cloneTY - src.y).toFixed(1)})`
+              );
+            }
           }
         }
+
+        if (this._debugFocusLogFrames > 0 || this._isDragging) this._logFocusDebugInfo(state);
       } catch (e) {
         this._logger.error(`[Liquid Glass] Error in _syncState: ${e}`);
       }

@@ -205,6 +205,33 @@ export const LiquidEffect = GObject.registerClass({
   declare private _diagLastPaintLogAt: number;
   declare private _diagFirstPaintLogged: boolean;
 
+  // ── [DIAG] "Behind-window clone lags the dragged window" investigation,
+  // round 3. applicationManager.ts's own position math was proven exact
+  // (zero-error every tick, both for the dragged window's own actor
+  // position and for the resulting clone screen position) across an
+  // entire real drag capture — see [bg-lag] delta=(0.0,0.0) throughout.
+  // That rules out a JS-side positioning bug entirely. The remaining
+  // candidate is GPU-side: this effect runs up to 8 extra FBO passes
+  // (downsample x4, upsample x3, composite x1) PER FRAME for this one
+  // window, all issued from vfunc_paint_target. If the CPU-side command
+  // submission (or, downstream of it, the actual GPU work) for those
+  // passes occasionally overruns the ~16.6ms frame budget, the compositor
+  // can end up presenting a frame late for JUST this actor's content
+  // while window movement itself (a cheap texture blit, on Mutter's own
+  // fast path) stays on schedule — which would look exactly like "the
+  // glass content lags behind the window," without ANY of it being
+  // visible in _frameTick's JS-side scheduling (which stayed a rock
+  // solid ~16.6ms throughout). This only times CPU-side dispatch (queuing
+  // the GL/Vulkan calls), not actual GPU completion, but a CPU-side spike
+  // is at minimum a strong correlational signal, and is the cheapest
+  // thing to measure from here without a GPU profiler attached.
+  declare private _diagPipelineTimingArmed: boolean;
+  declare private _diagPipelineFrameCount: number;
+  declare private _diagPipelineMaxUs: number;
+  declare private _diagPipelineSumUs: number;
+  declare private _diagPipelineOverBudgetCount: number;
+  declare private _diagPipelineLastReportAt: number;
+
   // ─── _init ──────────────────────────────────────────────────────────────────
 
   _init(params: LiquidEffectParams) {
@@ -258,6 +285,12 @@ export const LiquidEffect = GObject.registerClass({
     this._diagPaintCount = 0;
     this._diagCompositedPaintCount = 0;
     this._diagLastPaintLogAt = 0;
+    this._diagPipelineTimingArmed = false;
+    this._diagPipelineFrameCount = 0;
+    this._diagPipelineMaxUs = 0;
+    this._diagPipelineSumUs = 0;
+    this._diagPipelineOverBudgetCount = 0;
+    this._diagPipelineLastReportAt = 0;
     this._diagFirstPaintLogged = false;
 
     this._extensionPath = extensionPath;
@@ -1081,6 +1114,14 @@ export const LiquidEffect = GObject.registerClass({
       return;
     }
 
+    // [DIAG] Start of the actual per-frame GPU work (downsample/upsample/
+    // composite). Everything above this point is either one-time setup
+    // (pipeline compilation) or cheap bookkeeping that also runs on the
+    // super.vfunc_paint_target() fallback paths, so it's excluded from the
+    // timing to keep the measurement focused on the multi-pass cost this
+    // effect adds on top of a plain texture blit.
+    const diagPipelineStartUs = this._diagPipelineTimingArmed ? GLib.get_monotonic_time() : 0;
+
     // ─────────────────────────────────────────────────────────────────────
     // Blur pass: which blur method runs depends on _blurMethod
     //   0: Separable Gaussian blur
@@ -1169,12 +1210,73 @@ export const LiquidEffect = GObject.registerClass({
 
     compFb.pop_matrix();
 
-    // [DIAG] This is the actual "real glass" draw path (not a super.vfunc_paint_target()
-    // fallback). If the black-background bug is visible on screen while this counter
-    // keeps advancing at 60fps, the composite pass itself is running fine and drawing
-    // into the on-screen framebuffer every frame -- the bug is not about painting
-    // being skipped/culled or about stale content, it's about what's being composited.
+    // [DIAG] End of the timed region. This is CPU-side wall-clock time to
+    // issue the draw calls (set_layer_texture/draw_textured_rectangle/etc
+    // for every pass) — it does NOT wait for the GPU to actually finish
+    // (that would need an explicit fence/sync, e.g. cogl_framebuffer_finish
+    // or a GL fence sync object, which isn't wired up here to avoid
+    // introducing a stall of its own). A large CPU-side number here is a
+    // sufficient (not necessary) explanation for a dropped/late frame; a
+    // SMALL number here does not rule out the GPU itself still being the
+    // bottleneck downstream of an instant submit — but it's the cheapest
+    // signal available without attaching a GPU profiler, and a strong
+    // correlational one: if the reported drag-lag gets visibly worse when
+    // application-blur-radius / PASS_COUNT is turned up (more passes, more
+    // full-screen-ish reads/writes) and better when turned down or to 0,
+    // that already fingers the pipeline's GPU cost regardless of what this
+    // counter says.
+    if (this._diagPipelineTimingArmed) {
+      const durUs = GLib.get_monotonic_time() - diagPipelineStartUs;
+      // Half of one 60Hz frame (8.3ms) as the "this alone is eating a
+      // meaningful slice of the frame budget" threshold — arbitrary, but a
+      // reasonable enough bar for a single actor's contribution.
+      const BUDGET_US = 8300;
+      this._diagPipelineFrameCount++;
+      this._diagPipelineSumUs += durUs;
+      if (durUs > this._diagPipelineMaxUs) this._diagPipelineMaxUs = durUs;
+      if (durUs > BUDGET_US) this._diagPipelineOverBudgetCount++;
+
+      const now = GLib.get_monotonic_time();
+      if (this._diagPipelineLastReportAt === 0) this._diagPipelineLastReportAt = now;
+      if (now - this._diagPipelineLastReportAt > 1000 * 1000) {
+        const avgUs = this._diagPipelineFrameCount > 0 ? this._diagPipelineSumUs / this._diagPipelineFrameCount : 0;
+        const actorTitleForLog = (() => {
+          try {
+            const a = this.get_actor() as any;
+            return a?.get_meta_window?.()?.get_title?.() ?? a?.get_name?.() ?? '?';
+          } catch (e) { return '?'; }
+        })();
+        this._logger?.log(
+          `[Liquid Glass][diag][pipeline-timing] window="${actorTitleForLog}" frames=${this._diagPipelineFrameCount} ` +
+          `avgUs=${avgUs.toFixed(0)} maxUs=${this._diagPipelineMaxUs} overBudgetCount=${this._diagPipelineOverBudgetCount} ` +
+          `(budgetUs=${BUDGET_US})`
+        );
+        this._diagPipelineFrameCount = 0;
+        this._diagPipelineSumUs = 0;
+        this._diagPipelineMaxUs = 0;
+        this._diagPipelineOverBudgetCount = 0;
+        this._diagPipelineLastReportAt = now;
+      }
+    }
+
     this._diagCompositedPaintCount++;
+  }
+
+  /**
+   * [DIAG] Toggles the pipeline-timing measurement added around
+   * vfunc_paint_target's blur+composite passes (see the [pipeline-timing]
+   * log line). Intended to be flipped on right before a drag test and off
+   * right after, from ApplicationManager's grab-op-begin/end handlers.
+   */
+  setPipelineTimingArmed(armed: boolean): void {
+    this._diagPipelineTimingArmed = armed;
+    if (armed) {
+      this._diagPipelineFrameCount = 0;
+      this._diagPipelineSumUs = 0;
+      this._diagPipelineMaxUs = 0;
+      this._diagPipelineOverBudgetCount = 0;
+      this._diagPipelineLastReportAt = 0;
+    }
   }
 
   // ─── Uniform helpers ─────────────────────────────────────────────────────────
