@@ -41,6 +41,8 @@ interface WindowState {
   // Content opacity applied to the window's own surface layer so the glass shows
   // through it; restored when the effect is removed from this window.
   originalOpacity: number;
+
+  isDirty: boolean; // flag if the window needs to be synced. changed by signals, etc
 }
 
 export class ApplicationManager {
@@ -53,6 +55,12 @@ export class ApplicationManager {
   private _windowCreatedId: number;
   private _restackedId: number = 0;
   private _rebuildQueued: boolean = false;
+
+  private _secondTimer: number;
+  private _syncStateCalls: number = 0;
+  private _frameTickCalls: number = 0;
+  private _afterPaintCalls: number = 0;
+  private _afterPaintId: number = 0; // for debug
 
   // ── Diagnostics for the focus-change "shifted texture" issue ───────────────
   // When > 0, _syncState() logs, for every tracked window, the raw actor
@@ -92,6 +100,7 @@ export class ApplicationManager {
     this._states = new Map();
     this._settingsSignals = [];
     this._frameSyncId = 0;
+    this._secondTimer = 0;
     this._windowCreatedId = 0;
     this._restackedId = 0;
   }
@@ -265,6 +274,16 @@ export class ApplicationManager {
       this._frameSyncId = 0;
     }
 
+    if (this._secondTimer) {
+      GLib.source_remove(this._secondTimer);
+      this._secondTimer = 0;
+    }
+
+    if (this._afterPaintId) {
+      global.stage.disconnect(this._afterPaintId);
+      this._afterPaintId = 0;
+    }
+
     if (this._rebuildFollowupLaterId) {
       if (global.compositor?.get_laters) {
         global.compositor.get_laters().remove(this._rebuildFollowupLaterId);
@@ -339,6 +358,48 @@ export class ApplicationManager {
   _startFrameSync() {
     if (this._frameSyncId === 0)
       this._frameTick();
+    if (this._secondTimer === 0) {
+      this._syncStateCalls = 0;
+      this._frameTickCalls = 0;
+      this._afterPaintCalls = 0;
+      this._perSecond();
+    }
+    this._afterPaintId = global.stage.connect('after-paint', () => {
+      this._afterPaint();
+    });
+  }
+
+  _afterPaint() { // for debug
+    for (let state of this._states.values()) {
+      let actor = state.windowActor;
+      if (!actor) continue;
+      const metaWin = actor.get_meta_window();
+      if (!metaWin) continue;
+      const rect = metaWin.get_frame_rect();
+      const bufferRect = metaWin.get_buffer_rect();
+      const frameLocalX = rect.x - bufferRect.x;
+      const frameLocalY = rect.y - bufferRect.y;
+      const absX = rect.x - SHADER_PADDING;
+      const absY = rect.y - SHADER_PADDING;
+      let [mouseX, mouseY, mask] = global.get_pointer();
+      let [_aX, _aY] = actor.get_transformed_position();
+      const visualAbsX = _aX + frameLocalX - SHADER_PADDING;
+      const visualAbsY = _aY + frameLocalY - SHADER_PADDING;
+      this._logger.log(`[Liquid Glass] after-paint: window=${metaWin.get_title()}, absX=${absX}, absY=${absY}, mouseX=${mouseX}, mouseY=${mouseY}, mask=${mask}, visualAbsX=${visualAbsX}, visualAbsY=${visualAbsY}`);
+    }
+    this._afterPaintCalls++;
+  }
+
+  _perSecond() {
+    this._secondTimer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 1000, () => {
+      this._logger.log(`[Liquid Glass] _frameTick calls per second: ${this._frameTickCalls}`);
+      this._logger.log(`[Liquid Glass] _syncState calls per second: ${this._syncStateCalls}`);
+      this._logger.log(`[Liquid Glass] _afterPaint calls per second: ${this._afterPaintCalls}`);
+      this._frameTickCalls = 0;
+      this._syncStateCalls = 0;
+      this._afterPaintCalls = 0;
+      return GLib.SOURCE_CONTINUE;
+    });
   }
 
   _rebuildAllClones() {
@@ -383,7 +444,7 @@ export class ApplicationManager {
       const FOLLOWUP_FRAME_COUNT = 0;
       let followupFramesLeft = FOLLOWUP_FRAME_COUNT;
       // [FIX] Meta.Laters callbacks are GSourceFuncs and must return a
-      // boolean (GLib.SOURCE_REMOVE/CONTINUE) — an implicit `undefined`
+      // boolean (GLibvisualAbsREMOVE/CONTINUE) — an implicit `undefined`
       // return was passed here before.
       const runFollowup = () => {
         followupFramesLeft--;
@@ -614,6 +675,7 @@ export class ApplicationManager {
       cornerOverlayClone,
       signals: [],
       originalOpacity,
+      isDirty: true,
     };
 
     this._states.set(windowActor, state);
@@ -622,7 +684,7 @@ export class ApplicationManager {
     // Immediate sync connections for resize/move using allocation property
     state.signals.push({
       obj: windowActor,
-      id: windowActor.connect('notify::allocation', () => this._syncState(state))
+      id: windowActor.connect('notify::allocation', () => { state.isDirty = true; })
     });
 
     const metaWin = windowActor.get_meta_window();
@@ -631,13 +693,15 @@ export class ApplicationManager {
         obj: metaWin,
         id: metaWin.connect('size-changed', () => {
           this._rebuildWindowClones(state);
-          this._syncState(state);
+          // this._syncState(state);
+          state.isDirty = true;
         })
       });
       state.signals.push({
         obj: metaWin,
         id: metaWin.connect('position-changed', () => {
-          this._syncState(state);
+          // this._syncState(state);
+          state.isDirty = true;
         })
       });
     }
@@ -645,7 +709,8 @@ export class ApplicationManager {
     // Use a later to ensure the initial sync happens after actors are properly added to stage
     global.compositor.get_laters().add(Meta.LaterType.IDLE, () => {
       if (this._states.has(windowActor)) {
-        this._syncState(state);
+        // this._syncState(state);
+        state.isDirty = true;
       }
       return false;
     });
@@ -834,10 +899,6 @@ export class ApplicationManager {
       return;
     }
 
-    if (!actor.has_allocation()) {
-      return;
-    }
-
     const metaWin = actor.get_meta_window();
     if (!metaWin) return;
 
@@ -861,6 +922,7 @@ export class ApplicationManager {
       // DRAG_PERF_MODE_ENABLED is on.
       state.effect.endBatch();
     }
+    this._syncStateCalls++;
   }
 
   // [PERF] Split out of _syncState() purely so the try/finally above can
@@ -882,7 +944,7 @@ export class ApplicationManager {
       return;
     }
 
-    if (this._debugFocusLogFrames > 0) this._logFocusDebugInfo(state);
+    // if (this._debugFocusLogFrames > 0) this._logFocusDebugInfo(state);
 
     const rect = metaWin.get_frame_rect();
     const bufferRect = metaWin.get_buffer_rect();
@@ -951,13 +1013,34 @@ export class ApplicationManager {
     const absX = rect.x - SHADER_PADDING;
     const absY = rect.y - SHADER_PADDING;
 
+    // test
+    // const [actorAbsX, actorAbsY] = actor.get_transformed_position();
+
+    // frameLocalX/Y を使って、アクター全体の座標からフレーム位置を特定しパディングを引く
+    /* i found that visualAbsX/Y are 1 frame late
+    const visualAbsX = actorAbsX + frameLocalX - SHADER_PADDING;
+    const visualAbsY = actorAbsY + frameLocalY - SHADER_PADDING;
+  
+    this._logger.log(`[Liquid Glass] syncState: window=${metaWin.get_title()}, absX=${absX}, absY=${absY}, visualAbsX=${visualAbsX}, visualAbsY=${visualAbsY}`);
+    */
+
+    let [mouseX, mouseY, mask] = global.get_pointer();
+    let [_aX, _aY] = actor.get_transformed_position();
+    const visualAbsX = _aX + frameLocalX - SHADER_PADDING;
+    const visualAbsY = _aY + frameLocalY - SHADER_PADDING;
+
+    this._logger.log(`[Liquid Glass] _syncState : window=${metaWin.get_title()}, absX=${absX}, absY=${absY}, mouseX=${mouseX}, mouseY=${mouseY}, mask=${mask}, visualAbsX=${visualAbsX}, visualAbsY=${visualAbsY}`);
+
     // Offset for the clipped (blurred) content
     state.bgClone.set_position(-absX, -absY);
     state.windowsContainer.set_position(-absX, -absY);
 
+
     // Offset for the base (unblurred) content (baseActor is inset by SHADER_PADDING).
     const baseScreenX = rect.x - SHADER_PADDING;
     const baseScreenY = rect.y - SHADER_PADDING;
+    // const baseScreenX = visualAbsX;
+    // const baseScreenY = visualAbsY;
     state.baseClone.set_position(-baseScreenX, -baseScreenY);
     state.baseWindowsContainer.set_position(-baseScreenX, -baseScreenY);
     // [FIX] Same 0x0-preferred-size issue as windowsContainer above.
@@ -1101,16 +1184,15 @@ export class ApplicationManager {
 
     for (let state of this._states.values()) {
       try {
+        const metaWin = state.windowActor?.get_meta_window?.();
+        // GNOME 50 / Meta 18: get_grab_op()/get_grab_window() no longer
+        // exist — use is_grabbed() + focus-window as a proxy instead.
+        const isGrabbed = global.display.is_grabbed();
+        const isFocused = metaWin && global.display.get_focus_window() === metaWin;
         this._syncState(state);
+        state.isDirty = false; // test, now i don't need it
 
         if (this._debugBgLagLogFrames > 0) {
-          const metaWin = state.windowActor?.get_meta_window?.();
-
-          // GNOME 50 / Meta 18: get_grab_op()/get_grab_window() no longer
-          // exist — use is_grabbed() + focus-window as a proxy instead.
-          const isGrabbed = global.display.is_grabbed();
-          const isFocused = metaWin && global.display.get_focus_window() === metaWin;
-
           if (isGrabbed && isFocused) {
             const rect = metaWin.get_frame_rect();
             // [FIX] windowsContainer/bgClone position IS the thing that
@@ -1145,6 +1227,7 @@ export class ApplicationManager {
         return false;
       }
     );
+    this._frameTickCalls++;
   }
 
   // ── Diagnostics: focus-change "shifted texture" investigation ──────────────
