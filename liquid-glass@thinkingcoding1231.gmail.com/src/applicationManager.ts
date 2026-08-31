@@ -6,7 +6,7 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { LiquidEffect } from './liquidEffect.js';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
-import { UnpickableClone, UnpickableActor, InverseCornerEffect, getWindowActors, isActorValid } from './utils.js';
+import { UnpickableClone, UnpickableActor, InverseCornerEffect, getWindowActors, isActorValid, InvertedPositionConstraint } from './utils.js';
 
 import { Logger } from './logger.js';
 
@@ -61,6 +61,8 @@ export class ApplicationManager {
   private _frameTickCalls: number = 0;
   private _afterPaintCalls: number = 0;
   private _afterPaintId: number = 0; // for debug
+
+  private _invertedPositionConstraint: InvertedPositionConstraint | null = null;
 
   // ── Diagnostics for the focus-change "shifted texture" issue ───────────────
   // When > 0, _syncState() logs, for every tracked window, the raw actor
@@ -710,6 +712,12 @@ export class ApplicationManager {
     cornerOverlay.add_effect(roundingEffect);
     windowActor.add_child(cornerOverlay);
 
+    this._invertedPositionConstraint = new InvertedPositionConstraint({ source: windowActor } as any);
+    bgClone.add_constraint(this._invertedPositionConstraint);
+    windowsContainer.add_constraint(this._invertedPositionConstraint);
+    baseClone.add_constraint(this._invertedPositionConstraint);
+    baseWindowsContainer.add_constraint(this._invertedPositionConstraint);
+
     let state: WindowState = {
       windowActor,
       surfaceActor,
@@ -1062,10 +1070,6 @@ export class ApplicationManager {
       state.effect.setGlassGeometry(0, 0, bgW, bgH);
     }
 
-    // Use absolute screen coordinates for wallpaper fix
-    const absX = rect.x - SHADER_PADDING;
-    const absY = rect.y - SHADER_PADDING;
-
     // test
     // const [actorAbsX, actorAbsY] = actor.get_transformed_position();
 
@@ -1076,6 +1080,10 @@ export class ApplicationManager {
   
     this._logger.log(`[Liquid Glass] syncState: window=${metaWin.get_title()}, absX=${absX}, absY=${absY}, visualAbsX=${visualAbsX}, visualAbsY=${visualAbsY}`);
     */
+
+    // Use absolute screen coordinates for wallpaper fix
+    const absX = rect.x - SHADER_PADDING;
+    const absY = rect.y - SHADER_PADDING;
 
     let [mouseX, mouseY, mask] = global.get_pointer();
     let [_aX, _aY] = actor.get_transformed_position();
@@ -1093,22 +1101,25 @@ export class ApplicationManager {
     // purely get_transformed_position() returning a stale cached matrix
     // while rawX is already live. See _frameTick()'s [bg-lag] comment.
     this._logger.log(`[Liquid Glass] _syncState : window=${metaWin.get_title()}, absX=${absX}, absY=${absY}, mouseX=${mouseX}, mouseY=${mouseY}, mask=${mask}, visualAbsX=${visualAbsX}, visualAbsY=${visualAbsY}, rawX=${actor.x}, rawY=${actor.y}`);
-
+    const offsetX = true ? absX : visualAbsX;
+    const offsetY = true ? absY : visualAbsY;
     // Offset for the clipped (blurred) content
     // state.bgClone.set_position(-absX, -absY);
     // state.windowsContainer.set_position(-absX, -absY);
     // use translation_x/y instead.
     state.bgClone.set_position(0, 0);
     state.windowsContainer.set_position(0, 0);
-    state.bgClone.translation_x = -absX;
-    state.bgClone.translation_y = -absY;
-    state.windowsContainer.translation_x = -absX;
-    state.windowsContainer.translation_y = -absY;
+    state.bgClone.translation_x = -offsetX;
+    state.bgClone.translation_y = -offsetY;
+    state.windowsContainer.translation_x = -offsetX;
+    state.windowsContainer.translation_y = -offsetY;
 
 
     // Offset for the base (unblurred) content (baseActor is inset by SHADER_PADDING).
-    const baseScreenX = rect.x - SHADER_PADDING;
-    const baseScreenY = rect.y - SHADER_PADDING;
+    // const baseScreenX = rect.x - SHADER_PADDING;
+    // const baseScreenY = rect.y - SHADER_PADDING;
+    const baseScreenX = offsetX;
+    const baseScreenY = offsetY;
     // const baseScreenX = visualAbsX;
     // const baseScreenY = visualAbsY;
     // use translation_x/y instead.
@@ -1122,6 +1133,44 @@ export class ApplicationManager {
     // state.baseWindowsContainer.set_position(-baseScreenX, -baseScreenY);
     // [FIX] Same 0x0-preferred-size issue as windowsContainer above.
     state.baseWindowsContainer.set_size(baseActorW, baseActorH);
+
+    /*
+    // 1. 一旦すべてのアライメントをリセットし、親アクターに追従した純粋な描画予定座標を作る
+    state.bgClone.set_position(0, 0);
+    state.windowsContainer.set_position(0, 0);
+    state.baseClone.set_position(0, 0);
+    state.baseWindowsContainer.set_position(0, 0);
+
+    state.bgClone.translation_x = 0;
+    state.bgClone.translation_y = 0;
+    state.windowsContainer.translation_x = 0;
+    state.windowsContainer.translation_y = 0;
+    state.baseClone.translation_x = 0;
+    state.baseClone.translation_y = 0;
+    state.baseWindowsContainer.translation_x = 0;
+    state.baseWindowsContainer.translation_y = 0;
+
+    // 2. このフレームで「実際に画面(Stage)のどこに描画されるか」の絶対座標をClutterから直接取得する
+    // ※ get_transformed_position() は遅延した行列であっても「実際に使われる行列」を返すため完璧に同期します
+    const [bgX, bgY] = state.bgClone.get_transformed_position();
+    const [winX, winY] = state.windowsContainer.get_transformed_position();
+    const [baseBgX, baseBgY] = state.baseClone.get_transformed_position();
+    const [baseWinX, baseWinY] = state.baseWindowsContainer.get_transformed_position();
+
+    // 3. 取得した物理絶対座標をそのままマイナスにして適用（Stageの 0,0 に完全に固定）
+    state.bgClone.translation_x = -bgX;
+    state.bgClone.translation_y = -bgY;
+    state.windowsContainer.translation_x = -winX;
+    state.windowsContainer.translation_y = -winY;
+
+    state.baseClone.translation_x = -baseBgX;
+    state.baseClone.translation_y = -baseBgY;
+    state.baseWindowsContainer.translation_x = -baseWinX;
+    state.baseWindowsContainer.translation_y = -baseWinY;
+
+    // サイズ補正（既存のまま）
+    state.baseWindowsContainer.set_size(baseActorW, baseActorH);
+    */
 
     // [FIX] 3-2 investigation history ("behind window disappears — not
     // tied to a restacked event, reproduces even with the source only

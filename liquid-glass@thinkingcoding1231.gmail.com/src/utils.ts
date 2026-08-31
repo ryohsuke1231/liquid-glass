@@ -1199,3 +1199,35 @@ export function isActorValid(actor: any): boolean {
     return false;
   }
 }
+
+
+export const InvertedPositionConstraint = GObject.registerClass({
+  GTypeName: 'InvertedPositionConstraint',
+  Properties: {
+    'source': GObject.ParamSpec.object(
+      'source', 'Source', 'Source Actor',
+      GObject.ParamFlags.READWRITE,
+      Clutter.Actor.$gtype
+    ),
+  },
+}, class InvertedPositionConstraint extends Clutter.Constraint {
+  declare source: Clutter.Actor | null;
+  vfunc_update_allocation(actor, allocation) {
+    if (!this.source)
+      return;
+
+    // 1. 基準アクターの座標を取得
+    const [x, y] = this.source.get_position();
+
+    // 2. 追従アクターの現在の幅と高さを保持
+    const width = allocation.get_width();
+    const height = allocation.get_height();
+
+    // 3. allocation (Clutter.ActorBox) の領域を直接書き換える
+    allocation.x1 = -x;
+    allocation.y1 = -y;
+    allocation.x2 = -x + width;
+    allocation.y2 = -y + height;
+  }
+});
+export type InvertedPositionConstraint = InstanceType<typeof InvertedPositionConstraint>;
