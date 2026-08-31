@@ -1123,6 +1123,8 @@ export const InvertedPositionConstraint = GObject.registerClass({
     GTypeName: 'InvertedPositionConstraint',
     Properties: {
         'source': GObject.ParamSpec.object('source', 'Source', 'Source Actor', GObject.ParamFlags.READWRITE, Clutter.Actor.$gtype),
+        'offset-x': GObject.ParamSpec.double('offset-x', 'Offset X', 'X Offset', GObject.ParamFlags.READWRITE, Number.MIN_SAFE_INTEGER, Number.MAX_SAFE_INTEGER, 0.0),
+        'offset-y': GObject.ParamSpec.double('offset-y', 'Offset Y', 'Y Offset', GObject.ParamFlags.READWRITE, Number.MIN_SAFE_INTEGER, Number.MAX_SAFE_INTEGER, 0.0),
     },
 }, class InvertedPositionConstraint extends Clutter.Constraint {
     vfunc_update_allocation(actor, allocation) {
@@ -1133,10 +1135,13 @@ export const InvertedPositionConstraint = GObject.registerClass({
         // 2. 追従アクターの現在の幅と高さを保持
         const width = allocation.get_width();
         const height = allocation.get_height();
-        // 3. allocation (Clutter.ActorBox) の領域を直接書き換える
-        allocation.x1 = -x;
-        allocation.y1 = -y;
-        allocation.x2 = -x + width;
-        allocation.y2 = -y + height;
+        // 3. 反転座標にオフセットを加算
+        const targetX = -x + (this.offset_x ?? 0.0);
+        const targetY = -y + (this.offset_y ?? 0.0);
+        // 4. allocation (Clutter.ActorBox) の領域を直接書き換える
+        allocation.x1 = targetX;
+        allocation.y1 = targetY;
+        allocation.x2 = targetX + width;
+        allocation.y2 = targetY + height;
     }
 });

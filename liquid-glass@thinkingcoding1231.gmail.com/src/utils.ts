@@ -1200,7 +1200,6 @@ export function isActorValid(actor: any): boolean {
   }
 }
 
-
 export const InvertedPositionConstraint = GObject.registerClass({
   GTypeName: 'InvertedPositionConstraint',
   Properties: {
@@ -1209,10 +1208,23 @@ export const InvertedPositionConstraint = GObject.registerClass({
       GObject.ParamFlags.READWRITE,
       Clutter.Actor.$gtype
     ),
+    'offset-x': GObject.ParamSpec.double(
+      'offset-x', 'Offset X', 'X Offset',
+      GObject.ParamFlags.READWRITE,
+      Number.MIN_SAFE_INTEGER, Number.MAX_SAFE_INTEGER, 0.0
+    ),
+    'offset-y': GObject.ParamSpec.double(
+      'offset-y', 'Offset Y', 'Y Offset',
+      GObject.ParamFlags.READWRITE,
+      Number.MIN_SAFE_INTEGER, Number.MAX_SAFE_INTEGER, 0.0
+    ),
   },
 }, class InvertedPositionConstraint extends Clutter.Constraint {
   declare source: Clutter.Actor | null;
-  vfunc_update_allocation(actor, allocation) {
+  declare offset_x: number;
+  declare offset_y: number;
+
+  vfunc_update_allocation(actor: Clutter.Actor, allocation: Clutter.ActorBox) {
     if (!this.source)
       return;
 
@@ -1223,11 +1235,15 @@ export const InvertedPositionConstraint = GObject.registerClass({
     const width = allocation.get_width();
     const height = allocation.get_height();
 
-    // 3. allocation (Clutter.ActorBox) の領域を直接書き換える
-    allocation.x1 = -x;
-    allocation.y1 = -y;
-    allocation.x2 = -x + width;
-    allocation.y2 = -y + height;
+    // 3. 反転座標にオフセットを加算
+    const targetX = -x + (this.offset_x ?? 0.0);
+    const targetY = -y + (this.offset_y ?? 0.0);
+
+    // 4. allocation (Clutter.ActorBox) の領域を直接書き換える
+    allocation.x1 = targetX;
+    allocation.y1 = targetY;
+    allocation.x2 = targetX + width;
+    allocation.y2 = targetY + height;
   }
 });
 export type InvertedPositionConstraint = InstanceType<typeof InvertedPositionConstraint>;

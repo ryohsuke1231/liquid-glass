@@ -607,7 +607,7 @@ export class ApplicationManager {
         roundingEffect.setInset(this._cornerOverlayInset());
         cornerOverlay.add_effect(roundingEffect);
         windowActor.add_child(cornerOverlay);
-        this._invertedPositionConstraint = new InvertedPositionConstraint({ source: windowActor });
+        this._invertedPositionConstraint = new InvertedPositionConstraint({ source: windowActor, offset_x: -SHADER_PADDING, offset_y: -SHADER_PADDING });
         bgClone.add_constraint(this._invertedPositionConstraint);
         windowsContainer.add_constraint(this._invertedPositionConstraint);
         baseClone.add_constraint(this._invertedPositionConstraint);
@@ -965,12 +965,15 @@ export class ApplicationManager {
         // state.bgClone.set_position(-absX, -absY);
         // state.windowsContainer.set_position(-absX, -absY);
         // use translation_x/y instead.
+        /*
         state.bgClone.set_position(0, 0);
         state.windowsContainer.set_position(0, 0);
         state.bgClone.translation_x = -offsetX;
         state.bgClone.translation_y = -offsetY;
         state.windowsContainer.translation_x = -offsetX;
         state.windowsContainer.translation_y = -offsetY;
+    
+    
         // Offset for the base (unblurred) content (baseActor is inset by SHADER_PADDING).
         // const baseScreenX = rect.x - SHADER_PADDING;
         // const baseScreenY = rect.y - SHADER_PADDING;
@@ -989,6 +992,7 @@ export class ApplicationManager {
         // state.baseWindowsContainer.set_position(-baseScreenX, -baseScreenY);
         // [FIX] Same 0x0-preferred-size issue as windowsContainer above.
         state.baseWindowsContainer.set_size(baseActorW, baseActorH);
+    
         /*
         // 1. 一旦すべてのアライメントをリセットし、親アクターに追従した純粋な描画予定座標を作る
         state.bgClone.set_position(0, 0);
@@ -1026,6 +1030,22 @@ export class ApplicationManager {
         // サイズ補正（既存のまま）
         state.baseWindowsContainer.set_size(baseActorW, baseActorH);
         */
+        if (this._invertedPositionConstraint) {
+            this._invertedPositionConstraint.offset_x = -frameLocalX + SHADER_PADDING;
+            this._invertedPositionConstraint.offset_y = -frameLocalY + SHADER_PADDING;
+            if (!state.bgClone.get_constraints().includes(this._invertedPositionConstraint)) {
+                state.bgClone.add_constraint(this._invertedPositionConstraint);
+            }
+            if (!state.windowsContainer.get_constraints().includes(this._invertedPositionConstraint)) {
+                state.windowsContainer.add_constraint(this._invertedPositionConstraint);
+            }
+            if (!state.baseClone.get_constraints().includes(this._invertedPositionConstraint)) {
+                state.baseClone.add_constraint(this._invertedPositionConstraint);
+            }
+            if (!state.baseWindowsContainer.get_constraints().includes(this._invertedPositionConstraint)) {
+                state.baseWindowsContainer.add_constraint(this._invertedPositionConstraint);
+            }
+        }
         // [FIX] 3-2 investigation history ("behind window disappears — not
         // tied to a restacked event, reproduces even with the source only
         // PARTIALLY covered"). RESOLVED — see _setupWindow() for the final
@@ -1050,7 +1070,9 @@ export class ApplicationManager {
                 if (!clone.visible)
                     clone.show();
                 // clone.set_position(src.x, src.y);
-                clone.set_position(0, 0);
+                if (clone.x !== 0 || clone.y !== 0) {
+                    clone.set_position(0, 0);
+                }
                 clone.translation_x = src.x;
                 clone.translation_y = src.y;
                 clone.set_size(src.width, src.height);
@@ -1070,7 +1092,9 @@ export class ApplicationManager {
             if (isActorValid(clone)) {
                 if (!clone.visible)
                     clone.show();
-                clone.set_position(0, 0);
+                if (clone.x !== 0 || clone.y !== 0) {
+                    clone.set_position(0, 0);
+                }
                 clone.translation_x = src.x;
                 clone.translation_y = src.y;
                 // clone.set_position(src.x, src.y);
@@ -1316,6 +1340,14 @@ export class ApplicationManager {
                 catch (e) { }
             });
             state.signals = [];
+        }
+        if (this._invertedPositionConstraint) {
+            state.bgClone.remove_constraint(this._invertedPositionConstraint);
+            state.windowsContainer.remove_constraint(this._invertedPositionConstraint);
+            state.baseClone.remove_constraint(this._invertedPositionConstraint);
+            state.baseWindowsContainer.remove_constraint(this._invertedPositionConstraint);
+            this._invertedPositionConstraint.source = null;
+            this._invertedPositionConstraint = null;
         }
         state.clones.forEach(clone => clone.destroy());
         state.clones.clear();
