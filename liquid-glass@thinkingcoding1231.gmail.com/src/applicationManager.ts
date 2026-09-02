@@ -43,6 +43,12 @@ interface WindowState {
   originalOpacity: number;
 
   isDirty: boolean; // flag if the window needs to be synced. changed by signals, etc
+  constraints: {
+    bg: InvertedPositionConstraint;
+    windows: InvertedPositionConstraint;
+    base: InvertedPositionConstraint;
+    baseWindows: InvertedPositionConstraint;
+  };
 }
 
 export class ApplicationManager {
@@ -56,13 +62,6 @@ export class ApplicationManager {
   private _restackedId: number = 0;
   private _rebuildQueued: boolean = false;
 
-  private _secondTimer: number;
-  private _syncStateCalls: number = 0;
-  private _frameTickCalls: number = 0;
-  private _afterPaintCalls: number = 0;
-  private _afterPaintId: number = 0; // for debug
-
-  private _invertedPositionConstraint: InvertedPositionConstraint | null = null;
 
   // ── Diagnostics for the focus-change "shifted texture" issue ───────────────
   // When > 0, _syncState() logs, for every tracked window, the raw actor
@@ -95,17 +94,6 @@ export class ApplicationManager {
   // would fire after cleanup and touch destroyed state.
   private _rebuildFollowupLaterId: number = 0;
 
-  // [DIAG] "Background clone lags the dragged window" investigation, round 2.
-  // _debugBgLagLogFrames existed but was never armed anywhere (dead code) —
-  // nothing ever set it above 0 — so the [bg-lag] log line was never
-  // actually produced by any prior log capture. Wire it (and the
-  // per-clone [focus-debug] dump, whose call site was commented out) to
-  // the actual grab lifecycle instead of the restacked event, since a
-  // plain drag doesn't necessarily restack anything.
-  private _grabBeginId: number = 0;
-  private _grabEndId: number = 0;
-  private _isDragging: boolean = false;
-
   constructor(extensionPath: string, settings: Gio.Settings, logger: Logger) {
     this.extensionPath = extensionPath;
     this._settings = settings;
@@ -113,7 +101,6 @@ export class ApplicationManager {
     this._states = new Map();
     this._settingsSignals = [];
     this._frameSyncId = 0;
-    this._secondTimer = 0;
     this._windowCreatedId = 0;
     this._restackedId = 0;
   }
@@ -143,32 +130,6 @@ export class ApplicationManager {
       });
     });
 
-    // [DIAG] Arm the bg-lag / per-clone position dump for the actual
-    // duration of an interactive move/resize grab, not just for a few
-    // frames after 'restacked'. GNOME 50 / Meta 18 dropped the (op, window)
-    // args from get_grab_op()/get_grab_window(), and some builds also
-    // changed what the grab-op-begin/end signal itself hands back, so we
-    // read `global.display.get_grab_op()`/`is_grabbed()` defensively rather
-    // than trusting the callback arguments.
-    this._grabBeginId = global.display.connect('grab-op-begin', () => {
-      this._isDragging = true;
-      this._debugBgLagLogFrames = Number.MAX_SAFE_INTEGER;
-      this._debugFocusLogFrames = Number.MAX_SAFE_INTEGER;
-      for (let state of this._states.values()) {
-        state.effect.setPipelineTimingArmed(true);
-      }
-      this._logger.log('[Liquid Glass][bg-lag] ---- grab-op-begin ----');
-    });
-    this._grabEndId = global.display.connect('grab-op-end', () => {
-      this._isDragging = false;
-      this._debugBgLagLogFrames = 0;
-      this._debugFocusLogFrames = 0;
-      for (let state of this._states.values()) {
-        state.effect.setPipelineTimingArmed(false);
-      }
-      this._logger.log('[Liquid Glass][bg-lag] ---- grab-op-end ----');
-    });
-
     this._restackedId = global.display.connect('restacked', () => {
       this._rebuildAllClones();
       // Arm the diagnostic logging for the next few frames — see
@@ -192,16 +153,6 @@ export class ApplicationManager {
     if (this._restackedId) {
       global.display.disconnect(this._restackedId);
       this._restackedId = 0;
-    }
-
-    if (this._grabBeginId) {
-      global.display.disconnect(this._grabBeginId);
-      this._grabBeginId = 0;
-    }
-
-    if (this._grabEndId) {
-      global.display.disconnect(this._grabEndId);
-      this._grabEndId = 0;
     }
 
     this._settingsSignals.forEach(id => this._settings.disconnect(id));
@@ -323,16 +274,6 @@ export class ApplicationManager {
       this._frameSyncId = 0;
     }
 
-    if (this._secondTimer) {
-      GLib.source_remove(this._secondTimer);
-      this._secondTimer = 0;
-    }
-
-    if (this._afterPaintId) {
-      global.stage.disconnect(this._afterPaintId);
-      this._afterPaintId = 0;
-    }
-
     if (this._rebuildFollowupLaterId) {
       if (global.compositor?.get_laters) {
         global.compositor.get_laters().remove(this._rebuildFollowupLaterId);
@@ -404,57 +345,21 @@ export class ApplicationManager {
     return SHADER_PADDING;
   }
 
+  // ── Per-frame sync ─────────────────────────────────────────────────────────
+  //
+  // NOTE on where the drag-lag bug did NOT live, so it is not re-litigated
+  // here: this JS-side geometry was measured exact throughout an entire drag
+  // (behind-window clone screen positions matched their sources with zero
+  // error on every tick), and the tick cadence was a solid ~16.6ms. The
+  // one-frame lag came from liquidEffect.ts drawing with Cogl's immediate-mode
+  // API inside vfunc_paint_target, which runs before Clutter has rendered the
+  // effect's capture for the frame. See the rendering-model header in
+  // liquidEffect.ts. Changing the offsets here (frame_rect vs
+  // get_transformed_position, set_position vs translation_x/y vs
+  // Clutter.Constraint) was tried in every combination and changed nothing.
   _startFrameSync() {
     if (this._frameSyncId === 0)
       this._frameTick();
-    if (this._secondTimer === 0) {
-      this._syncStateCalls = 0;
-      this._frameTickCalls = 0;
-      this._afterPaintCalls = 0;
-      this._perSecond();
-    }
-    this._afterPaintId = global.stage.connect('after-paint', () => {
-      this._afterPaint();
-    });
-  }
-
-  _afterPaint() { // for debug
-    for (let state of this._states.values()) {
-      let actor = state.windowActor;
-      if (!actor) continue;
-      const metaWin = actor.get_meta_window();
-      if (!metaWin) continue;
-      const rect = metaWin.get_frame_rect();
-      const bufferRect = metaWin.get_buffer_rect();
-      const frameLocalX = rect.x - bufferRect.x;
-      const frameLocalY = rect.y - bufferRect.y;
-      const absX = rect.x - SHADER_PADDING;
-      const absY = rect.y - SHADER_PADDING;
-      let [mouseX, mouseY, mask] = global.get_pointer();
-      let [_aX, _aY] = actor.get_transformed_position();
-      const visualAbsX = _aX + frameLocalX - SHADER_PADDING;
-      const visualAbsY = _aY + frameLocalY - SHADER_PADDING;
-      // [DIAG round 2] rawX/rawY = actor.x/actor.y read directly (no
-      // get_transformed_position()), captured AFTER this frame's paint has
-      // actually happened. Compare against absX/absY (live frameRect,
-      // logged from the SAME tick in _syncState) to tell apart "actor.x
-      // itself really is 1 tick behind" vs "only the transformed-position
-      // query is stale" — see the [bg-lag] comment above _frameTick().
-      this._logger.log(`[Liquid Glass] after-paint: window=${metaWin.get_title()}, absX=${absX}, absY=${absY}, mouseX=${mouseX}, mouseY=${mouseY}, mask=${mask}, visualAbsX=${visualAbsX}, visualAbsY=${visualAbsY}, rawX=${actor.x}, rawY=${actor.y}`);
-    }
-    this._afterPaintCalls++;
-  }
-
-  _perSecond() {
-    this._secondTimer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 1000, () => {
-      this._logger.log(`[Liquid Glass] _frameTick calls per second: ${this._frameTickCalls}`);
-      this._logger.log(`[Liquid Glass] _syncState calls per second: ${this._syncStateCalls}`);
-      this._logger.log(`[Liquid Glass] _afterPaint calls per second: ${this._afterPaintCalls}`);
-      this._frameTickCalls = 0;
-      this._syncStateCalls = 0;
-      this._afterPaintCalls = 0;
-      return GLib.SOURCE_CONTINUE;
-    });
   }
 
   _rebuildAllClones() {
@@ -712,11 +617,23 @@ export class ApplicationManager {
     cornerOverlay.add_effect(roundingEffect);
     windowActor.add_child(cornerOverlay);
 
-    this._invertedPositionConstraint = new InvertedPositionConstraint({ source: windowActor, offset_x: -SHADER_PADDING, offset_y: -SHADER_PADDING } as any);
-    bgClone.add_constraint(this._invertedPositionConstraint);
-    windowsContainer.add_constraint(this._invertedPositionConstraint);
-    baseClone.add_constraint(this._invertedPositionConstraint);
-    baseWindowsContainer.add_constraint(this._invertedPositionConstraint);
+    const createConstraint = () => new InvertedPositionConstraint({
+      source: windowActor,
+      offset_x: -SHADER_PADDING,
+      offset_y: -SHADER_PADDING
+    } as any);
+
+    const constraints = {
+      bg: createConstraint(),
+      windows: createConstraint(),
+      base: createConstraint(),
+      baseWindows: createConstraint()
+    };
+
+    bgClone.add_constraint(constraints.bg);
+    windowsContainer.add_constraint(constraints.windows);
+    baseClone.add_constraint(constraints.base);
+    baseWindowsContainer.add_constraint(constraints.baseWindows);
 
     let state: WindowState = {
       windowActor,
@@ -737,6 +654,7 @@ export class ApplicationManager {
       signals: [],
       originalOpacity,
       isDirty: true,
+      constraints,
     };
 
     this._states.set(windowActor, state);
@@ -965,10 +883,9 @@ export class ApplicationManager {
 
     // [PERF] Single flag, see LiquidEffect.DRAG_PERF_MODE_ENABLED — no-op
     // (both calls below become no-ops internally) unless that's true.
-    // "grabbed AND this window has focus" is the same proxy used by the
-    // bg-lag diagnostic logging above for "this window is the one currently
-    // being dragged" (GNOME 50/Meta 18 removed get_grab_op()/
-    // get_grab_window()).
+    // "grabbed AND this window has focus" is the proxy for "this window is
+    // the one currently being dragged" (GNOME 50 / Meta 18 removed
+    // get_grab_op() and get_grab_window()).
     const isDraggingThisWindow = global.display.is_grabbed() && global.display.get_focus_window() === metaWin;
     state.effect.beginBatch();
     try {
@@ -983,7 +900,7 @@ export class ApplicationManager {
       // DRAG_PERF_MODE_ENABLED is on.
       state.effect.endBatch();
     }
-    this._syncStateCalls++;
+
   }
 
   // [PERF] Split out of _syncState() purely so the try/finally above can
@@ -1005,7 +922,7 @@ export class ApplicationManager {
       return;
     }
 
-    // if (this._debugFocusLogFrames > 0) this._logFocusDebugInfo(state);
+    if (this._debugFocusLogFrames > 0) this._logFocusDebugInfo(state);
 
     const rect = metaWin.get_frame_rect();
     const bufferRect = metaWin.get_buffer_rect();
@@ -1025,10 +942,6 @@ export class ApplicationManager {
     const frameLocalY = rect.y - bufferRect.y;
 
     // Base background (unblurred) expanded by expansion margin.
-    // Positioned/clipped via _applyCounterScale() so its rendered content
-    // stays true-scale (undistorted) while its outer boundary still tracks
-    // the window's live (possibly animating) size — see _applyCounterScale()
-    // for the full rationale.
     const baseActorW = rect.width + (SHADER_PADDING * 2);
     const baseActorH = rect.height + (SHADER_PADDING * 2);
     state.baseActor.set_size(baseActorW, baseActorH);
@@ -1046,162 +959,32 @@ export class ApplicationManager {
     state.clipBox.set_position(0, 0);
     state.clipBox.set_size(bgW, bgH);
 
-    // [FIX] windowsContainer is a plain `new Clutter.Actor()` (see
-    // _setupWindow) that was never explicitly sized anywhere — only the
-    // CLONES placed inside it were. A plain Clutter.Actor with no layout
-    // manager has no children-driven preferred size, so without an
-    // explicit set_size() here its own natural size resolves to 0x0,
-    // which can leave it (and therefore everything absolutely-positioned
-    // inside it) without a meaningful allocation to cascade from,
-    // regardless of how correctly each individual clone's own position/
-    // size is set. This is a plausible root cause for clones perpetually
-    // reporting "needs an allocation" independent of their own geometry
-    // being correct — give the container itself a real, non-zero size
-    // matching what it's meant to represent (the same area as clipBox).
-    // (Its position is set separately below, alongside the existing
-    // -absX/-absY offset logic — only the size was ever missing.)
+    // Give containers a real, non-zero size matching their clipping bounds
     state.windowsContainer.set_size(bgW, bgH);
+    state.baseWindowsContainer.set_size(baseActorW, baseActorH);
 
-    // Update shader resolution/geometry with the expanded bounds. The glass
-    // rect always fills the whole (small, non full-screen) bgActor here, so
-    // glass geometry is simply (0, 0, bgW, bgH).
+    // Update shader resolution/geometry
     if (state.effect) {
       state.effect.setResolution(bgW, bgH);
       state.effect.setGlassGeometry(0, 0, bgW, bgH);
     }
 
-    // test
-    // const [actorAbsX, actorAbsY] = actor.get_transformed_position();
+    // ▼ Constraintによる画面全体(0,0)への絶対座標固定 ▼
+    // baseActorとbgActorは_applyCounterScaleによって同一のローカル座標を持っているため、
+    // 全く同じオフセット(-frameLocalX + SHADER_PADDING)を適用することで揃います。
+    const offsetX = -frameLocalX + SHADER_PADDING;
+    const offsetY = -frameLocalY + SHADER_PADDING;
 
-    // frameLocalX/Y を使って、アクター全体の座標からフレーム位置を特定しパディングを引く
-    /* i found that visualAbsX/Y are 1 frame late
-    const visualAbsX = actorAbsX + frameLocalX - SHADER_PADDING;
-    const visualAbsY = actorAbsY + frameLocalY - SHADER_PADDING;
-  
-    this._logger.log(`[Liquid Glass] syncState: window=${metaWin.get_title()}, absX=${absX}, absY=${absY}, visualAbsX=${visualAbsX}, visualAbsY=${visualAbsY}`);
-    */
+    state.constraints.bg.offset_x = offsetX;
+    state.constraints.bg.offset_y = offsetY;
+    state.constraints.windows.offset_x = offsetX;
+    state.constraints.windows.offset_y = offsetY;
+    state.constraints.base.offset_x = offsetX;
+    state.constraints.base.offset_y = offsetY;
+    state.constraints.baseWindows.offset_x = offsetX;
+    state.constraints.baseWindows.offset_y = offsetY;
 
-    // Use absolute screen coordinates for wallpaper fix
-    const absX = rect.x - SHADER_PADDING;
-    const absY = rect.y - SHADER_PADDING;
-
-    let [mouseX, mouseY, mask] = global.get_pointer();
-    let [_aX, _aY] = actor.get_transformed_position();
-    const visualAbsX = _aX + frameLocalX - SHADER_PADDING;
-    const visualAbsY = _aY + frameLocalY - SHADER_PADDING;
-
-    // [DIAG round 2] rawX/rawY = actor.x/actor.y (the plain Clutter
-    // property, no get_transformed_position() involved) logged next to
-    // absX (live metaWin.get_frame_rect()) and visualAbsX
-    // (get_transformed_position()) on the SAME tick. Round 1 already
-    // showed visualAbsX trails absX by exactly one tick; this settles
-    // whether that's because the WindowActor's actual on-screen position
-    // (rawX, which is what clone.set_position(src.x, src.y) relies on for
-    // every OTHER window) is itself one tick behind, or whether it's
-    // purely get_transformed_position() returning a stale cached matrix
-    // while rawX is already live. See _frameTick()'s [bg-lag] comment.
-    this._logger.log(`[Liquid Glass] _syncState : window=${metaWin.get_title()}, absX=${absX}, absY=${absY}, mouseX=${mouseX}, mouseY=${mouseY}, mask=${mask}, visualAbsX=${visualAbsX}, visualAbsY=${visualAbsY}, rawX=${actor.x}, rawY=${actor.y}`);
-    const offsetX = true ? absX : visualAbsX;
-    const offsetY = true ? absY : visualAbsY;
-    // Offset for the clipped (blurred) content
-    // state.bgClone.set_position(-absX, -absY);
-    // state.windowsContainer.set_position(-absX, -absY);
-    // use translation_x/y instead.
-    /*
-    state.bgClone.set_position(0, 0);
-    state.windowsContainer.set_position(0, 0);
-    state.bgClone.translation_x = -offsetX;
-    state.bgClone.translation_y = -offsetY;
-    state.windowsContainer.translation_x = -offsetX;
-    state.windowsContainer.translation_y = -offsetY;
-
-
-    // Offset for the base (unblurred) content (baseActor is inset by SHADER_PADDING).
-    // const baseScreenX = rect.x - SHADER_PADDING;
-    // const baseScreenY = rect.y - SHADER_PADDING;
-    const baseScreenX = offsetX;
-    const baseScreenY = offsetY;
-    // const baseScreenX = visualAbsX;
-    // const baseScreenY = visualAbsY;
-    // use translation_x/y instead.
-    state.baseClone.set_position(0, 0);
-    state.baseWindowsContainer.set_position(0, 0);
-    state.baseClone.translation_x = -baseScreenX;
-    state.baseClone.translation_y = -baseScreenY;
-    state.baseWindowsContainer.translation_x = -baseScreenX;
-    state.baseWindowsContainer.translation_y = -baseScreenY;
-    // state.baseClone.set_position(-baseScreenX, -baseScreenY);
-    // state.baseWindowsContainer.set_position(-baseScreenX, -baseScreenY);
-    // [FIX] Same 0x0-preferred-size issue as windowsContainer above.
-    state.baseWindowsContainer.set_size(baseActorW, baseActorH);
-
-    /*
-    // 1. 一旦すべてのアライメントをリセットし、親アクターに追従した純粋な描画予定座標を作る
-    state.bgClone.set_position(0, 0);
-    state.windowsContainer.set_position(0, 0);
-    state.baseClone.set_position(0, 0);
-    state.baseWindowsContainer.set_position(0, 0);
-
-    state.bgClone.translation_x = 0;
-    state.bgClone.translation_y = 0;
-    state.windowsContainer.translation_x = 0;
-    state.windowsContainer.translation_y = 0;
-    state.baseClone.translation_x = 0;
-    state.baseClone.translation_y = 0;
-    state.baseWindowsContainer.translation_x = 0;
-    state.baseWindowsContainer.translation_y = 0;
-
-    // 2. このフレームで「実際に画面(Stage)のどこに描画されるか」の絶対座標をClutterから直接取得する
-    // ※ get_transformed_position() は遅延した行列であっても「実際に使われる行列」を返すため完璧に同期します
-    const [bgX, bgY] = state.bgClone.get_transformed_position();
-    const [winX, winY] = state.windowsContainer.get_transformed_position();
-    const [baseBgX, baseBgY] = state.baseClone.get_transformed_position();
-    const [baseWinX, baseWinY] = state.baseWindowsContainer.get_transformed_position();
-
-    // 3. 取得した物理絶対座標をそのままマイナスにして適用（Stageの 0,0 に完全に固定）
-    state.bgClone.translation_x = -bgX;
-    state.bgClone.translation_y = -bgY;
-    state.windowsContainer.translation_x = -winX;
-    state.windowsContainer.translation_y = -winY;
-
-    state.baseClone.translation_x = -baseBgX;
-    state.baseClone.translation_y = -baseBgY;
-    state.baseWindowsContainer.translation_x = -baseWinX;
-    state.baseWindowsContainer.translation_y = -baseWinY;
-
-    // サイズ補正（既存のまま）
-    state.baseWindowsContainer.set_size(baseActorW, baseActorH);
-    */
-    if (this._invertedPositionConstraint) {
-      this._invertedPositionConstraint.offset_x = -frameLocalX + SHADER_PADDING;
-      this._invertedPositionConstraint.offset_y = -frameLocalY + SHADER_PADDING;
-
-      if (!state.bgClone.get_constraints().includes(this._invertedPositionConstraint)) {
-        state.bgClone.add_constraint(this._invertedPositionConstraint);
-      }
-      if (!state.windowsContainer.get_constraints().includes(this._invertedPositionConstraint)) {
-        state.windowsContainer.add_constraint(this._invertedPositionConstraint);
-      }
-      if (!state.baseClone.get_constraints().includes(this._invertedPositionConstraint)) {
-        state.baseClone.add_constraint(this._invertedPositionConstraint);
-      }
-      if (!state.baseWindowsContainer.get_constraints().includes(this._invertedPositionConstraint)) {
-        state.baseWindowsContainer.add_constraint(this._invertedPositionConstraint);
-      }
-    }
-    // [FIX] 3-2 investigation history ("behind window disappears — not
-    // tied to a restacked event, reproduces even with the source only
-    // PARTIALLY covered"). RESOLVED — see _setupWindow() for the final
-    // root cause (windowActor.inhibit_culling() was itself the bug).
-    // _checkCloneAnomaly() below is left in as a standing (always-on, not
-    // restack-window-gated) sanity check: it flags any frame where our
-    // bookkeeping considers a clone showable (src ok, clone.visible=true)
-    // but Clutter itself reports the CLONE can't actually paint (unmapped
-    // or a degenerate/zero size), independent of any restack timing
-    // window — useful general-purpose coverage even though it wasn't what
-    // ultimately caught this particular bug. Logs only on state
-    // transitions (entering/leaving the anomalous state) to avoid spam.
-
+    // ▼ 個別ウィンドウのクローン同期 (translation_x/yを使用) ▼
     // Sync blurred clones
     for (let [src, clone] of state.clones.entries()) {
       if (!isActorValid(src) || !src.visible || !src.mapped) {
@@ -1212,12 +995,11 @@ export class ApplicationManager {
       if (isActorValid(clone)) {
         if (!clone.visible) clone.show();
 
-        // clone.set_position(src.x, src.y);
-        if (clone.x !== 0 || clone.y !== 0) {
-          clone.set_position(0, 0);
-        }
+        // 実際のプロパティ(x,y)は0,0に固定し、描画オフセットのみで配置する
+        if (clone.x !== 0 || clone.y !== 0) clone.set_position(0, 0);
         clone.translation_x = src.x;
         clone.translation_y = src.y;
+
         clone.set_size(src.width, src.height);
         clone.set_scale(src.scale_x, src.scale_y);
         clone.opacity = src.opacity;
@@ -1235,12 +1017,11 @@ export class ApplicationManager {
       }
       if (isActorValid(clone)) {
         if (!clone.visible) clone.show();
-        if (clone.x !== 0 || clone.y !== 0) {
-          clone.set_position(0, 0);
-        }
+
+        if (clone.x !== 0 || clone.y !== 0) clone.set_position(0, 0);
         clone.translation_x = src.x;
         clone.translation_y = src.y;
-        // clone.set_position(src.x, src.y);
+
         clone.set_size(src.width, src.height);
         clone.set_scale(src.scale_x, src.scale_y);
         clone.opacity = src.opacity;
@@ -1249,6 +1030,7 @@ export class ApplicationManager {
       }
     }
 
+    // Sync corner overlays
     if (!state.cornerOverlay.visible) {
       state.cornerOverlay.show();
     }
@@ -1261,8 +1043,8 @@ export class ApplicationManager {
 
     state.cornerOverlayClone.set_position(0, 0);
     state.cornerOverlayClone.set_size(baseW, baseH);
-  }
 
+  }
   // [FIX] See the 3-2 investigation comment above _syncState()'s clone sync
   // loops. `kind` is just "blurred"/"base" for the log line. Deliberately
   // does NOT check has_allocation() — we just called set_position()/
@@ -1301,126 +1083,22 @@ export class ApplicationManager {
     this._anomalousClones.delete(clone);
   }
 
-  // [DIAG] "Window background lags a moment behind the real background
-  // while dragging" — round 1 confirmed our own tick cadence is a rock
-  // solid ~16.6ms (60Hz), so the self-rescheduling BEFORE_REDRAW chain is
-  // NOT introducing irregular delay. That rules out hypothesis (1) below;
-  // (2) is still open.
-  //
-  //  1. [RULED OUT] Our BEFORE_REDRAW later chain running irregularly.
-  //     dtSinceLastTick stayed in a tight ~16-17ms band throughout an
-  //     entire drag in the field log — no stalls, no catch-up bursts.
-  //
-  //  2. [STILL OPEN] `bgActorPos` in round 1 was useless for telling this
-  //     apart — `state.bgActor` sits INSIDE `state.windowActor` and is
-  //     positioned via _applyCounterScale() as a small, constant
-  //     SHADER_PADDING offset (hence it read a flat (35.0, 23.0) for the
-  //     entire drag: that's the padding, not the window's screen
-  //     position — of course it never changes). The actor that actually
-  //     determines WHICH part of "everything behind this window" gets
-  //     sampled is `state.bgClone`/`state.windowsContainer` (see
-  //     _syncState(): `state.bgClone.set_position(-absX, -absY)`) — THAT
-  //     position, in monitor/world space, next to the window's own
-  //     frameRect for the same tick, is what would actually reveal a
-  //     one-step-behind background. Logging it now instead.
-  //
-  // Arm via _debugBgLagLogFrames. Logs only the window currently under a
-  // grab, to stay readable during a real drag test.
-  _debugBgLagLogFrames: number = 0;
-  private _lastTickMonoUs: number = 0;
-
   _frameTick() {
-    const nowUs = GLib.get_monotonic_time();
-    const deltaMs = this._lastTickMonoUs ? (nowUs - this._lastTickMonoUs) / 1000 : -1;
-    this._lastTickMonoUs = nowUs;
-
     for (let state of this._states.values()) {
       try {
         const metaWin = state.windowActor?.get_meta_window?.();
+        // Skip this window only — never return, or the reschedule at the end
+        // is missed and the whole per-frame sync chain stops permanently.
         if (!metaWin) continue;
-        // GNOME 50 / Meta 18: get_grab_op()/get_grab_window() no longer
-        // exist — use is_grabbed() + focus-window as a proxy instead.
-        const isGrabbed = global.display.is_grabbed();
-        const isFocused = global.display.get_focus_window() === metaWin;
         this._syncState(state);
-        state.isDirty = false; // test, now i don't need it
 
-        if ((this._debugBgLagLogFrames > 0 || this._isDragging)) {
-          if ((isGrabbed && isFocused) || this._isDragging) {
-            const rect = metaWin.get_frame_rect();
-            // [FIX] windowsContainer/bgClone position IS the thing that
-            // decides which pixels of "what's behind this window" get
-            // sampled for the glass — logging it (in the same monitor/
-            // world space as frameRect, via -bgClone.x/-bgClone.y since
-            // it's stored negated) next to the window's own live rect on
-            // the SAME tick tells us whether they ever disagree, i.e.
-            // whether the sampled background is genuinely stale, or the
-            // lag is purely a compositor/GPU presentation artifact
-            // downstream of both being perfectly in sync on the JS side.
-            //
-            // [DIAG round 2] Added rawActorPos: `state.windowActor.x/.y`
-            // read directly (NOT get_transformed_position()). Round 1
-            // showed get_transformed_position() ("visualAbsX/Y" in the
-            // _syncState log) trails frameRect by exactly one tick, and
-            // that swapping windowsContainer's offset to use it made the
-            // symptom WORSE rather than better — the opposite of what
-            // "actor really paints 1 tick behind" would predict. Two
-            // explanations remain live: (a) the WindowActor really is
-            // painted 1 tick behind frameRect (a genuine Mutter-side
-            // grab/paint latency, in which case rawActorPos should ALSO
-            // trail frameRect by one tick, same as visualAbsX did), or
-            // (b) get_transformed_position() is a stale CACHED-matrix
-            // read and the actor's real .x/.y (and hence its actual
-            // paint position) is already live/current every tick, in
-            // which case rawActorPos should match frameRect with ~0 lag
-            // and the "visualAbsX made it worse" result would make sense
-            // (we'd have been deliberately offsetting by a query
-            // artifact that doesn't reflect what's really painted).
-            // rawActorPos vs frameRect settles which of (a)/(b) is true.
-            this._logger.log(
-              `[Liquid Glass][bg-lag] t=${nowUs} dtSinceLastTick=${deltaMs.toFixed(1)}ms ` +
-              `grabbed=${isGrabbed} win="${metaWin.get_title()}" frameRect=(${rect.x},${rect.y},${rect.width}x${rect.height}) ` +
-              `rawActorPos=(${state.windowActor.x},${state.windowActor.y}) ` +
-              `bgCloneSampleOrigin=(${(-state.bgClone.x).toFixed(1)},${(-state.bgClone.y).toFixed(1)}) ` +
-              `windowsContainerOrigin=(${(-state.windowsContainer.x).toFixed(1)},${(-state.windowsContainer.y).toFixed(1)})`
-            );
-
-            // [DIAG round 2] Per-behind-clone comparison. For every clone
-            // of a window BEHIND the dragged one, log: the source
-            // window's own raw .x/.y (what clone.set_position() is fed
-            // every tick — src should be stationary since it's not the
-            // one being dragged), the clone's OWN final position/
-            // get_transformed_position() (its actual screen position
-            // after inheriting windowsContainer's offset), and — the key
-            // number — clone.get_transformed_position() minus src's raw
-            // x/y. If the fix were perfect this delta should be a
-            // constant (SHADER_PADDING-derived) offset that does NOT
-            // change tick-to-tick while dragging; if it visibly drifts in
-            // lockstep with the drag motion, that drift IS the reported
-            // lag, quantified directly instead of inferred from A's own
-            // coordinates alone.
-            for (let [src, clone] of state.clones.entries()) {
-              if (!isActorValid(src) || !isActorValid(clone)) continue;
-              const srcMw = typeof (src as any).get_meta_window === 'function' ? (src as any).get_meta_window() : null;
-              const srcTitle = srcMw ? (srcMw.get_title() || '(untitled)') : '(?)';
-              const [cloneTX, cloneTY] = clone.get_transformed_position();
-              this._logger.log(
-                `[Liquid Glass][bg-lag]   behind src="${srcTitle}" src.(x,y)=(${src.x},${src.y}) ` +
-                `clone.transformedPos=(${cloneTX.toFixed(1)},${cloneTY.toFixed(1)}) ` +
-                `delta=(${(cloneTX - src.x).toFixed(1)},${(cloneTY - src.y).toFixed(1)})`
-              );
-            }
-          }
-        }
-
-        if (this._debugFocusLogFrames > 0 || this._isDragging) this._logFocusDebugInfo(state);
+        if (this._debugFocusLogFrames > 0) this._logFocusDebugInfo(state);
       } catch (e) {
         this._logger.error(`[Liquid Glass] Error in _syncState: ${e}`);
       }
     }
 
     if (this._debugFocusLogFrames > 0) this._debugFocusLogFrames--;
-    if (this._debugBgLagLogFrames > 0) this._debugBgLagLogFrames--;
 
     this._frameSyncId = global.compositor.get_laters().add(
       Meta.LaterType.BEFORE_REDRAW,
@@ -1429,7 +1107,6 @@ export class ApplicationManager {
         return false;
       }
     );
-    this._frameTickCalls++;
   }
 
   // ── Diagnostics: focus-change "shifted texture" investigation ──────────────
@@ -1503,13 +1180,17 @@ export class ApplicationManager {
       });
       state.signals = [];
     }
-    if (this._invertedPositionConstraint) {
-      state.bgClone.remove_constraint(this._invertedPositionConstraint);
-      state.windowsContainer.remove_constraint(this._invertedPositionConstraint);
-      state.baseClone.remove_constraint(this._invertedPositionConstraint);
-      state.baseWindowsContainer.remove_constraint(this._invertedPositionConstraint);
-      this._invertedPositionConstraint.source = null;
-      this._invertedPositionConstraint = null;
+    if (state.constraints) {
+      state.bgClone.remove_constraint(state.constraints.bg);
+      state.windowsContainer.remove_constraint(state.constraints.windows);
+      state.baseClone.remove_constraint(state.constraints.base);
+      state.baseWindowsContainer.remove_constraint(state.constraints.baseWindows);
+
+      state.constraints.bg.source = null;
+      state.constraints.windows.source = null;
+      state.constraints.base.source = null;
+      state.constraints.baseWindows.source = null;
+
     }
 
     state.clones.forEach(clone => clone.destroy());

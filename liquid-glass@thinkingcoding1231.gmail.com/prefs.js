@@ -177,13 +177,17 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
     const qsYOffsetRow = this._addSliderRow(qsGroup, settings, 'quick-settings-y-offset', 'Y Offset', 'Vertical offset adjustment', -100, 100, 1);
 
     this._addColorRow(qsGroup, settings, 'quick-settings-tint-color', 'Tint Color', 'Color of the glass tint');
-    this._addSliderRow(qsGroup, settings, 'quick-settings-tint-strength', 'Tint Strength', 'Intensity of the color tint', 0.0, 1.0, 0.01);
+    // "Custom Color Strength" / "Base Color Strength": the two tint layers are
+    // independent (see glass.frag's mix() chain), so they are named for what
+    // each one actually applies rather than for how they used to be blended
+    // together. Setting KEYS are unchanged.
+    this._addSliderRow(qsGroup, settings, 'quick-settings-tint-strength', 'Custom Color Strength', 'How strongly the Tint Color above is applied', 0.0, 1.0, 0.01);
     const qsBlurRow = this._addSliderRow(qsGroup, settings, 'quick-settings-blur-radius', 'Blur Radius', '', 0, 30, 1);
     blurRadiusRows.push(qsBlurRow);
     const qsCornerRadiusRow = this._addSliderRow(qsGroup, settings, 'quick-settings-corner-radius', 'Corner Radius', 'Roundness of the corners', 0, 200, 1);
 
     // Toggles モード専用の設定（quick-settings-apply-to が Toggles の時だけ表示）
-    const qsToggleTintStrengthRow = this._addSliderRow(qsGroup, settings, 'quick-settings-toggle-tint-strength', 'Toggle Tint Strength', "Blend between each toggle's own color and the tint color above", 0.0, 1.0, 0.01);
+    const qsToggleTintStrengthRow = this._addSliderRow(qsGroup, settings, 'quick-settings-toggle-tint-strength', 'Base Color Strength', "How strongly each toggle's own original color is applied, independently of Custom Color Strength", 0.0, 1.0, 0.01);
     const qsToggleCornerRadiusRow = this._addSliderRow(qsGroup, settings, 'quick-settings-toggle-corner-radius', 'Toggle Corner Radius', 'Roundness of each individual toggle glass shape', 0, 60, 1);
 
     // Toggles モードは各トグルの矩形を毎フレーム個別に追跡するだけで、パネル全体を

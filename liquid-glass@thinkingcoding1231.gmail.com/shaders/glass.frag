@@ -123,9 +123,20 @@ uniform float region_x[MAX_GLASS_REGIONS];    // monitor-relative px, includes S
 uniform float region_y[MAX_GLASS_REGIONS];
 uniform float region_w[MAX_GLASS_REGIONS];
 uniform float region_h[MAX_GLASS_REGIONS];
-uniform float region_tint_r[MAX_GLASS_REGIONS]; // per-region tint (already blended on the TS side)
+uniform float region_tint_r[MAX_GLASS_REGIONS]; // per-region BASE color (the element's own, sampled on the TS side)
 uniform float region_tint_g[MAX_GLASS_REGIONS];
 uniform float region_tint_b[MAX_GLASS_REGIONS];
+// [FIX-8] How strongly each region's own base color is applied, INDEPENDENTLY
+// of tint_strength. Formerly the TS side pre-blended the element's own color
+// with the user's tint color into one `region_tint_*` triple, which meant a
+// single tint_strength governed both: turning the user's tint down to 0.21
+// also faded the element's own color (e.g. Do Not Disturb's solid white when
+// ON) down to 0.21, so the only way to see an element's own color strongly
+// was to crank the custom tint strongly too. They are now two separate,
+// composable layers over `refracted` — see the mix() chain in main().
+// Per-region rather than a single uniform so a region whose real color could
+// not be resolved at all can simply opt out with 0.
+uniform float region_base_strength[MAX_GLASS_REGIONS];
 
 // Signed Distance Field (SDF) function for a rounded rectangle.
 // Returns negative values inside the shape, positive outside, and 0 on the exact edge.
@@ -147,11 +158,12 @@ float sdRoundRect(vec2 p, vec2 b, float r) {
 // insideMask/outsideMask smoothstep further down in main() already treats
 // a large positive distance as fully transparent, so no extra handling is
 // needed here for the empty/out-of-range case.
-float findActiveRegion(vec2 pixel_coord, float pad, out vec2 outLocalPos, out vec2 outBoxSize, out vec3 outTint) {
+float findActiveRegion(vec2 pixel_coord, float pad, out vec2 outLocalPos, out vec2 outBoxSize, out vec3 outTint, out float outBaseStrength) {
     float bestD = 1.0e6;
     outLocalPos = vec2(1.0e6);
     outBoxSize = vec2(1.0);
     outTint = vec3(1.0);
+    outBaseStrength = 0.0;
 
     int count = int(min(region_count, float(MAX_GLASS_REGIONS)));
 
@@ -172,6 +184,7 @@ float findActiveRegion(vec2 pixel_coord, float pad, out vec2 outLocalPos, out ve
             outLocalPos = rLocal;
             outBoxSize = rBox;
             outTint = vec3(region_tint_r[i], region_tint_g[i], region_tint_b[i]);
+            outBaseStrength = region_base_strength[i];
         }
     }
 
@@ -367,10 +380,14 @@ void main() {
     vec2 local_pos;
     vec2 box_size;
     vec3 activeTint;
+    // [FIX-8] Base-color layer strength for the winning region. Stays 0 in
+    // legacy (single-rect) mode, which has no per-element "own color" concept
+    // — that path is bit-for-bit unchanged.
+    float activeBaseStrength = 0.0;
     float d;
 
     if (multi_region_mode > 0.5) {
-        d = findActiveRegion(pixel_coord, padding, local_pos, box_size, activeTint);
+        d = findActiveRegion(pixel_coord, padding, local_pos, box_size, activeTint, activeBaseStrength);
     } else {
         // dock_center is in the same pixel space as pixel_coord (monitor-local).
         vec2 dock_center = vec2(dock_x + dock_w * 0.5, dock_y + dock_h * 0.5);
@@ -678,11 +695,24 @@ void main() {
     vec3 adjustedRefracted = applySCB(refractedRgb, brightness, contrast, saturation); 
     vec3 refracted = adjustedRefracted;
 
-    // [CHANGED] Uses activeTint (either the legacy single tint_r/g/b uniform
-    // or the winning multi-region entry's per-region tint — see the branch
-    // near the top of main()) instead of reading tint_r/g/b directly, so
-    // Toggles mode can give each toggle its own resulting tint color.
-    vec3 insideBaseColor = mix(refracted, activeTint, tint_strength);
+    // [FIX-8] Two independent, composable tint layers over the refracted
+    // backdrop, applied back to front:
+    //
+    //   1. BASE  — the element's own color (multi-region/Toggles mode only;
+    //              activeBaseStrength is 0 everywhere else), at
+    //              region_base_strength. This is what makes a toggle that
+    //              genuinely turns solid white when ON read as white.
+    //   2. CUSTOM — the user's configured tint color, at tint_strength.
+    //
+    // Previously these were a single mix() against one pre-blended color, so
+    // tint_strength scaled BOTH: a low custom tint strength also suppressed
+    // the element's own color, and the only way to bring an element's own
+    // color back was to raise the custom tint too. Layering them keeps each
+    // slider doing exactly one thing, and the legacy path is unchanged
+    // (activeBaseStrength == 0 collapses layer 1 to a no-op, leaving
+    // mix(refracted, tint, tint_strength) exactly as before).
+    vec3 insideBaseColor = mix(refracted, activeTint, activeBaseStrength);
+    insideBaseColor = mix(insideBaseColor, vec3(tint_r, tint_g, tint_b), tint_strength);
 
     // [FIX] Do NOT multiply by insideMask here. insideMask is the same
     // value used as `alpha` below, and the final composite already
