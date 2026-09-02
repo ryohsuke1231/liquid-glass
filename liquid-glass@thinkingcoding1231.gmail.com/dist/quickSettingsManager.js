@@ -21,6 +21,24 @@ export class QuickSettingsManager {
     // reads geometry, and short enough to be imperceptible if it ever fires
     // when the toggles really did disappear.
     static REGION_GRACE_FRAMES = 2;
+    // How often each pod's own (base) color is re-read from its live theme
+    // node. This is what makes a toggle's glass follow its ON/OFF and hover
+    // state, so it is felt directly as "how quickly the glass reacts".
+    //
+    // [PERF] Lowered from 400ms to 100ms. The naive version of that would have
+    // quadrupled a genuinely expensive pass (see stateKey on _toggleRegions),
+    // so the pass now short-circuits on pods whose style state is unchanged;
+    // in the steady state — nothing hovered, nothing toggled — a tick costs a
+    // handful of pseudo-class reads and no style invalidation at all.
+    static TOGGLE_COLOR_SAMPLE_MS = 100;
+    // Every Nth pass ignores that short-circuit and re-samples unconditionally,
+    // catching color changes that leave the pseudo-classes untouched — a
+    // gnome-shell theme switch above all, which repaints every pod (and can
+    // flip whether a `.quick-slider` is a glass pod at all — see
+    // _resampleToggleColors()) without any state change to notice. 8 × 100ms
+    // keeps that worst case at ~800ms, roughly where the old flat 400ms
+    // cadence already put it.
+    static TOGGLE_COLOR_FULL_PASS_EVERY = 8;
     extensionPath;
     _settings;
     _logger;
@@ -131,6 +149,11 @@ export class QuickSettingsManager {
     // _getStylableSubActors() below.
     _toggleRegions = new Map();
     _toggleColorTimerId = 0;
+    // [PERF] Counts _resampleToggleColors() passes so every Nth one can ignore
+    // the stateKey short-circuit above — a theme change repaints every pod
+    // without touching a single pseudo-class, so state alone can't be trusted
+    // as the only trigger. See TOGGLE_COLOR_FULL_PASS_EVERY.
+    _resamplePassCount = 0;
     // [FIX-6] Last successfully computed Toggles-mode region set, plus how many
     // consecutive frames we have been falling back on it. Used to ride out the
     // one-or-two frames after a structural change (submenu open/close, a toggle
@@ -814,10 +837,42 @@ export class QuickSettingsManager {
     //  - a standalone `.quick-toggle` button with no such wrapper (Night
     //    Light, Dark Style, Do Not Disturb, ...).
     //
-    // Either way, this does NOT descend into a matched pod's children — the
+    //  - [EXTEND] one of the SystemItem action buttons: the screenshot,
+    //    settings, lock and shutdown buttons that sit in the row above the
+    //    sliders. In the actor tree they are ScreenshotItem / SettingsItem /
+    //    LockItem / ShutdownItem, all plain `.icon-button` St.Buttons parented
+    //    (at some depth) by the `.quick-settings-system-item` widget, and both
+    //    themes give them a real pill background of their own (Adwaita
+    //    #48484b, mactahoe rgba(255,255,255,.15)) — i.e. exactly the same
+    //    "solid chip that should become glass" shape as a quick toggle.
+    //
+    //    The `.icon-button` class alone is NOT a sufficient test: the sliders'
+    //    mute/level buttons carry `icon-button flat`, a split toggle's arrow
+    //    carries `quick-toggle-menu-button icon-button`, and the keyboard
+    //    brightness submenu's level buttons carry a bare `icon-button` too.
+    //    Descent therefore only treats `.icon-button` as a pod once it is
+    //    inside a `.quick-settings-system-item` subtree (tracked by the
+    //    `inSystemItem` flag below), which is precisely the four buttons above
+    //    — the toggle arrows are unreachable anyway, since a matched toggle
+    //    pod is never descended into.
+    //
+    //  - [EXTEND] a `.quick-slider` row (volume / input / brightness) — but
+    //    ONLY on themes that actually paint a pill around it. mactahoe wraps
+    //    the volume bar in a rgba(255,255,255,.15) rounded container (the
+    //    thing the user sees "surrounding" the slider); Adwaita paints nothing
+    //    there at all (`ThemeColor:#00000000`), and putting a glass chip
+    //    behind a slider that has no container of its own would invent a
+    //    surface the theme never had. So the decision is made from the live
+    //    theme node rather than from a theme name — see _paintsOwnBackground().
+    //
+    //    A `.quick-slider` is never descended into either way, so on Adwaita
+    //    its inner `icon-button flat` mute buttons stay untouched rather than
+    //    becoming four stray chips.
+    //
+    // In every case this does NOT descend into a matched pod's children — the
     // whole pod is treated as one shape; see _getStylableSubActors() for how
     // its interactive children get their backgrounds neutralized.
-    _findAllToggleContainers(actor, found = []) {
+    _findAllToggleContainers(actor, found = [], inSystemItem = false) {
         if (!actor)
             return found;
         let isHasMenuPod = actor instanceof St.Widget && actor.has_style_class_name('quick-toggle-has-menu');
@@ -832,10 +887,49 @@ export class QuickSettingsManager {
                 found.push(actor);
             return found;
         }
+        // [EXTEND] Screenshot / Settings / Lock / Shutdown.
+        if (inSystemItem && actor instanceof St.Widget && actor.has_style_class_name('icon-button')) {
+            if (actor.visible)
+                found.push(actor);
+            return found;
+        }
+        // [EXTEND] The slider's surrounding container, on themes that draw one.
+        if (actor instanceof St.Widget && actor.has_style_class_name('quick-slider')) {
+            if (actor.visible && this._paintsOwnBackground(actor))
+                found.push(actor);
+            return found;
+        }
+        let entersSystemItem = inSystemItem ||
+            (actor instanceof St.Widget && actor.has_style_class_name('quick-settings-system-item'));
         let children = typeof actor.get_children === 'function' ? actor.get_children() : [];
         for (let child of children)
-            this._findAllToggleContainers(child, found);
+            this._findAllToggleContainers(child, found, entersSystemItem);
         return found;
+    }
+    // [EXTEND] "Does this widget paint a background of its OWN?" — used to
+    // decide whether a `.quick-slider` row is a glass pod (mactahoe: yes, it
+    // has a visible rgba(255,255,255,.15) container; Adwaita: no, the row is
+    // bare and only its children paint).
+    //
+    // The `_toggleRegions` check first is essential, not an optimization: once
+    // a pod has been adopted, _ensureToggleStyles() forces
+    // `background-color: transparent !important` onto its whole subtree, and
+    // the theme node reflects that inline override — so re-asking this question
+    // here on the next frame would read back OUR OWN transparency and un-adopt
+    // the pod, making it flicker in and out of the region set every frame.
+    //
+    // [EXTEND-FIX] An adopted pod therefore keeps its verdict as far as THIS
+    // function is concerned, but the verdict is no longer permanent: it is
+    // re-checked by _resampleToggleColors(), in the one moment per pass where
+    // the override is lifted and the pod's real theme is readable again, and a
+    // slider that stopped painting its own pill is released there. Pinning it
+    // forever is what let a slider adopted under mactahoe stay glassed after
+    // switching to Adwaita — see the comment at that check for the full story.
+    _paintsOwnBackground(actor) {
+        if (this._toggleRegions.has(actor))
+            return true;
+        let bg = this._readThemeBg(actor);
+        return !!(bg && bg.a > 0.02);
     }
     // Returns every St.Widget descendant of a pod (the pod itself, plus its
     // icon/title/subtitle/separator/menu-button children, at any depth).
@@ -1139,7 +1233,7 @@ export class QuickSettingsManager {
                 // never manages to sample a real color falls through to the
                 // caller's own neutral handling (see _syncToggleRegions()) instead
                 // of an arbitrary hardcoded white ever being trusted as real.
-                entry = { baseColor: [1.0, 1.0, 1.0], baseAlpha: 0, styledSubs: [] };
+                entry = { baseColor: [1.0, 1.0, 1.0], baseAlpha: 0, styledSubs: [], stateKey: '' };
                 this._toggleRegions.set(pod, entry);
                 pod.connect('destroy', () => {
                     this._toggleRegions.delete(pod);
@@ -1200,16 +1294,61 @@ export class QuickSettingsManager {
     // this prints for a has-menu pod (Wi-Fi/Bluetooth) vs a standalone one
     // (DND/Dark Style) next time this reproduces.
     _resampleToggleColors() {
+        // [PERF] See TOGGLE_COLOR_FULL_PASS_EVERY.
+        let forceFull = (this._resamplePassCount++ % QuickSettingsManager.TOGGLE_COLOR_FULL_PASS_EVERY) === 0;
         for (const [pod, entry] of this._toggleRegions.entries()) {
             if (!pod)
                 continue;
+            let primary = this._getPrimaryToggleButton(pod);
+            // [PERF] Nothing that can change this pod's color has changed since the
+            // last pass, so its overrides are left exactly as they are — no style
+            // invalidation, no theme-node resolution, no re-sample.
+            let stateKey = this._podStateKey(pod, primary);
+            if (!forceFull && stateKey === entry.stateKey)
+                continue;
+            entry.stateKey = stateKey;
             // Restore every sub-actor's original style first so the primary
             // button's sampled color reflects its real, un-overridden theme.
             for (const { actor, origStyle } of entry.styledSubs) {
                 if (actor instanceof St.Widget)
                     actor.set_style(origStyle || null);
             }
-            let primary = this._getPrimaryToggleButton(pod);
+            // [EXTEND-FIX] "Adwaita でも音量バーにガラスが適用されてしまう."
+            //
+            // A `.quick-slider` only becomes a pod on themes that actually paint a
+            // pill around it (mactahoe does, Adwaita does not) — but that verdict
+            // was made once, from the live theme node, and then pinned for the
+            // lifetime of the actor by _paintsOwnBackground()'s `_toggleRegions`
+            // short-circuit. That short-circuit is unavoidable while our own
+            // transparency override is in place (the theme node reports OUR
+            // transparency, so re-asking would un-adopt the pod every frame and
+            // make it flicker) — but it silently assumed a pod's theme never
+            // changes under it.
+            //
+            // It does: switching the gnome-shell theme does NOT rebuild the
+            // quick-settings actors, so the very same OutputStreamSlider adopted
+            // under mactahoe stayed adopted after switching to Adwaita, glass and
+            // all, with nothing left that could ever revoke it.
+            //
+            // Right here is the one moment per pass where the override is lifted
+            // and the pod's REAL theme is readable again, so this is where the
+            // verdict gets re-checked. A slider that no longer paints its own pill
+            // is released outright: its original styles are already restored just
+            // above, so simply dropping the entry (and skipping the re-apply below)
+            // hands the actor back to the theme untouched. _findAllToggleContainers()
+            // then re-reads the live theme node on the next frame — now finding a
+            // bare Adwaita row — and stops emitting a region for it. The reverse
+            // direction needs nothing extra: an unadopted slider is always judged
+            // live, so switching back to mactahoe re-adopts it on the next frame.
+            if (pod instanceof St.Widget && pod.has_style_class_name('quick-slider')) {
+                let pill = this._readThemeBg(pod);
+                if (!(pill && pill.a > 0.02)) {
+                    this._logger.log(`[Liquid Glass][toggle-color] releasing .quick-slider pod — theme no longer paints a pill ` +
+                        `(bg=${JSON.stringify(pill)})`);
+                    this._toggleRegions.delete(pod);
+                    continue;
+                }
+            }
             if (primary instanceof St.Widget) {
                 let sampled = this._samplePodColor(pod, primary);
                 if (sampled.a > 0.02) {
@@ -1258,7 +1397,7 @@ export class QuickSettingsManager {
         this._resampleToggleColors();
         if (this._toggleColorTimerId !== 0)
             return;
-        this._toggleColorTimerId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 400, () => {
+        this._toggleColorTimerId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, QuickSettingsManager.TOGGLE_COLOR_SAMPLE_MS, () => {
             if (!this.menu?.isOpen) {
                 this._toggleColorTimerId = 0;
                 return GLib.SOURCE_REMOVE;
@@ -1266,6 +1405,30 @@ export class QuickSettingsManager {
             this._resampleToggleColors();
             return GLib.SOURCE_CONTINUE;
         });
+    }
+    // [PERF] The pseudo-class fingerprint described on _toggleRegions.stateKey.
+    // Covers exactly the actors _samplePodColor() can pick as its winner (the
+    // pod, its primary button, and any `.quick-toggle-icon` chip), since a
+    // state change anywhere else in the subtree cannot alter the sampled color.
+    _podStateKey(pod, primary) {
+        const STATES = ['checked', 'hover', 'active', 'insensitive', 'focus', 'selected'];
+        let actors = [pod];
+        if (primary !== pod)
+            actors.push(primary);
+        for (let icon of this._getToggleIconActors(pod !== primary ? primary : pod))
+            actors.push(icon);
+        let key = '';
+        for (let actor of actors) {
+            if (!(actor instanceof St.Widget) || typeof actor.has_style_pseudo_class !== 'function') {
+                key += '?|';
+                continue;
+            }
+            for (let state of STATES) {
+                key += actor.has_style_pseudo_class(state) ? '1' : '0';
+            }
+            key += '|';
+        }
+        return key;
     }
     _stopToggleColorSampling() {
         if (this._toggleColorTimerId !== 0) {
