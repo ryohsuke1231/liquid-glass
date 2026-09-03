@@ -12,6 +12,49 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import St from 'gi://St';
 import Mtk from 'gi://Mtk';
 /**
+ * Reads an actor's *allocated* size, instead of Clutter.Actor.get_size().
+ *
+ * get_size() returns the actor's natural (preferred) size whenever
+ * `needs_allocation` is set — i.e. whenever anything in its subtree has
+ * queued a relayout that the stage has not processed yet. Every per-frame
+ * clone sync in this extension runs from a Meta.LaterType.BEFORE_REDRAW
+ * later, and those fire in the stage's "before update" phase — *before*
+ * clutter_stage_maybe_relayout() — so we hit that window constantly.
+ *
+ * That is fatal for GNOME's overviewGroup. ControlsManagerLayout reports
+ * [0, 0] as its preferred size on purpose ("the MonitorConstraint will
+ * allocate us a fixed size anyway"), and both OverviewActor and
+ * overviewGroup take their size from constraints, which feed the allocation
+ * only — never the preferred size. So the instant anything inside the
+ * overview queues a relayout (an app icon's label changing on hover, a
+ * layout update), overviewGroup.get_size() answers [0, 0] for that frame,
+ * syncProperties() culls the clone as zero-sized, and the wallpaper flashes
+ * through the glass for exactly one frame.
+ *
+ * get_allocation_box() has no such fallback: it returns the last allocation
+ * verbatim — which is precisely what was on screen last frame.
+ */
+export function getAllocatedSize(actor) {
+    try {
+        const box = actor.get_allocation_box();
+        const w = box.get_width();
+        const h = box.get_height();
+        if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) {
+            return [w, h];
+        }
+    }
+    catch (_) { /* noop */ }
+    // Never allocated yet (or the call failed): fall back to get_size(), whose
+    // answer is at least as good as nothing.
+    try {
+        const [w, h] = actor.get_size();
+        return [w, h];
+    }
+    catch (_) {
+        return [0, 0];
+    }
+}
+/**
  * [FIX round 13] Works out where the actor's own pixels live inside the
  * padded capture texture, and where the composite quad has to be drawn so
  * that it lands exactly back on the actor.
@@ -504,7 +547,7 @@ export const TextureBlitActor = GObject.registerClass({
             let uMin = 0, vMin = 0, uMax = 1, vMax = 1;
             const src = this._sourceActor;
             if (src) {
-                const [rawW, rawH] = src.get_size();
+                const [rawW, rawH] = getAllocatedSize(src);
                 const allocW = Number.isFinite(rawW) && rawW > 0 ? Math.round(rawW) : texW;
                 const allocH = Number.isFinite(rawH) && rawH > 0 ? Math.round(rawH) : texH;
                 if ((allocW !== texW || allocH !== texH) && texW > 0 && texH > 0) {
@@ -653,7 +696,7 @@ export class UILayerSampler {
             const selfRoot = this._selfRoot;
             const rectGetter = () => {
                 const [x, y] = child.get_transformed_position();
-                const [w, h] = child.get_size();
+                const [w, h] = getAllocatedSize(child);
                 if (Number.isNaN(x) || Number.isNaN(y) || w <= 0 || h <= 0) {
                     return [0, 0, 0, 0];
                 }
@@ -940,7 +983,7 @@ export class UILayerSampler {
             return;
         try {
             const [absX, absY] = source.get_transformed_position();
-            const [w, h] = source.get_size();
+            const [w, h] = getAllocatedSize(source);
             if (Number.isNaN(absX) || Number.isNaN(absY) || w <= 0 || h <= 0) {
                 sourceClone.visible = false;
                 return;
@@ -1111,9 +1154,11 @@ export class WindowCloneManager {
             if (!metaWindow || metaWindow.minimized || !w.visible)
                 continue;
             // Read position/size directly rather than via the more expensive
-            // get_transformed_position().
-            let width = w.width;
-            let height = w.height;
+            // get_transformed_position(). Size comes from the allocation, not
+            // w.width/w.height: those fall back to the preferred size while a
+            // relayout is pending, and a bogus 0 here would `continue` past the
+            // window and destroy its clone for a frame (see getAllocatedSize).
+            let [width, height] = getAllocatedSize(w);
             if (width <= 0 || height <= 0)
                 continue;
             activeWindows.add(w);
