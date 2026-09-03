@@ -6,7 +6,7 @@ import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import { LiquidEffect } from './liquidEffect.js';
 import Gio from 'gi://Gio';
-import { UnpickableActor, UILayerSampler, WindowCloneManager } from './utils.js';
+import { UnpickableActor, UILayerSampler, WindowCloneManager, getAllocatedSize } from './utils.js';
 
 import { Logger } from './logger.js';
 
@@ -736,7 +736,10 @@ export class DashManager {
 
     // .x, .y, .width を直接読まず、計算済みの「画面上の絶対座標」と「サイズ」を関数で取得
     let [absX, absY] = source.get_transformed_position();
-    let [w, h] = source.get_size();
+    // get_size() ではなくアロケーションを読む: BEFORE_REDRAW later は
+    // stage の relayout より前に走るため、get_size() が preferred size
+    // （ソースによっては 0）を返してクローンが 1 フレーム消える。
+    let [w, h] = getAllocatedSize(source);
 
     // NaN（非数）や異常なマイナス値が紛れ込んだ場合は同期をキャンセルして描画を止める
     if (Number.isNaN(absX) || Number.isNaN(absY) || Number.isNaN(w) || Number.isNaN(h) || w <= 0 || h <= 0) {

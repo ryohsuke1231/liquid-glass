@@ -3,7 +3,7 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import { LiquidEffect } from './liquidEffect.js';
-import { UnpickableActor, UILayerSampler, WindowCloneManager } from './utils.js';
+import { UnpickableActor, UILayerSampler, WindowCloneManager, getAllocatedSize } from './utils.js';
 // Padding to allow the shader to draw effects (like refraction and blur) outside the actor's strict bounds.
 const SHADER_PADDING = 20;
 // Utility: Convert HEX color string (e.g., "#ffffff") to normalized RGB array [1.0, 1.0, 1.0]
@@ -657,7 +657,10 @@ export class DashManager {
             return;
         // .x, .y, .width を直接読まず、計算済みの「画面上の絶対座標」と「サイズ」を関数で取得
         let [absX, absY] = source.get_transformed_position();
-        let [w, h] = source.get_size();
+        // get_size() ではなくアロケーションを読む: BEFORE_REDRAW later は
+        // stage の relayout より前に走るため、get_size() が preferred size
+        // （ソースによっては 0）を返してクローンが 1 フレーム消える。
+        let [w, h] = getAllocatedSize(source);
         // NaN（非数）や異常なマイナス値が紛れ込んだ場合は同期をキャンセルして描画を止める
         if (Number.isNaN(absX) || Number.isNaN(absY) || Number.isNaN(w) || Number.isNaN(h) || w <= 0 || h <= 0) {
             clone.visible = false;
