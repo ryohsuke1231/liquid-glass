@@ -54,6 +54,14 @@ uniform float shadow_intensity;
 uniform float shadow_max_radius;
 uniform float padding;
 uniform float isDock;
+// [PERF] Single flag, set from LiquidEffect.setFastMode() — gated in JS by
+// LiquidEffect.DRAG_PERF_MODE_ENABLED so this is a pure no-op (uniform
+// stays 0.0) unless a caller explicitly opts in during e.g. a window drag.
+// 0.0 = current behavior, unchanged. 1.0 = cheaper approximations below:
+// heightGradientFast() (analytic SDF gradient direction + a single
+// directional sample, instead of 4 axis-aligned getHeight() samples) and
+// skipping the outer drop-shadow computation entirely.
+uniform float fast_mode;
 
 // [NEW] SCB (Saturation, Contrast, Brightness) 調整用の変数
 uniform float brightness;
@@ -69,11 +77,118 @@ uniform float dock_y;  // dock background top  edge  (monitor-relative px)
 uniform float dock_w;  // dock background width       (px, includes SHADER_PADDING)
 uniform float dock_h;  // dock background height      (px, includes SHADER_PADDING)
 
+// [NEW] Multi-region compositing (used by Quick Settings "Toggles" apply-to
+// mode, see quickSettingsManager.ts::_syncToggleRegions). Instead of one big
+// dock/panel-sized rectangle, glass.frag can draw up to MAX_GLASS_REGIONS
+// independent small rounded-rect "windows" into the SAME shared blurred
+// texture (computed once per frame regardless of region count). Each pixel
+// picks at most one region to render (regions are expected not to overlap);
+// pixels outside every region are fully transparent. Drop shadows are
+// unconditionally skipped in this mode (see main()) — they only make sense
+// for one big panel, not many small independent chips.
+//
+// When multi_region_mode is 0 (the default, used by Dock/Menu/Notification/
+// OSD/Application and the Quick Settings "Background" mode), none of this
+// is evaluated differently from before — the legacy single dock_* rect path
+// below is used exactly as-is.
+#define MAX_GLASS_REGIONS 16
+uniform float multi_region_mode;              // 0 = legacy single dock_* rect, 1 = multi-region
+uniform float region_count;                   // valid entries in the arrays below (0..MAX_GLASS_REGIONS)
+
+// [FIX] Optional flat "panel background" fallback fill color, composited
+// UNDER the glass+shadow result (see the very end of main()). Defaults to
+// panel_bg_a = 0 (fully off, a no-op) so existing usages (Background mode,
+// application windows) are completely unaffected — only Toggles mode sets
+// this, to a = 1 with the quick-settings panel's real background color.
+uniform float panel_bg_r;
+uniform float panel_bg_g;
+uniform float panel_bg_b;
+uniform float panel_bg_a;
+// [FIX] The panel's REAL widget bounds (monitor-relative px, NOT padded —
+// no SHADER_PADDING/CLIP_PADDING/glassExpand), so the panel_bg_* fallback
+// fill above can be restricted to that rect instead of covering the whole
+// (much larger) bgActor. bgActor is full-monitor-sized and clipped to the
+// toggle-region bounding box PLUS a 200px CLIP_PADDING margin (see
+// quickSettingsManager.ts::_syncToggleRegions) purely to give the
+// blur/refraction shader sampling headroom past the panel's real edges.
+// Without this mask, panel_bg_a=1 flood-fills that entire padded/clipped
+// rectangle wherever finalAlpha < 1 — including the ~200px margin OUTSIDE
+// the real panel — producing a solid rectangle visibly larger than the
+// panel itself (reported as a black box surrounding Quick Settings).
+uniform float panel_rect_x;
+uniform float panel_rect_y;
+uniform float panel_rect_w;
+uniform float panel_rect_h;
+uniform float region_x[MAX_GLASS_REGIONS];    // monitor-relative px, includes SHADER_PADDING/expand
+uniform float region_y[MAX_GLASS_REGIONS];
+uniform float region_w[MAX_GLASS_REGIONS];
+uniform float region_h[MAX_GLASS_REGIONS];
+uniform float region_tint_r[MAX_GLASS_REGIONS]; // per-region BASE color (the element's own, sampled on the TS side)
+uniform float region_tint_g[MAX_GLASS_REGIONS];
+uniform float region_tint_b[MAX_GLASS_REGIONS];
+// [FIX-8] How strongly each region's own base color is applied, INDEPENDENTLY
+// of tint_strength. Formerly the TS side pre-blended the element's own color
+// with the user's tint color into one `region_tint_*` triple, which meant a
+// single tint_strength governed both: turning the user's tint down to 0.21
+// also faded the element's own color (e.g. Do Not Disturb's solid white when
+// ON) down to 0.21, so the only way to see an element's own color strongly
+// was to crank the custom tint strongly too. They are now two separate,
+// composable layers over `refracted` — see the mix() chain in main().
+// Per-region rather than a single uniform so a region whose real color could
+// not be resolved at all can simply opt out with 0.
+uniform float region_base_strength[MAX_GLASS_REGIONS];
+
 // Signed Distance Field (SDF) function for a rounded rectangle.
 // Returns negative values inside the shape, positive outside, and 0 on the exact edge.
 float sdRoundRect(vec2 p, vec2 b, float r) {
     vec2 d = abs(p) - b + vec2(r);
     return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
+}
+
+// [NEW] Multi-region mode: finds the region nearest to (i.e. most "inside"
+// for) the given pixel, and outputs the local coordinate frame / tint for
+// that region — mirroring the single dock_* rect's local_pos/box_size
+// derivation below, just repeated per-region using the shared `corner_radius`
+// uniform (set once via LiquidEffect.setCornerRadius(), same as legacy mode).
+//
+// Regions are expected not to overlap (toggle pods never overlap on
+// screen), so at most one region is actually "inside" for any given pixel;
+// ties (or the zero-region case) are resolved by picking the smallest SDF
+// distance, which correctly degrades to "outside everything" — the normal
+// insideMask/outsideMask smoothstep further down in main() already treats
+// a large positive distance as fully transparent, so no extra handling is
+// needed here for the empty/out-of-range case.
+float findActiveRegion(vec2 pixel_coord, float pad, out vec2 outLocalPos, out vec2 outBoxSize, out vec3 outTint, out float outBaseStrength) {
+    float bestD = 1.0e6;
+    outLocalPos = vec2(1.0e6);
+    outBoxSize = vec2(1.0);
+    outTint = vec3(1.0);
+    outBaseStrength = 0.0;
+
+    int count = int(min(region_count, float(MAX_GLASS_REGIONS)));
+
+    for (int i = 0; i < MAX_GLASS_REGIONS; i++) {
+        if (i >= count) break;
+
+        vec2 rPos = vec2(region_x[i], region_y[i]);
+        vec2 rSize = vec2(region_w[i], region_h[i]);
+        vec2 rCenter = rPos + rSize * 0.5;
+        vec2 rLocal = pixel_coord - rCenter;
+
+        vec2 actual_size = rSize - vec2(pad * 2.0);
+        vec2 rBox = max(actual_size * 0.5, vec2(1.0));
+
+        float d = sdRoundRect(rLocal, rBox, corner_radius);
+        if (d < bestD) {
+            bestD = d;
+            outLocalPos = rLocal;
+            outBoxSize = rBox;
+            outTint = vec3(region_tint_r[i], region_tint_g[i], region_tint_b[i]);
+            outBaseStrength = region_base_strength[i];
+        }
+    }
+
+    return bestD;
 }
 
 // Normalizes the depth value based on the edge curvature.
@@ -138,6 +253,45 @@ vec2 heightGradient(vec2 p, vec2 b, float r, float zScale, vec2 resolution) {
     float hT = getHeight(p - vec2(0.0, e), b, r, zScale);
 
     return vec2((hR - hL) / (2.0 * e), (hB - hT) / (2.0 * e));
+}
+
+// [PERF] Cheaper alternative to heightGradient() above, used when
+// fast_mode > 0.5 (see uniform declaration up top). heightGradient()
+// estimates BOTH the gradient's direction and magnitude numerically, which
+// costs 4 getHeight() evaluations per pixel (each itself doing an
+// sdRoundRect + profileHeight). For a rounded-rect SDF the gradient's
+// DIRECTION has a known closed form (Inigo Quilez's rounded-box distance
+// field gradient) that costs a few ALU ops and zero extra getHeight()
+// calls — only the magnitude still needs an actual height sample, and
+// that only needs ONE extra sample (taken along the now-known direction)
+// instead of 4. Net: 2 getHeight() calls instead of 4, plus the numerical
+// direction-estimation error heightGradient() has near the corners (where
+// the two axis-aligned finite differences straddle the rounding) is gone
+// entirely — this is a strict quality improvement for direction, traded
+// against a slightly coarser magnitude estimate (single forward sample
+// instead of a centered one), which is the actual approximation being
+// made here.
+vec2 heightGradientFast(vec2 p, vec2 b, float r, float zScale, vec2 resolution) {
+    vec2 q = abs(p) - b + vec2(r);
+    vec2 dir;
+    if (max(q.x, q.y) < 0.0) {
+        // Inside the "inner rect" part of the rounded box (straight edges,
+        // not yet in corner-rounding territory): gradient is axis-aligned,
+        // pointing out through whichever side is closer.
+        dir = (q.x > q.y) ? vec2(sign(p.x), 0.0) : vec2(0.0, sign(p.y));
+    } else {
+        // Corner region: gradient points radially outward from the corner
+        // circle's center, same construction sdRoundRect() itself uses for
+        // the corner term (length(max(d,0))).
+        vec2 qc = max(q, 0.0);
+        dir = sign(p) * normalize(qc + vec2(1e-6));
+    }
+
+    float e = gradientStep(resolution);
+    float h0 = getHeight(p, b, r, zScale);
+    float h1 = getHeight(p + dir * e, b, r, zScale);
+    float slope = (h1 - h0) / e;
+    return dir * slope;
 }
 
 // Converts the 2D gradient into a 3D normal vector.
@@ -217,35 +371,51 @@ void main() {
     // dockManager, giving us the same dock-centred local coordinate system
     // without any FBO size / BMS absolute-coordinate mismatch.
     //
-    // dock_center is in the same pixel space as pixel_coord (monitor-local).
-    vec2 dock_center = vec2(dock_x + dock_w * 0.5, dock_y + dock_h * 0.5);
-
-    // local_pos: pixel offset from the dock center — identical semantics to
-    // the old (pixel_coord - resolution*0.5) but now pinned to the dock, not
-    // to the actor boundary.
-    vec2 local_pos = pixel_coord - dock_center;
-
     // Pre-calculate geometry anti-aliasing feathering width.
     float edgeFeather = max(edge_smoothing, 0.75);
 
-    // [CHANGED] box_size is derived from dock_w / dock_h instead of resolution.
-    // Previously the whole actor was dock-sized so resolution == dock size.
-    // Now resolution is the full monitor size; using it here would produce a
-    // vastly oversized rounded rectangle.  dock_w/dock_h give the true extents
-    // of the glass shape (including SHADER_PADDING on all sides).
+    // [NEW] Multi-region branch (Quick Settings "Toggles" mode): pick the
+    // nearest of up to MAX_GLASS_REGIONS small rounded rects instead of the
+    // single dock_* rect. See findActiveRegion() above.
+    vec2 local_pos;
     vec2 box_size;
-    if (isDock > 0.5) {
-        // For the dock, shrink the box so the feathered edges don't reach
-        // the dock background boundary.
-        vec2 actual_size = vec2(dock_w, dock_h) - vec2(padding * 2.0) - vec2(edgeFeather * 2.0);
-        box_size = max(actual_size * 0.5, vec2(1.0));
-    } else {
-        vec2 actual_size = vec2(dock_w, dock_h) - vec2(padding * 2.0);
-        box_size = max(actual_size * 0.5, vec2(1.0));
-    }
+    vec3 activeTint;
+    // [FIX-8] Base-color layer strength for the winning region. Stays 0 in
+    // legacy (single-rect) mode, which has no per-element "own color" concept
+    // — that path is bit-for-bit unchanged.
+    float activeBaseStrength = 0.0;
+    float d;
 
-    // Distance from the current pixel to the rounded rectangle boundary.
-    float d = sdRoundRect(local_pos, box_size, corner_radius);
+    if (multi_region_mode > 0.5) {
+        d = findActiveRegion(pixel_coord, padding, local_pos, box_size, activeTint, activeBaseStrength);
+    } else {
+        // dock_center is in the same pixel space as pixel_coord (monitor-local).
+        vec2 dock_center = vec2(dock_x + dock_w * 0.5, dock_y + dock_h * 0.5);
+
+        // local_pos: pixel offset from the dock center — identical semantics to
+        // the old (pixel_coord - resolution*0.5) but now pinned to the dock, not
+        // to the actor boundary.
+        local_pos = pixel_coord - dock_center;
+
+        // [CHANGED] box_size is derived from dock_w / dock_h instead of resolution.
+        // Previously the whole actor was dock-sized so resolution == dock size.
+        // Now resolution is the full monitor size; using it here would produce a
+        // vastly oversized rounded rectangle.  dock_w/dock_h give the true extents
+        // of the glass shape (including SHADER_PADDING on all sides).
+        if (isDock > 0.5) {
+            // For the dock, shrink the box so the feathered edges don't reach
+            // the dock background boundary.
+            vec2 actual_size = vec2(dock_w, dock_h) - vec2(padding * 2.0) - vec2(edgeFeather * 2.0);
+            box_size = max(actual_size * 0.5, vec2(1.0));
+        } else {
+            vec2 actual_size = vec2(dock_w, dock_h) - vec2(padding * 2.0);
+            box_size = max(actual_size * 0.5, vec2(1.0));
+        }
+
+        // Distance from the current pixel to the rounded rectangle boundary.
+        d = sdRoundRect(local_pos, box_size, corner_radius);
+        activeTint = vec3(tint_r, tint_g, tint_b);
+    }
     
     // Geometry Anti-Aliasing: Smoothstep forces a sub-pixel soft transition.
     // Inside = 1.0, Outside = 0.0.
@@ -430,6 +600,31 @@ void main() {
     // does with the smoothstep() calls above.
     shadowAlpha *= 1.0 - step(maxRadius, d);
 
+    // [NEW] Multi-region mode never draws a drop shadow: a per-region shadow
+    // makes little visual sense for many small independent chips, and
+    // shadow-radius/shadow-intensity are shared global settings that other
+    // consumers (dock, menu, notification, background QS) still control
+    // independently. Zeroing here (rather than skipping the computation
+    // above) keeps this a minimal, low-risk addition.
+    if (multi_region_mode > 0.5) {
+        shadowAlpha = 0.0;
+    }
+
+    // [PERF] fast_mode (see uniform declaration up top): same "zero the
+    // result rather than restructure the computation" approach as
+    // multi_region_mode just above — the shadow math itself (dot products
+    // and a couple of quintic-ease multiplications, no pow()/texture calls)
+    // is cheap next to the 4-tap-vs-2-tap getHeight() saving from
+    // heightGradientFast() above, and this keeps the change a pure
+    // result-level toggle with no risk of a GLSL scoping mistake in the
+    // fairly intricate umbra/penumbra/bounds sequence above. A genuine
+    // "skip the ALU work" version is possible but wasn't made here since it
+    // can't be compile-tested outside a running shell — ask if you want
+    // that version to try locally.
+    if (fast_mode > 0.5) {
+        shadowAlpha = 0.0;
+    }
+
     // 9) Shadow color: dark with a subtle cool/blue cast. Suggests ambient
     //    sky light bleeding into the shadow (a hallmark of realistic
     //    outdoor / window-lit shadow rendering). Avoids the "painted-on
@@ -438,7 +633,9 @@ void main() {
 
     vec4 source = texture2D(cogl_sampler1, uv);
 
-    vec2 gradH = heightGradient(local_pos, box_size, corner_radius, max_z, resolution);
+    vec2 gradH = (fast_mode > 0.5)
+        ? heightGradientFast(local_pos, box_size, corner_radius, max_z, resolution)
+        : heightGradient(local_pos, box_size, corner_radius, max_z, resolution);
     vec3 normal = getNormal(gradH);
 
     vec2 disp = getDisplacement(d, normal, resolution);
@@ -498,8 +695,24 @@ void main() {
     vec3 adjustedRefracted = applySCB(refractedRgb, brightness, contrast, saturation); 
     vec3 refracted = adjustedRefracted;
 
-    vec3 tintColor = vec3(tint_r, tint_g, tint_b);
-    vec3 insideBaseColor = mix(refracted, tintColor, tint_strength);
+    // [FIX-8] Two independent, composable tint layers over the refracted
+    // backdrop, applied back to front:
+    //
+    //   1. BASE  — the element's own color (multi-region/Toggles mode only;
+    //              activeBaseStrength is 0 everywhere else), at
+    //              region_base_strength. This is what makes a toggle that
+    //              genuinely turns solid white when ON read as white.
+    //   2. CUSTOM — the user's configured tint color, at tint_strength.
+    //
+    // Previously these were a single mix() against one pre-blended color, so
+    // tint_strength scaled BOTH: a low custom tint strength also suppressed
+    // the element's own color, and the only way to bring an element's own
+    // color back was to raise the custom tint too. Layering them keeps each
+    // slider doing exactly one thing, and the legacy path is unchanged
+    // (activeBaseStrength == 0 collapses layer 1 to a no-op, leaving
+    // mix(refracted, tint, tint_strength) exactly as before).
+    vec3 insideBaseColor = mix(refracted, activeTint, activeBaseStrength);
+    insideBaseColor = mix(insideBaseColor, vec3(tint_r, tint_g, tint_b), tint_strength);
 
     // [FIX] Do NOT multiply by insideMask here. insideMask is the same
     // value used as `alpha` below, and the final composite already
@@ -678,8 +891,32 @@ void main() {
     vec3 finalRgb   = litColor * alpha + shadowColor * shadowContribution;
     float finalAlpha = alpha + shadowContribution;
 
+    // [FIX] Panel-background fallback fill — see the uniform declarations
+    // above for why this exists (Toggles mode). Composited UNDERNEATH the
+    // glass+shadow result using the same premultiplied "A over B" formula,
+    // so it only shows through where the glass/shadow didn't already cover
+    // the pixel (i.e. everywhere outside every toggle's glass region).
+    // At panel_bg_a = 0 (the default for every other use of this shader)
+    // panelContribution is always 0, making this an exact no-op.
+    //
+    // [FIX] Mask the fill to panel_rect_* (the panel's real widget bounds)
+    // so it can never bleed into the SHADER_PADDING/CLIP_PADDING sampling
+    // margin around it — see the uniform declarations above. Reuses the
+    // same sdRoundRect() used for dock/regions and the shared corner_radius
+    // uniform; this is an approximation of the panel's true corner radius
+    // (rectangular corners would be visible only in the ~1-2px outside a
+    // rounded corner, which is preferable to a few-hundred-px black box).
+    vec2 panelCenter = vec2(panel_rect_x, panel_rect_y) + vec2(panel_rect_w, panel_rect_h) * 0.5;
+    vec2 panelLocal = pixel_coord - panelCenter;
+    vec2 panelBox = max(vec2(panel_rect_w, panel_rect_h) * 0.5, vec2(1.0));
+    float panelDist = sdRoundRect(panelLocal, panelBox, corner_radius);
+    float panelMask = 1.0 - smoothstep(-1.0, 1.0, panelDist);
+
+    vec3 panelBg = vec3(panel_bg_r, panel_bg_g, panel_bg_b);
+    float panelContribution = panel_bg_a * (1.0 - finalAlpha) * panelMask;
+    finalRgb += panelBg * panelContribution;
+    finalAlpha += panelContribution;
+
     // Output with premultiplied alpha format, required by Clutter/Cogl pipeline.
     cogl_color_out = vec4(finalRgb, finalAlpha) * cogl_color_in;
 }
-
-

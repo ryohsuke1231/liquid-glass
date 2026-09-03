@@ -14,6 +14,143 @@ import Mtk from 'gi://Mtk';
 
 
 /**
+ * [FIX round 13] Works out where the actor's own pixels live inside the
+ * padded capture texture, and where the composite quad has to be drawn so
+ * that it lands exactly back on the actor.
+ *
+ * Two things were wrong before, and both came from the same guess — that
+ * the capture's padding is split evenly around the actor.
+ *
+ * 1. The padding is NOT centred. ClutterOffscreenEffect.pre_paint() sizes
+ *    its FBO from _clutter_actor_box_enlarge_for_effects(), which does:
+ *
+ *        w  = nearbyint(raw.x2 - raw.x1)
+ *        x2 = ceilf(raw.x2 + 0.75)
+ *        x1 = x2 - w - 3
+ *
+ *    For an integer-sized actor at a whole-pixel origin that yields
+ *    x1 = -2, x2 = w + 1 — i.e. 2px of padding on the left/top and 1px on
+ *    the right/bottom, for the 3px total this extension has always
+ *    measured (964x563 capture for a 961x560 actor). Sampling from
+ *    padding/2 = 1.5px therefore read half a pixel too far left/up.
+ *
+ * 2. Far more visibly: vfunc_paint_target() does NOT run in the actor's
+ *    own coordinate space. clutter_offscreen_effect_paint_texture() wraps
+ *    the paint_target call in a ClutterTransformNode carrying
+ *    translate(fbo_offset_x, fbo_offset_y) — the very offset above — and
+ *    then Clutter's own default paint_target draws the FULL texture at
+ *    (0, 0, texWidth, texHeight). So in this space one unit is one capture
+ *    TEXEL and the origin is the texture's top-left corner, which sits at
+ *    actor-local (-2, -2). Drawing the composite at (0, 0, w, h), as this
+ *    did, therefore shifted the entire glass up and to the left by that
+ *    offset — the reported "-3px, -3px offset" on the dock, menus,
+ *    notifications, application windows and the OSD.
+ *
+ * Returns UVs into the capture plus the destination rect in that texel
+ * space. Everything is derived from the actor's paint volume, exactly as
+ * Clutter derives it; the result is sanity-checked against the texture's
+ * real size and falls back to the old centred assumption if the
+ * replication ever stops matching (a Clutter change, a rotated actor, a
+ * paint volume we can't read).
+ */
+export function computeCaptureLayout(
+  actor: Clutter.Actor | null, srcW: number, srcH: number,
+  allocW: number, allocH: number
+): { uv: number[]; dest: number[] } {
+  const centredFallback = (): { uv: number[]; dest: number[] } => {
+    const padW = srcW - allocW;
+    const padH = srcH - allocH;
+    if (padW === 0 && padH === 0) {
+      return { uv: [0, 0, 1, 1], dest: [0, 0, allocW, allocH] };
+    }
+    const x0 = padW / 2, y0 = padH / 2;
+    return {
+      uv: [
+        x0 / srcW, y0 / srcH,
+        Math.min(1.0, (x0 + allocW) / srcW),
+        Math.min(1.0, (y0 + allocH) / srcH),
+      ],
+      dest: [x0, y0, x0 + allocW, y0 + allocH],
+    };
+  };
+
+  if (!actor) return centredFallback();
+
+  // The paint volume is in the actor's own coordinate space and is what
+  // pre_paint() feeds to _clutter_actor_box_enlarge_for_effects(). When it
+  // can't be obtained, Clutter falls back to the allocation box, which for
+  // our purposes is the same rectangle with its origin at (0, 0).
+  let rawX1 = 0, rawY1 = 0, rawX2 = allocW, rawY2 = allocH;
+  try {
+    const pv = (actor as any).get_paint_volume?.();
+    if (pv) {
+      const origin = pv.get_origin();
+      rawX1 = origin.x;
+      rawY1 = origin.y;
+      rawX2 = rawX1 + pv.get_width();
+      rawY2 = rawY1 + pv.get_height();
+    }
+  } catch (e) {
+    // Keep the allocation-derived box.
+  }
+  if (!Number.isFinite(rawX1) || !Number.isFinite(rawY1) ||
+    !Number.isFinite(rawX2) || !Number.isFinite(rawY2)) {
+    return centredFallback();
+  }
+
+  // CLUTTER_NEARBYINT: round half away from zero, truncated to an int.
+  const nearbyint = (v: number) => Math.trunc(v < 0 ? v - 0.5 : v + 0.5);
+
+  let x1 = rawX1, y1 = rawY1, x2 = rawX2, y2 = rawY2;
+  // _clutter_actor_box_enlarge_for_effects leaves a zero-area box alone.
+  if ((rawX2 - rawX1) * (rawY2 - rawY1) !== 0) {
+    const w = nearbyint(rawX2 - rawX1);
+    const h = nearbyint(rawY2 - rawY1);
+    x2 = Math.ceil(rawX2 + 0.75);
+    y2 = Math.ceil(rawY2 + 0.75);
+    x1 = x2 - w - 3;
+    y1 = y2 - h - 3;
+  }
+
+  const boxW = x2 - x1;
+  const boxH = y2 - y1;
+  if (!(boxW > 0) || !(boxH > 0)) return centredFallback();
+
+  // priv->fbo_offset_{x,y} is the INTEGER truncation of the enlarged box's
+  // origin, and the offscreen's modelview translates by its negation, so
+  // capture texel = (actorLocal - fboOffset) * scale.
+  const fboOffX = Math.trunc(x1);
+  const fboOffY = Math.trunc(y1);
+
+  // pre_paint scales the box by ceilf(resourceScale) and ceils the result
+  // into the texture size, so the scale is recoverable from the texture
+  // itself — no HiDPI-only API needed, and the check below rejects the
+  // answer outright if the replication doesn't reproduce srcW/srcH.
+  const scale = Math.max(1, Math.round(srcW / boxW));
+  if (Math.ceil(boxW * scale) !== srcW || Math.ceil(boxH * scale) !== srcH) {
+    return centredFallback();
+  }
+
+  const padLeft = -fboOffX * scale;
+  const padTop = -fboOffY * scale;
+  const contentW = allocW * scale;
+  const contentH = allocH * scale;
+
+  if (!(padLeft >= 0) || !(padTop >= 0) ||
+    padLeft + contentW > srcW || padTop + contentH > srcH) {
+    return centredFallback();
+  }
+
+  return {
+    uv: [
+      padLeft / srcW, padTop / srcH,
+      (padLeft + contentW) / srcW, (padTop + contentH) / srcH,
+    ],
+    dest: [padLeft, padTop, padLeft + contentW, padTop + contentH],
+  };
+}
+
+/**
  * Captures a small rectangle of the screen (the panel area) into a
  * `Clutter.Content`, for use as the "blurred panel" backdrop inside the
  * glass, while structurally guaranteeing the glass never captures itself.
@@ -71,8 +208,32 @@ export class SelfExcludingSnapshotCapture {
   private static readonly FRAME_SKIP = 1;
   private _frameCounter: number = 0;
 
-  constructor(stage: Clutter.Stage, hideActor: Clutter.Actor, rectGetter: () => [number, number, number, number]) {
+  // [DIAG] Every failure path in _captureOnce() used to be swallowed by a
+  // bare `catch (e) {}`, so a capture that never produced anything looked
+  // from the outside exactly like a capture that worked — the glass simply
+  // showed whatever was layered beneath it (the wallpaper/window clones)
+  // with no hint as to why. These make the first failure of each kind, and
+  // then every 300th, visible in the journal.
+  private _label: string;
+  private _failCount: number = 0;
+  private _okCount: number = 0;
+
+  // When set and it returns false, _captureOnce() is a no-op (and reports
+  // nothing): the capture is dormant rather than failing. Without it, a
+  // capture created for a popup keeps hiding its hide-actor and re-painting
+  // the whole stage into an offscreen on every single frame for as long as it
+  // lives, popup open or not.
+  private _activeCheck: (() => boolean) | null;
+
+  constructor(
+    stage: Clutter.Stage, hideActor: Clutter.Actor,
+    rectGetter: () => [number, number, number, number],
+    label: string = 'snapshot',
+    activeCheck: (() => boolean) | null = null
+  ) {
     this._stage = stage;
+    this._label = label;
+    this._activeCheck = activeCheck;
     if (hideActor) this._hideActors.add(hideActor);
     this._rectGetter = rectGetter;
     this._captureOnce();
@@ -104,9 +265,31 @@ export class SelfExcludingSnapshotCapture {
     if (actor) this._hideActors.delete(actor);
   }
 
+  /** [DIAG] Throttled: reports the 1st, 2nd and then every 300th occurrence. */
+  private _report(kind: string, detail: string): void {
+    this._failCount++;
+    if (this._failCount <= 2 || this._failCount % 300 === 0) {
+      console.warn(
+        `[Liquid Glass][snapshot:${this._label}] ${kind} (failures=${this._failCount}, ` +
+        `successes=${this._okCount}): ${detail}`
+      );
+    }
+  }
+
   private _captureOnce(): void {
+    if (this._activeCheck) {
+      try {
+        if (!this._activeCheck()) return;
+      } catch (e) {
+        return;
+      }
+    }
+
     const [x, y, w, h] = this._rectGetter();
-    if (w <= 0 || h <= 0) return;
+    if (w <= 0 || h <= 0) {
+      this._report('empty capture rect', `x=${x} y=${y} w=${w} h=${h}`);
+      return;
+    }
 
     // Hide every registered instance's root, not just a single
     // one, so a shared capture never leaks any glass instance into itself.
@@ -127,10 +310,23 @@ export class SelfExcludingSnapshotCapture {
       // Signature is (rect, scale, color_state, paint_flags); color_state
       // of null uses the default color space. NO_CURSORS excludes the
       // mouse pointer sprite from the snapshot (see class doc comment).
-      const paintFlags = (Clutter as any).PaintFlag?.NO_CURSORS ?? 0;
+      // CLEAR matters: clutter_stage_paint_to_framebuffer() only clears the
+      // offscreen when this flag is set, and the texture it allocates starts
+      // out with undefined contents — anything the stage does not paint over
+      // is garbage without it.
+      const NO_CURSORS = (Clutter as any).PaintFlag?.NO_CURSORS ?? 0;
+      const CLEAR = (Clutter as any).PaintFlag?.CLEAR ?? 0;
+      const paintFlags = NO_CURSORS | CLEAR;
       const content = (this._stage as any).paint_to_content?.(rect, scale, null, paintFlags);
-      if (content) this._content = content;
+      if (content) {
+        this._content = content;
+        this._okCount++;
+      } else {
+        this._report('paint_to_content returned null',
+          `rect=${rect.x},${rect.y} ${rect.width}x${rect.height}`);
+      }
     } catch (e) {
+      this._report('paint_to_content threw', `${e}`);
     } finally {
       for (const actor of hidden) {
         try { actor.show(); } catch (_) { /* actor may have been destroyed; skip it */ }
@@ -160,11 +356,12 @@ function acquireSelfExcludingSnapshot(
   sourceActor: Clutter.Actor,
   stage: Clutter.Stage,
   hideActor: Clutter.Actor,
-  rectGetter: () => [number, number, number, number]
+  rectGetter: () => [number, number, number, number],
+  label: string = 'bms'
 ): SelfExcludingSnapshotCapture {
   let cap = _selfExcludingSnapshotRegistry.get(sourceActor);
   if (!cap) {
-    cap = new SelfExcludingSnapshotCapture(stage, hideActor, rectGetter);
+    cap = new SelfExcludingSnapshotCapture(stage, hideActor, rectGetter, label);
     _selfExcludingSnapshotRegistry.set(sourceActor, cap);
   } else {
     cap.addHideActor(hideActor);
@@ -206,6 +403,72 @@ export const UnpickableActor = GObject.registerClass(
   class UnpickableActor extends Clutter.Actor {
     vfunc_pick(_pickContext: any): void {
       // No-op: never respond to picking.
+    }
+  }
+);
+
+/**
+ * An St.Widget that never responds to picking, used purely to re-paint some
+ * other widget's THEME BACKGROUND (background color / gradient / border-image
+ * / border-radius) somewhere else.
+ *
+ * Copying the source widget's style class onto a bare widget makes St resolve
+ * and paint exactly the same background material, without cloning — and
+ * therefore without dragging the source's children (labels, icons, ...) along
+ * with it, which is what a Clutter.Clone or a stage snapshot would do.
+ *
+ * Caveat: only selectors that match on the class itself apply; a rule written
+ * as a descendant selector against the real widget's ancestry will not.
+ */
+export const UnpickableStyledWidget = GObject.registerClass(
+  class UnpickableStyledWidget extends St.Widget {
+    vfunc_pick(_pickContext: any): void {
+      // No-op: never respond to picking.
+    }
+  }
+);
+
+/**
+ * [FIX-5] "Quick Settings turns into a full-screen dark rectangle, Toggles
+ * show nothing" the moment bgActor became a child of animActor (a real
+ * St.BoxLayout, used for the actual quick-settings grid).
+ *
+ * Root cause: unlike a plain Clutter.Actor (which — absent an explicit
+ * LayoutManager — does NOT roll its children's sizes into its own reported
+ * preferred size; this is exactly why bgActor's own many manually-sized
+ * descendants, or bgActor itself sitting under uiGroup, never caused any
+ * such ballooning before), St.BoxLayout DOES actively query each direct
+ * child's own get_preferred_width()/height() and stacks/sums them to
+ * compute ITS OWN size. bgActor has an EXPLICIT fixed size set on it
+ * directly (set_size(screenW, screenH) — see _syncToggleRegions()/
+ * resolution-update code), and an actor's own explicitly-set size is
+ * exactly what get_preferred_width()/height() reports back to a querying
+ * parent, regardless of any layout manager. So animActor's BoxLayout was
+ * faithfully doing its job: stacking a "child" that claims to want
+ * 1920x1080, on top of the real ~1920x198 toggle content — hence the
+ * ballooned (1958x1316) allocation and the screen-covering dark panel.
+ *
+ * Fix: LayoutOpaqueActor unconditionally reports (0,0) for both min and
+ * natural size in both dimensions, no matter what its own children (e.g.
+ * bgActor) request. A querying parent's LayoutManager takes exactly what
+ * get_preferred_width()/height() returns as authoritative — it never looks
+ * past that return value into the subtree — so this is a hard, guaranteed
+ * "don't count anything below me towards your own size" boundary, usable
+ * to wrap any actor (like bgActor) that must be dropped into a real
+ * layout-managed container (like animActor) purely for z-order, with its
+ * own geometry fully hand-managed instead of participating in that
+ * container's size negotiation. Its own on-screen ORIGIN (x,y) still comes
+ * from wherever the parent's layout manager decides to place a 0-sized
+ * child — callers reposition it explicitly every frame regardless (see
+ * quickSettingsManager.ts's animActor counter-transform), so that's fine.
+ */
+export const LayoutOpaqueActor = GObject.registerClass(
+  class LayoutOpaqueActor extends UnpickableActor {
+    vfunc_get_preferred_width(_forHeight: number): [number, number] {
+      return [0, 0];
+    }
+    vfunc_get_preferred_height(_forWidth: number): [number, number] {
+      return [0, 0];
     }
   }
 );
@@ -283,10 +546,11 @@ export const TextureBlitActor = GObject.registerClass({
       const texW = tex.get_width();
       const texH = tex.get_height();
 
-      // Some OffscreenEffect implementations pad their captured texture a
-      // few pixels beyond the actor's logical size (Cogl FBO alignment).
-      // If so, sample only the centered sub-rectangle matching the source's
-      // actual allocated size.
+      // A ClutterOffscreenEffect's captured texture is a few pixels larger
+      // than the actor's logical size, and — contrary to what this used to
+      // assume — that padding is NOT centred: it is 2px on the left/top and
+      // 1px on the right/bottom (see computeCaptureLayout()). Sample only
+      // the sub-rectangle that actually holds the source's own pixels.
       let uMin = 0, vMin = 0, uMax = 1, vMax = 1;
       const src = this._sourceActor;
       if (src) {
@@ -295,12 +559,8 @@ export const TextureBlitActor = GObject.registerClass({
         const allocH = Number.isFinite(rawH) && rawH > 0 ? Math.round(rawH) : texH;
 
         if ((allocW !== texW || allocH !== texH) && texW > 0 && texH > 0) {
-          const padW = texW - allocW;
-          const padH = texH - allocH;
-          uMin = (padW / 2) / texW;
-          vMin = (padH / 2) / texH;
-          uMax = Math.min(1.0, uMin + allocW / texW);
-          vMax = Math.min(1.0, vMin + allocH / texH);
+          const uv = computeCaptureLayout(src, texW, texH, allocW, allocH).uv;
+          uMin = uv[0]; vMin = uv[1]; uMax = uv[2]; vMax = uv[3];
         }
       }
 
@@ -1154,3 +1414,90 @@ export function isActorValid(actor: any): boolean {
     return false;
   }
 }
+
+export const InvertedPositionConstraint = GObject.registerClass({
+  GTypeName: 'InvertedPositionConstraint',
+  Properties: {
+    'source': GObject.ParamSpec.object(
+      'source', 'Source', 'Source Actor',
+      GObject.ParamFlags.READWRITE,
+      Clutter.Actor.$gtype
+    ),
+    'offset-x': GObject.ParamSpec.double(
+      'offset-x', 'Offset X', 'X Offset',
+      GObject.ParamFlags.READWRITE,
+      Number.MIN_SAFE_INTEGER, Number.MAX_SAFE_INTEGER, 0.0
+    ),
+    'offset-y': GObject.ParamSpec.double(
+      'offset-y', 'Offset Y', 'Y Offset',
+      GObject.ParamFlags.READWRITE,
+      Number.MIN_SAFE_INTEGER, Number.MAX_SAFE_INTEGER, 0.0
+    ),
+  },
+}, class InvertedPositionConstraint extends Clutter.Constraint {
+  declare source: Clutter.Actor | null;
+  declare offset_x: number;
+  declare offset_y: number;
+
+  private _sourceXId: number = 0;
+  private _sourceYId: number = 0;
+
+  _init(props?: any) {
+    super._init(props);
+
+    // sourceプロパティ自体が変更されたときの監視
+    this.connect('notify::source', this._onSourceChanged.bind(this));
+    if (this.source) {
+      this._onSourceChanged();
+    }
+  }
+
+  private _onSourceChanged() {
+    this._disconnectSignals();
+
+    if (this.source) {
+      const queueRelayout = () => {
+        const actor = this.get_actor();
+        if (actor) {
+          actor.queue_relayout(); // 変更があったら再割り当てを要求
+        }
+      };
+
+      // sourceが移動した時にレイアウト再計算を走らせる
+      this._sourceXId = this.source.connect('notify::x', queueRelayout);
+      this._sourceYId = this.source.connect('notify::y', queueRelayout);
+
+      // 登録時にも1度レイアウトを要求
+      queueRelayout();
+    }
+  }
+
+  private _disconnectSignals() {
+    if (!this.source) return;
+    if (this._sourceXId) { this.source.disconnect(this._sourceXId); this._sourceXId = 0; }
+    if (this._sourceYId) { this.source.disconnect(this._sourceYId); this._sourceYId = 0; }
+  }
+
+  vfunc_update_allocation(actor: Clutter.Actor, allocation: Clutter.ActorBox) {
+    if (!this.source)
+      return;
+
+    // 1. 基準アクターの座標を取得
+    const [x, y] = this.source.get_position();
+
+    // 2. 追従アクターの現在の幅と高さを保持
+    const width = allocation.get_width();
+    const height = allocation.get_height();
+
+    // 3. 反転座標にオフセットを加算
+    const targetX = -x + (this.offset_x ?? 0.0);
+    const targetY = -y + (this.offset_y ?? 0.0);
+
+    // 4. allocation (Clutter.ActorBox) の領域を直接書き換える
+    allocation.x1 = targetX;
+    allocation.y1 = targetY;
+    allocation.x2 = targetX + width;
+    allocation.y2 = targetY + height;
+  }
+});
+export type InvertedPositionConstraint = InstanceType<typeof InvertedPositionConstraint>;
