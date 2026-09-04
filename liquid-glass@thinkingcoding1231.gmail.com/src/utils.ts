@@ -12,6 +12,21 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import St from 'gi://St';
 import Mtk from 'gi://Mtk';
 
+/**
+ * Diagnostic sink for this module. utils.ts has no Gio.Settings of its own,
+ * and logging must stay behind the extension's `output-logs` switch like
+ * everything else — so extension.js hands the shared Logger in once, and
+ * everything here stays a no-op until it does.
+ */
+type UtilsLogger = { log: (...args: any[]) => void };
+let _utilsLogger: UtilsLogger | null = null;
+export function setUtilsLogger(logger: UtilsLogger | null): void {
+  _utilsLogger = logger;
+}
+function utilsLog(msg: string): void {
+  try { _utilsLogger?.log(msg); } catch (_) { /* noop */ }
+}
+
 
 /**
  * Reads an actor's *allocated* size, instead of Clutter.Actor.get_size().
@@ -53,6 +68,48 @@ export function getAllocatedSize(actor: Clutter.Actor): [number, number] {
     return [w, h];
   } catch (_) {
     return [0, 0];
+  }
+}
+
+/**
+ * An actor's on-screen rectangle — [x, y, w, h] in stage coordinates, with
+ * every ancestor transform (scale, translation) already folded in.
+ *
+ * Pairing get_transformed_position() with a raw size is a trap, and one this
+ * extension has fallen into repeatedly: the position is fully transformed,
+ * but neither get_size() nor the allocation box carries the scale an
+ * ancestor is applying. So anything that animates by scaling a container —
+ * BoxPointer.open() easing scale from 0.96 to 1.0, this extension's own
+ * spring animation, GNOME's window resize animation — produces a rect whose
+ * origin is correct and whose size is too large by the inherited scale, for
+ * the entire duration of the animation.
+ *
+ * get_transformed_extents() pushes the actor's *allocation box* through the
+ * full accumulated matrix and returns its bounds, so the origin and the size
+ * can never disagree. (It reads the allocation, so it inherits none of
+ * get_size()'s preferred-size fallback either — see getAllocatedSize.)
+ *
+ * Use this wherever a rect is consumed in SCREEN space. Do not use it to
+ * compute an actor's own position/translation, which lives in its parent's
+ * unscaled local space.
+ */
+export function getTransformedRect(actor: Clutter.Actor): [number, number, number, number] {
+  try {
+    const r = actor.get_transformed_extents();
+    const x = r.origin.x, y = r.origin.y;
+    const w = r.size.width, h = r.size.height;
+    if (Number.isFinite(x) && Number.isFinite(y) &&
+      Number.isFinite(w) && Number.isFinite(h)) {
+      return [x, y, w, h];
+    }
+  } catch (_) { /* noop */ }
+
+  try {
+    const [x, y] = actor.get_transformed_position();
+    const [w, h] = getAllocatedSize(actor);
+    return [x, y, w, h];
+  } catch (_) {
+    return [0, 0, 0, 0];
   }
 }
 
@@ -655,6 +712,10 @@ export class UILayerSampler {
   // (possibly shared) SelfExcludingSnapshotCapture.
   private _delayedCaptureOwners: Map<Clutter.Actor, { source: Clutter.Actor; hideActor: Clutter.Actor }> = new Map();
 
+  // Clones currently rendering somewhere other than their source's own
+  // screen rect — see _checkCloneDrift().
+  private _driftingClones: Set<Clutter.Actor> = new Set();
+
   constructor(
     selfActor: Clutter.Actor,
     container: Clutter.Actor,
@@ -960,6 +1021,21 @@ export class UILayerSampler {
       // Deep scan for nested Liquid Glass roots only once per newly discovered actor.
       // Doing this every frame causes massive performance drops in the Overview.
       if (!this._clones.has(child) && this._containsOtherLiquidGlassRoot(child)) {
+        // NOTE: addExclusion() is PERMANENT for the life of this sampler,
+        // and the deep scan that reaches here only runs for a child that
+        // currently has no clone. So a child whose clone was dropped for a
+        // single frame (it went unmapped, or syncProperties() culled it) is
+        // re-scanned, and if another glass instance happens to be nested
+        // under it at that instant, it is banned from the sampler for good
+        // — which is a candidate explanation for "the UI clones are just
+        // missing" persisting until the menu is reopened. Logged so a repro
+        // says outright whether that is what happened.
+        utilsLog(
+          `[Liquid Glass][ui-sampler] permanent exclusion of uiGroup child ` +
+          `name="${(child as any).name ?? '(unnamed)'}" ` +
+          `type=${child.constructor?.name} ` +
+          `(nested liquid-glass root found during deep scan)`
+        );
         this.addExclusion(child);
         continue;
       }
@@ -1081,6 +1157,8 @@ export class UILayerSampler {
 
       sourceClone.opacity = source.opacity;
 
+      this._checkCloneDrift(source, sourceClone, absX, absY);
+
       const localX = absX - cX;
       const localY = absY - cY;
 
@@ -1098,6 +1176,42 @@ export class UILayerSampler {
         sourceClone.visible = isVisible;
       }
     } catch (_) { }
+  }
+
+  // A clone is supposed to land on its source's own screen rect. When it
+  // does not, the glass shows a piece of the desktop from somewhere else
+  // entirely — the "the clone is showing a completely different place"
+  // report. Logged on entry and exit only, so a stuck clone costs two lines
+  // instead of 60 per second.
+  private _checkCloneDrift(
+    source: Clutter.Actor,
+    sourceClone: Clutter.Actor,
+    expectX: number,
+    expectY: number
+  ): void {
+    if (!_utilsLogger) return;
+    try {
+      const [gotX, gotY] = sourceClone.get_transformed_position();
+      const drifted = !Number.isFinite(gotX) || !Number.isFinite(gotY) ||
+        Math.abs(gotX - expectX) > 1 || Math.abs(gotY - expectY) > 1;
+      const known = this._driftingClones.has(sourceClone);
+
+      if (drifted && !known) {
+        this._driftingClones.add(sourceClone);
+        utilsLog(
+          `[Liquid Glass][ui-sampler] DRIFT clone for ` +
+          `name="${(source as any).name ?? '(unnamed)'}" ` +
+          `type=${source.constructor?.name} ` +
+          `expected=(${Math.round(expectX)},${Math.round(expectY)}) ` +
+          `got=(${Math.round(gotX)},${Math.round(gotY)}) ` +
+          `containerPos=${this._uiClonesContainer?.get_transformed_position()} ` +
+          `clone.hasAlloc=${sourceClone.has_allocation()}`
+        );
+      } else if (!drifted && known) {
+        this._driftingClones.delete(sourceClone);
+        utilsLog(`[Liquid Glass][ui-sampler] RECOVERED clone for name="${(source as any).name ?? '(unnamed)'}"`);
+      }
+    } catch (_) { /* noop */ }
   }
 
   // Repositions the UI-clone container and culls off-screen clones.
@@ -1151,6 +1265,7 @@ export class UILayerSampler {
       try { this._uiClonesContainer.destroy(); } catch (_) { }
     }
     this._clones.clear();
+    this._driftingClones.clear();
     this._selfRoot = null;
     this._existingEffectCache.clear();
   }

@@ -7,6 +7,7 @@ import { QuickSettingsManager } from './dist/quickSettingsManager.js';
 import { OsdManager } from './dist/osdManager.js';
 import { ApplicationManager } from './dist/applicationManager.js';
 import { Logger } from './dist/logger.js';
+import { setUtilsLogger } from './dist/utils.js';
 import GLib from 'gi://GLib';
 
 export default class LiquidGlassExtension extends Extension {
@@ -15,6 +16,9 @@ export default class LiquidGlassExtension extends Extension {
 
     // Initialize the logger
     this._logger = new Logger(this._settings);
+    // utils.ts has no settings of its own; hand it the shared, gated logger
+    // so UILayerSampler's diagnostics obey `output-logs` like everything else.
+    setUtilsLogger(this._logger);
 
     this._logger.log(`[Liquid Glass] Enabled. UUID: ${this.uuid}`);
 
@@ -190,6 +194,7 @@ export default class LiquidGlassExtension extends Extension {
     this._settings = null;
 
     if (this._logger) {
+      setUtilsLogger(null);
       this._logger.cleanup();
       this._logger = null;
     }

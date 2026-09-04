@@ -15,6 +15,8 @@ import {
   isActorValid,
   LayoutOpaqueActor,
   UnpickableStyledWidget,
+  getAllocatedSize,
+  getTransformedRect,
 } from './utils.js';
 
 import { Logger } from './logger.js';
@@ -1933,8 +1935,20 @@ export class QuickSettingsManager {
     for (let toggle of toggles) {
       if (!toggle.visible || !toggle.mapped) continue;
 
-      let [absX, absY] = toggle.get_transformed_position();
-      let [w, h] = toggle.get_size();
+      // One fully-transformed rect, rather than a transformed position
+      // paired with an untransformed size. Everything below works in
+      // monitor-local SCREEN pixels (bgActor is counter-scaled to be 1:1
+      // with the screen, see the accScale block above), so the region has
+      // to be the toggle's real on-screen footprint.
+      //
+      // Reading the size separately is what made the toggle glass render
+      // too large for the whole open AND close animation: the menu is
+      // animated by easing scale on an ancestor (BoxPointer.open(), plus
+      // this extension's own spring), and neither get_size() nor the
+      // allocation box carries an inherited scale — only the position did.
+      // So while scale < 1 the region kept the toggle's full unscaled size
+      // and the glass overhung the button, converging only as scale hit 1.
+      let [absX, absY, w, h] = getTransformedRect(toggle);
       if (Number.isNaN(absX) || Number.isNaN(absY) || Number.isNaN(w) || Number.isNaN(h) || w <= 0 || h <= 0) continue;
 
       // Expand by glassExpand + SHADER_PADDING, exactly like Background
@@ -2817,7 +2831,13 @@ export class QuickSettingsManager {
 
     // Get the absolute coordinates and size as the parent's base (animActor = the visual bounding box of the menu)
     let [parentAbsX, parentAbsY] = this.animActor.get_transformed_position();
-    let [parentW, parentH] = this.animActor.get_size();
+    // Every size read in this function comes from the allocation, to stay
+    // consistent with the get_transformed_position() calls it is paired
+    // with — those are allocation-derived, while get_size() silently falls
+    // back to the preferred size whenever a relayout is still pending (see
+    // getAllocatedSize). Mixing the two yields geometry that matches
+    // neither.
+    let [parentW, parentH] = getAllocatedSize(this.animActor);
 
     if (Number.isNaN(parentAbsX) || Number.isNaN(parentAbsY) ||
       Number.isNaN(parentW) || Number.isNaN(parentH) ||
@@ -2827,7 +2847,7 @@ export class QuickSettingsManager {
       if (!submenu.mapped || !submenu.visible) continue;
 
       let [subAbsX, subAbsY] = submenu.get_transformed_position();
-      let [subW, subH] = submenu.get_size();
+      let [subW, subH] = getAllocatedSize(submenu);
 
       if (Number.isNaN(subAbsX) || Number.isNaN(subAbsY) ||
         Number.isNaN(subW) || Number.isNaN(subH) ||
@@ -2857,7 +2877,7 @@ export class QuickSettingsManager {
           return;
         }
         let [, nodeY] = n.get_transformed_position();
-        let [nodeW, nodeH] = n.get_size();
+        let [nodeW, nodeH] = getAllocatedSize(n);
         if (Number.isNaN(nodeY) || Number.isNaN(nodeW) || Number.isNaN(nodeH) ||
           nodeH <= 5 || nodeW <= 5) return;
 
