@@ -12,6 +12,8 @@ import {
   UnpickableClone,
   UILayerSampler,
   WindowCloneManager,
+  reportFrameLoopError,
+  ensureGlassAllocated,
   isActorValid,
   LayoutOpaqueActor,
   UnpickableStyledWidget,
@@ -598,7 +600,7 @@ export class QuickSettingsManager {
     this.liquidBox.add_effect(this.effect);
 
     // ── 5. WindowCloneManager + UILayerSampler ────────────────────────────────
-    this._windowCloneManager = new WindowCloneManager(this.liquidBox, this._cloneContainer);
+    this._windowCloneManager = new WindowCloneManager(this.liquidBox, this._cloneContainer, 'lg-qs');
     this._uiSampler = new UILayerSampler(
       this.bgActor,
       this.liquidBox,
@@ -639,11 +641,23 @@ export class QuickSettingsManager {
     };
 
     // Frame render loop (runs every frame while the menu is mapped)
+    // The reschedule must survive a throw out of _syncGeometry() — see the
+    // comment on DockManager's frameTick: skipping it froze the glass until
+    // the menu was closed and reopened.
     let frameTick = () => {
       this._frameSyncId = 0;
       if (!this.bgActor || !this.targetActor.mapped) return GLib.SOURCE_REMOVE;
 
-      this._syncGeometry();
+      // Repair the subtree if Clutter has stopped allocating it. Sampled
+      // here, at the top of the tick, because the previous frame's relayout
+      // has settled by now and this frame's sync has not dirtied anything
+      // yet. See ensureGlassAllocated().
+      ensureGlassAllocated(this.bgActor);
+      try {
+        this._syncGeometry();
+      } catch (e) {
+        reportFrameLoopError('QuickSettingsManager', e);
+      }
       this._frameSyncId = laterAdd(frameLaterType, frameTick);
       return GLib.SOURCE_REMOVE;
     };
@@ -869,7 +883,7 @@ export class QuickSettingsManager {
     this.liquidBox.add_effect(this.effect);
 
     // ── 5. WindowCloneManager + UILayerSampler (ONE shared instance) ──────────
-    this._windowCloneManager = new WindowCloneManager(this.liquidBox, this._cloneContainer);
+    this._windowCloneManager = new WindowCloneManager(this.liquidBox, this._cloneContainer, 'lg-qs-toggles');
     this._uiSampler = new UILayerSampler(
       this.bgActor,
       this.liquidBox,
@@ -906,11 +920,21 @@ export class QuickSettingsManager {
       this._uiSampler?.refresh();
     };
 
+    // Same reschedule-survives-a-throw rule as above.
     let frameTick = () => {
       this._frameSyncId = 0;
       if (!this.bgActor || !this.targetActor.mapped) return GLib.SOURCE_REMOVE;
 
-      this._syncToggleRegions();
+      // Repair the subtree if Clutter has stopped allocating it. Sampled
+      // here, at the top of the tick, because the previous frame's relayout
+      // has settled by now and this frame's sync has not dirtied anything
+      // yet. See ensureGlassAllocated().
+      ensureGlassAllocated(this.bgActor);
+      try {
+        this._syncToggleRegions();
+      } catch (e) {
+        reportFrameLoopError('QuickSettingsManager(toggles)', e);
+      }
       this._frameSyncId = laterAdd(frameLaterType, frameTick);
       return GLib.SOURCE_REMOVE;
     };
@@ -1768,7 +1792,17 @@ export class QuickSettingsManager {
 
     let rect = this._resolvePanelRect();
     if (rect) {
-      this._panelContentClone.set_position(rect[0] - monitorX, rect[1] - monitorY);
+      // Placed by translation, not set_position() — the same rule as every
+      // other per-frame actor inside a glass subtree (see the note in
+      // WindowCloneManager.sync()). set_position() only takes effect once
+      // Clutter hands out a new allocation, so a subtree that stops being
+      // allocated leaves this material frozen at an old rect while the
+      // property says otherwise. Size still needs the allocation, which is
+      // what ensureGlassAllocated() exists to guarantee.
+      if (this._panelContentClone.x !== 0 || this._panelContentClone.y !== 0)
+        this._panelContentClone.set_position(0, 0);
+      this._panelContentClone.translation_x = rect[0] - monitorX;
+      this._panelContentClone.translation_y = rect[1] - monitorY;
       this._panelContentClone.set_size(rect[2], rect[3]);
     }
   }

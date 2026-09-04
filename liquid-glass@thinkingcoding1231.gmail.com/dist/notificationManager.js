@@ -6,7 +6,7 @@ import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import { LiquidEffect } from './liquidEffect.js';
 import { StageContrastSampler, AdaptiveContrastConfig } from './contrastSampler.js';
-import { UnpickableActor, UILayerSampler, WindowCloneManager, } from './utils.js';
+import { UnpickableActor, UILayerSampler, WindowCloneManager, reportFrameLoopError, ensureGlassAllocated, } from './utils.js';
 // ========== Configuration Parameters (Defaults, overridden by settings) ==========
 const SHADER_PADDING = 20;
 const HIDE_SAFETY_MARGIN = 7;
@@ -267,7 +267,7 @@ export class NotificationManager {
         this.effect.setBlurRadius(blurRadius);
         this.liquidBox.add_effect(this.effect);
         // ── 5. WindowCloneManager + UILayerSampler ────────────────────────────────
-        this._windowCloneManager = new WindowCloneManager(this.liquidBox, this._cloneContainer);
+        this._windowCloneManager = new WindowCloneManager(this.liquidBox, this._cloneContainer, 'lg-notification');
         this._uiSampler = new UILayerSampler(this.bgActor, this.liquidBox, [bannerRoot, global.windowGroup, global.window_group], this._cloneContainer);
         this.bgActor.show();
         // Initial clone build (also applies liquid-glass mutual exclusions)
@@ -278,13 +278,25 @@ export class NotificationManager {
             this._frameSyncId = 0;
             if (!this.bgActor || !this.currentBanner)
                 return GLib.SOURCE_REMOVE;
-            this._syncGeometry();
-            // Hover tint animation (notification-specific behaviour preserved)
-            let isHovered = this.currentBanner.hover;
-            let targetTint = isHovered ? (this._baseTint + 0.1) : this._baseTint;
-            if (Math.abs(this._currentTint - targetTint) > 0.001) {
-                this._currentTint += (targetTint - this._currentTint) * 0.1;
-                this.effect?.setTintStrength(this._currentTint);
+            // The reschedule below must stay reachable even if the sync throws —
+            // see the comment on DockManager's frameTick.
+            // Repair the subtree if Clutter has stopped allocating it. Sampled
+            // here, at the top of the tick, because the previous frame's relayout
+            // has settled by now and this frame's sync has not dirtied anything
+            // yet. See ensureGlassAllocated().
+            ensureGlassAllocated(this.bgActor);
+            try {
+                this._syncGeometry();
+                // Hover tint animation (notification-specific behaviour preserved)
+                let isHovered = this.currentBanner.hover;
+                let targetTint = isHovered ? (this._baseTint + 0.1) : this._baseTint;
+                if (Math.abs(this._currentTint - targetTint) > 0.001) {
+                    this._currentTint += (targetTint - this._currentTint) * 0.1;
+                    this.effect?.setTintStrength(this._currentTint);
+                }
+            }
+            catch (e) {
+                reportFrameLoopError('NotificationManager', e);
             }
             this._frameSyncId = this._laterAdd(frameLaterType, frameTick);
             return GLib.SOURCE_REMOVE;

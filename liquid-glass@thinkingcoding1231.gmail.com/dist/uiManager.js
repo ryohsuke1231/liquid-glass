@@ -7,7 +7,7 @@ import Meta from 'gi://Meta';
 import Gio from 'gi://Gio';
 import { LiquidEffect } from './liquidEffect.js';
 import { StageContrastSampler, AdaptiveContrastConfig } from './contrastSampler.js';
-import { UnpickableActor, UILayerSampler, UnpickableWidget, WindowCloneManager } from './utils.js';
+import { UnpickableActor, UILayerSampler, UnpickableWidget, WindowCloneManager, reportFrameLoopError, ensureGlassAllocated } from './utils.js';
 // ========== Configuration Parameters ==========
 // Transparent padding outside the glass area.
 // This prevents the shader distortion or rounded corners from being clipped by the actor bounds.
@@ -361,7 +361,7 @@ export class UIManager {
             Main.layoutManager.uiGroup.add_child(this.bgActor);
         }
         // 4. WindowCloneManager: handles wallpaper clone + window actor clones
-        this._windowCloneManager = new WindowCloneManager(this.liquidBox, this._cloneContainer);
+        this._windowCloneManager = new WindowCloneManager(this.liquidBox, this._cloneContainer, 'lg-menu');
         // 5. UILayerSampler: handles uiGroup child clones (panels, notifications, overview, etc.)
         //    Exclude menuRoot and window groups to prevent recursive cloning and BMS loops.
         this._uiSampler = new UILayerSampler(this.bgActor, this.liquidBox, [menuRoot, global.windowGroup, global.window_group], this._cloneContainer);
@@ -419,12 +419,25 @@ export class UIManager {
             this._uiSampler?.rebindSelf();
             this._uiSampler?.refresh();
         };
-        // Render loop: called every frame while the menu is visible
+        // Render loop: called every frame while the menu is visible.
+        // The reschedule must survive a throw out of _syncGeometry() — see the
+        // comment on DockManager's frameTick: skipping it freezes this glass
+        // instance's clones until the menu is closed and reopened.
         let frameTick = () => {
             this._frameSyncId = 0;
             if (!this.bgActor || !this.targetActor.mapped)
                 return GLib.SOURCE_REMOVE;
-            this._syncGeometry();
+            // Repair the subtree if Clutter has stopped allocating it. Sampled
+            // here, at the top of the tick, because the previous frame's relayout
+            // has settled by now and this frame's sync has not dirtied anything
+            // yet. See ensureGlassAllocated().
+            ensureGlassAllocated(this.bgActor);
+            try {
+                this._syncGeometry();
+            }
+            catch (e) {
+                reportFrameLoopError('UIManager', e);
+            }
             this._frameSyncId = laterAdd(frameLaterType, frameTick);
             return GLib.SOURCE_REMOVE;
         };

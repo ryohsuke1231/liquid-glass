@@ -27,6 +27,170 @@ function utilsLog(msg: string): void {
   try { _utilsLogger?.log(msg); } catch (_) { /* noop */ }
 }
 
+/**
+ * Detects and repairs a glass subtree that Clutter has stopped allocating.
+ *
+ * ── The bug, from mutter's own source (clutter/clutter/clutter-actor.c,
+ *    clutter/clutter/clutter-stage.c, GNOME 50) ────────────────────────────
+ *
+ * 1. `clutter_actor_allocate()` opens with
+ *
+ *        if (!CLUTTER_ACTOR_IS_TOPLEVEL (self) &&
+ *            !clutter_actor_is_mapped (self) &&
+ *            !clutter_actor_has_mapped_clones (self))
+ *          return;
+ *
+ *    — an early return that does NOT clear needs_width_request /
+ *    needs_height_request / needs_allocation.
+ *
+ * 2. `clutter_stage_maybe_relayout()` STEALS the pending list before
+ *    servicing it (`stolen_list = g_steal_pointer (&priv->pending_relayouts)`)
+ *    and drops any entry it skips. So an actor that is queued and then
+ *    unmapped before the stage gets to it is removed from the queue while
+ *    keeping all three "needs" flags set.
+ *
+ * 3. From then on it is unreachable, because the PUBLIC entry point is
+ *
+ *        void clutter_actor_queue_relayout (ClutterActor *self)
+ *        { _clutter_actor_queue_only_relayout (self); ... }
+ *
+ *    and `_clutter_actor_queue_only_relayout()` begins with
+ *
+ *        if (needs_width_request && needs_height_request && needs_allocation)
+ *          return; /* save some cpu cycles *\/
+ *
+ *    It returns before emitting the signal, so nothing re-registers the
+ *    actor with the stage. This is why every earlier attempt to fix this
+ *    from JS by calling queue_relayout() — on the root, on each node of the
+ *    chain, on the whole subtree — did exactly nothing.
+ *
+ * 4. A stranded ancestor also swallows every request from below, because
+ *    children propagate through that same guarded function. The whole
+ *    subtree stops being allocated: existing actors keep their last
+ *    allocation, and actors created afterwards never get a first one at all
+ *    (alloc = -Infinity, so nothing to paint with — the missing Overview /
+ *    app-grid clone).
+ *
+ * ── The repair ────────────────────────────────────────────────────────────
+ *
+ * Clutter has exactly one escape hatch, and it uses it itself. In
+ * `clutter_actor_real_map()`:
+ *
+ *        /* Avoid the early return in clutter_actor_queue_relayout() *\/
+ *        priv->needs_width_request = FALSE;
+ *        priv->needs_height_request = FALSE;
+ *        priv->needs_allocation = FALSE;
+ *        clutter_actor_queue_relayout (self);
+ *
+ * Those fields are private, so JS cannot clear them — but it can make
+ * `real_map()` run, and `real_map()` runs for every actor of a subtree
+ * being mapped. hide() followed by show() therefore unmaps and remaps the
+ * whole glass subtree and clears the trap on every node in it.
+ *
+ * That is also, at last, the real explanation for the workaround found by
+ * hand at the very start of this investigation: hiding the dock and showing
+ * it again fixed the stuck clones. Not because the clones were rebuilt —
+ * because the remap ran Clutter's own rescue.
+ *
+ * Both calls happen inside one frame tick, before any paint, so there is no
+ * flicker. Gated on several consecutive stranded frames so a normal pending
+ * relayout — `has_allocation()` is legitimately false whenever a relayout is
+ * merely outstanding — can never trigger it.
+ *
+ * Returns true when a rescue was performed.
+ */
+const _strandedFrames: WeakMap<Clutter.Actor, number> = new WeakMap();
+const STRANDED_FRAMES_BEFORE_RESCUE = 3;
+
+export function ensureGlassAllocated(actor: Clutter.Actor | null): boolean {
+  try {
+    if (!actor) return false;
+
+    // Only a visible, mapped actor can be stranded in the sense above; an
+    // unmapped one is simply waiting, and will be rescued by real_map() when
+    // it comes back.
+    if (!actor.visible || !actor.mapped || actor.has_allocation()) {
+      _strandedFrames.delete(actor);
+      return false;
+    }
+
+    const strandedFor = (_strandedFrames.get(actor) ?? 0) + 1;
+    if (strandedFor < STRANDED_FRAMES_BEFORE_RESCUE) {
+      _strandedFrames.set(actor, strandedFor);
+      return false;
+    }
+    _strandedFrames.delete(actor);
+
+    actor.hide();
+    actor.show();
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+/**
+ * Shows/hides an actor and, on the hidden -> visible transition, forces the
+ * allocation to be re-requested.
+ *
+ * Clutter's queue_relayout() short-circuits ("save some cpu cycles") as soon
+ * as the actor already has needs_width_request / needs_height_request /
+ * needs_allocation all set — which is precisely the state an actor is left
+ * in when it gets hidden while still waiting for an allocation. show()
+ * alone then does not get the request to the stage, and the actor is stuck:
+ * Clutter reports it with
+ *   "Can't update stage views actor <name> is on because it needs an
+ *    allocation."
+ * every single frame, and it goes on painting from its last, stale
+ * allocation — i.e. a clone frozen at the coordinates it had when it was
+ * hidden, no matter how many set_position() calls it receives afterwards.
+ *
+ * Poking the parent too restarts the chain above the short-circuit.
+ * Cheap: it only runs on an actual visibility change, never per frame.
+ */
+export function setActorVisible(actor: Clutter.Actor, visible: boolean): void {
+  try {
+    if (!actor) return;
+    if (actor.visible === visible) return;
+    actor.visible = visible;
+    if (visible) {
+      actor.queue_relayout();
+      actor.get_parent()?.queue_relayout();
+    }
+  } catch (_) { /* noop */ }
+}
+
+/**
+ * Reports an exception that escaped one of the per-frame sync loops.
+ *
+ * Deliberately NOT routed through the Logger: every one of those loops is a
+ * self-rescheduling Meta.LaterType.BEFORE_REDRAW chain, and an exception
+ * that reaches the `later` callback used to skip the reschedule at the end
+ * of the tick — which silently froze that glass instance's clones (they
+ * keep painting their source's live content at whatever position they were
+ * last given) until the menu/dock was hidden and shown again, because
+ * `startFrameSync()` is only reachable from 'notify::mapped'. That is a
+ * hard failure, not diagnostics, so it must be visible with `output-logs`
+ * off too.
+ *
+ * Rate-limited per tag: the throw is usually a per-frame condition (a
+ * disposed actor that stays disposed), and 60 identical backtraces a second
+ * is what makes a journal useless.
+ */
+const _frameLoopErrorLastLogged: Map<string, number> = new Map();
+const FRAME_LOOP_ERROR_LOG_INTERVAL_MS = 5000;
+export function reportFrameLoopError(tag: string, e: unknown): void {
+  try {
+    const now = Date.now();
+    const last = _frameLoopErrorLastLogged.get(tag) ?? 0;
+    if (now - last < FRAME_LOOP_ERROR_LOG_INTERVAL_MS) return;
+    _frameLoopErrorLastLogged.set(tag, now);
+    console.error(`[Liquid Glass] exception in ${tag} frame sync (loop kept alive): ${e}`);
+    const stack = (e as any)?.stack;
+    if (stack) console.error(`[Liquid Glass] ${stack}`);
+  } catch (_) { /* noop */ }
+}
+
 
 /**
  * Reads an actor's *allocated* size, instead of Clutter.Actor.get_size().
@@ -1012,76 +1176,86 @@ export class UILayerSampler {
     const seen = new Set<Clutter.Actor>();
 
     for (const child of children) {
-      if ((child as any)._isDisposed) continue;
-      if (child === this._selfActor || child === this._selfRoot) continue;
-      if (child === Main.layoutManager._backgroundGroup) continue;
-      if (this._extraExclusions.has(child)) continue;
-      if (!child.visible || !child.mapped) continue;
-      // if (this._containsOtherLiquidGlassRoot(child)) continue;
-      // Deep scan for nested Liquid Glass roots only once per newly discovered actor.
-      // Doing this every frame causes massive performance drops in the Overview.
-      if (!this._clones.has(child) && this._containsOtherLiquidGlassRoot(child)) {
-        // NOTE: addExclusion() is PERMANENT for the life of this sampler,
-        // and the deep scan that reaches here only runs for a child that
-        // currently has no clone. So a child whose clone was dropped for a
-        // single frame (it went unmapped, or syncProperties() culled it) is
-        // re-scanned, and if another glass instance happens to be nested
-        // under it at that instant, it is banned from the sampler for good
-        // — which is a candidate explanation for "the UI clones are just
-        // missing" persisting until the menu is reopened. Logged so a repro
-        // says outright whether that is what happened.
-        utilsLog(
-          `[Liquid Glass][ui-sampler] permanent exclusion of uiGroup child ` +
-          `name="${(child as any).name ?? '(unnamed)'}" ` +
-          `type=${child.constructor?.name} ` +
-          `(nested liquid-glass root found during deep scan)`
-        );
-        this.addExclusion(child);
-        continue;
-      }
-      seen.add(child);
-      if (!this._clones.has(child)) {
-        child.connect('destroy', () => {
-          (child as any)._isDisposed = true;
-          const clone = this._clones.get(child);
-          if (clone) {
+      // Per-child containment: refresh() runs from the same per-frame
+      // BEFORE_REDRAW tick as everything else, and one uiGroup child going
+      // away mid-iteration must not cost the caller its reschedule (see
+      // reportFrameLoopError).
+      try {
+        if ((child as any)._isDisposed) continue;
+        if (!isActorValid(child)) continue;
+        if (child === this._selfActor || child === this._selfRoot) continue;
+        if (child === Main.layoutManager._backgroundGroup) continue;
+        if (this._extraExclusions.has(child)) continue;
+        if (!child.visible || !child.mapped) continue;
+        // if (this._containsOtherLiquidGlassRoot(child)) continue;
+        // Deep scan for nested Liquid Glass roots only once per newly discovered actor.
+        // Doing this every frame causes massive performance drops in the Overview.
+        if (!this._clones.has(child) && this._containsOtherLiquidGlassRoot(child)) {
+          // NOTE: addExclusion() is PERMANENT for the life of this sampler,
+          // and the deep scan that reaches here only runs for a child that
+          // currently has no clone. So a child whose clone was dropped for a
+          // single frame (it went unmapped, or syncProperties() culled it) is
+          // re-scanned, and if another glass instance happens to be nested
+          // under it at that instant, it is banned from the sampler for good
+          // — which is a candidate explanation for "the UI clones are just
+          // missing" persisting until the menu is reopened. Logged so a repro
+          // says outright whether that is what happened.
+          utilsLog(
+            `[Liquid Glass][ui-sampler] permanent exclusion of uiGroup child ` +
+            `name="${(child as any).name ?? '(unnamed)'}" ` +
+            `type=${child.constructor?.name} ` +
+            `(nested liquid-glass root found during deep scan)`
+          );
+          this.addExclusion(child);
+          continue;
+        }
+        seen.add(child);
+        if (!this._clones.has(child)) {
+          child.connect('destroy', () => {
+            (child as any)._isDisposed = true;
+            const clone = this._clones.get(child);
+            if (clone) {
+              this._clones.delete(child);
+              try { clone.destroy(); } catch (_) { }
+            }
+          });
+
+          const bmsTarget = this._findBmsDescendant(child);
+
+          let sourceClone: Clutter.Actor | null = null;
+          if (bmsTarget) {
+            // 1st: the real fix — a snapshot that structurally cannot
+            // include ourselves (see SelfExcludingSnapshotCapture).
+            sourceClone = this._createSelfExcludingSnapshotActor(child);
+            // 2nd: read an existing OffscreenEffect's texture (useful for
+            // other extensions; BMS's native effect never matches this).
+            if (!sourceClone && this._useCaptureFixForBms) {
+              sourceClone = this._createExistingEffectBlitActor(child);
+            }
+          }
+          // Fallback: an ordinary unpickable clone.
+          if (!sourceClone) {
+            sourceClone = new UnpickableClone({ source: child });
+          }
+          sourceClone.set_name(`${child.name}-sourceClone`);
+
+          sourceClone.connect('destroy', () => {
             this._clones.delete(child);
-            try { clone.destroy(); } catch (_) { }
-          }
-        });
+          });
 
-        const bmsTarget = this._findBmsDescendant(child);
-
-        let sourceClone: Clutter.Actor | null = null;
-        if (bmsTarget) {
-          // 1st: the real fix — a snapshot that structurally cannot
-          // include ourselves (see SelfExcludingSnapshotCapture).
-          sourceClone = this._createSelfExcludingSnapshotActor(child);
-          // 2nd: read an existing OffscreenEffect's texture (useful for
-          // other extensions; BMS's native effect never matches this).
-          if (!sourceClone && this._useCaptureFixForBms) {
-            sourceClone = this._createExistingEffectBlitActor(child);
-          }
+          this._uiClonesContainer?.add_child(sourceClone);
+          this._clones.set(child, sourceClone);
+          this._insertCloneInZOrder(child, sourceClone);
         }
-        // Fallback: an ordinary unpickable clone.
-        if (!sourceClone) {
-          sourceClone = new UnpickableClone({ source: child });
-        }
-        sourceClone.set_name(`${child.name}-sourceClone`);
-
-        sourceClone.connect('destroy', () => {
-          this._clones.delete(child);
-        });
-
-        this._uiClonesContainer?.add_child(sourceClone);
-        this._clones.set(child, sourceClone);
-        this._insertCloneInZOrder(child, sourceClone);
+      } catch (e) {
+        reportFrameLoopError('UILayerSampler.refresh', e);
       }
     }
 
     for (const [actor, sourceClone] of this._clones) {
       if (!seen.has(actor)) {
         try { sourceClone.destroy(); } catch (_) { }
+        this._clones.delete(actor);
       }
     }
   }
@@ -1128,7 +1302,7 @@ export class UILayerSampler {
       const [w, h] = getAllocatedSize(source);
 
       if (Number.isNaN(absX) || Number.isNaN(absY) || w <= 0 || h <= 0) {
-        sourceClone.visible = false;
+        setActorVisible(sourceClone, false);
         return;
       }
 
@@ -1147,9 +1321,13 @@ export class UILayerSampler {
       const scaledW = w * scaleX;
       const scaledH = h * scaleY;
 
-      sourceClone.set_position(absX, absY);
-      sourceClone.translation_x = 0;
-      sourceClone.translation_y = 0;
+      // Placed by translation rather than allocation — see the long note in
+      // WindowCloneManager.sync(). This is what keeps a UI clone (the
+      // Overview's controls, the panel) from freezing at a stale rect when
+      // the glass subtree stops being allocated.
+      if (sourceClone.x !== 0 || sourceClone.y !== 0) sourceClone.set_position(0, 0);
+      sourceClone.translation_x = absX;
+      sourceClone.translation_y = absY;
 
       sourceClone.set_size(scaledW, scaledH);
       sourceClone.set_scale(1.0, 1.0);
@@ -1171,9 +1349,9 @@ export class UILayerSampler {
           localY < containerH &&
           (localY + scaledH) > 0;
 
-        sourceClone.visible = isIntersecting;
+        setActorVisible(sourceClone, isIntersecting);
       } else {
-        sourceClone.visible = isVisible;
+        setActorVisible(sourceClone, isVisible);
       }
     } catch (_) { }
   }
@@ -1245,15 +1423,25 @@ export class UILayerSampler {
     }
     // Always bring the UI clones container to the front, regardless of its parent.
     // This prevents WindowCloneManager's rebuilds from placing windows above the UI.
-    const parent = this._uiClonesContainer?.get_parent();
-    if (parent && this._uiClonesContainer) {
-      const siblings = parent.get_children();
-      if (siblings[siblings.length - 1] !== this._uiClonesContainer) {
-        parent.set_child_above_sibling(this._uiClonesContainer, null);
+    try {
+      const parent = this._uiClonesContainer?.get_parent();
+      if (parent && this._uiClonesContainer) {
+        const siblings = parent.get_children();
+        if (siblings[siblings.length - 1] !== this._uiClonesContainer) {
+          parent.set_child_above_sibling(this._uiClonesContainer, null);
+        }
       }
+    } catch (e) {
+      reportFrameLoopError('UILayerSampler.sync', e);
     }
     // Sign is flipped relative to WindowCloneManager.setOffset(x, y).
-    this._uiClonesContainer?.set_position(-contAbsX, -contAbsY);
+    // Translation, not position — see WindowCloneManager.sync().
+    if (this._uiClonesContainer) {
+      if (this._uiClonesContainer.x !== 0 || this._uiClonesContainer.y !== 0)
+        this._uiClonesContainer.set_position(0, 0);
+      this._uiClonesContainer.translation_x = -contAbsX;
+      this._uiClonesContainer.translation_y = -contAbsY;
+    }
 
     for (const [actor, sourceClone] of this._clones) {
       this.syncProperties(actor, sourceClone, contW, contH, contAbsX, contAbsY);
@@ -1280,14 +1468,25 @@ export class WindowCloneManager {
   private container: Clutter.Actor | null = null;
   private cloneContainer: Clutter.Actor | null = null;
 
-  constructor(container: Clutter.Actor, cloneContainer: Clutter.Actor | null = null) {
+  // Prefix for every actor this manager creates. Clutter's own diagnostics
+  // print an actor's NAME — "Can't update stage views actor <name> ... needs
+  // an allocation" is the one warning that reliably accompanies the
+  // "clone stuck at an old position" bug, and it read "unnamed" for every
+  // clone in this file, which made it useless for telling the dock's clones
+  // apart from a menu's or from ApplicationManager's. Everything is named now.
+  private label: string;
+
+  constructor(container: Clutter.Actor, cloneContainer: Clutter.Actor | null = null, label: string = 'lg') {
     this.container = container;
+    this.label = label;
     this._windowClones = new Map();
 
     this.bgClone = new UnpickableClone({ source: Main.layoutManager._backgroundGroup });
+    this.bgClone.set_name(`${this.label}-bgclone`);
     this.bgClone.connect('destroy', () => { this.bgClone = null; });
 
     this.windowClonesContainer = new UnpickableActor();
+    this.windowClonesContainer.set_name(`${this.label}-window-clones`);
     this.windowClonesContainer.connect('destroy', () => { this.windowClonesContainer = null; });
 
     this.cloneContainer = cloneContainer;
@@ -1307,25 +1506,31 @@ export class WindowCloneManager {
   }
 
   rebuildClones() {
-    if (!this.container) return;
+    if (!isActorValid(this.container)) return;
 
-    if (this.bgClone) { this.bgClone.destroy(); }
-    if (this.windowClonesContainer) { this.windowClonesContainer.destroy(); }
+    if (isActorValid(this.bgClone)) { this.bgClone!.destroy(); }
+    if (isActorValid(this.windowClonesContainer)) { this.windowClonesContainer!.destroy(); }
+    // destroy() above fires each clone's 'destroy' handler, which prunes
+    // _windowClones — but a clone whose handler never ran (e.g. it was
+    // already disposed) would leave a dead wrapper behind, so clear the map
+    // outright rather than relying on that.
+    this._windowClones.clear();
 
     this.bgClone = new UnpickableClone({ source: Main.layoutManager._backgroundGroup });
+    this.bgClone.set_name(`${this.label}-bgclone`);
     this.bgClone.connect('destroy', () => { this.bgClone = null; });
 
     this.windowClonesContainer = new UnpickableActor();
+    this.windowClonesContainer.set_name(`${this.label}-window-clones`);
     this.windowClonesContainer.connect('destroy', () => { this.windowClonesContainer = null; });
 
-    if (this.cloneContainer) {
-      this.cloneContainer.add_child(this.windowClonesContainer);
+    if (isActorValid(this.cloneContainer)) {
+      this.cloneContainer!.add_child(this.windowClonesContainer);
     } else {
-      this.container.add_child(this.windowClonesContainer);
+      this.container!.add_child(this.windowClonesContainer);
     }
-    this.container.insert_child_at_index(this.bgClone, 0);
+    this.container!.insert_child_at_index(this.bgClone, 0);
 
-    this._windowClones.clear();
     this.sync();
   }
 
@@ -1340,8 +1545,20 @@ export class WindowCloneManager {
   // (-monitor.x, -monitor.y) makes each clone's net screen position:
   //   monitor.x + 0 + (-monitor.x + w.x) = w.x  ✓
   setOffset(x: number, y: number) {
-    this.windowClonesContainer?.set_position(x, y);
-    this.bgClone?.set_position(x, y);
+    // Translation, not position, for the same reason as the clones
+    // themselves (see sync()): a container shifted by an allocation can be
+    // starved along with everything under it.
+    if (this.windowClonesContainer) {
+      if (this.windowClonesContainer.x !== 0 || this.windowClonesContainer.y !== 0)
+        this.windowClonesContainer.set_position(0, 0);
+      this.windowClonesContainer.translation_x = x;
+      this.windowClonesContainer.translation_y = y;
+    }
+    if (this.bgClone) {
+      if (this.bgClone.x !== 0 || this.bgClone.y !== 0) this.bgClone.set_position(0, 0);
+      this.bgClone.translation_x = x;
+      this.bgClone.translation_y = y;
+    }
   }
 
   sync() {
@@ -1349,7 +1566,14 @@ export class WindowCloneManager {
     let activeWindows = new Set();
     let zIndex = 0;
 
+    // Nothing below may throw out of here. sync() is the tail of every
+    // manager's per-frame BEFORE_REDRAW tick, and a single disposed actor
+    // used to take the whole tick — and with it that glass instance's
+    // reschedule — down with it (see reportFrameLoopError).
+    if (!isActorValid(this.windowClonesContainer)) return;
+
     for (let w of windows) {
+      if (!isActorValid(w)) continue;
       let metaWindow = w.get_meta_window();
       if (!metaWindow || metaWindow.minimized || !w.visible) continue;
 
@@ -1364,32 +1588,77 @@ export class WindowCloneManager {
 
       activeWindows.add(w);
 
-      let clone;
-      if (!this._windowClones.has(w)) {
+      let clone = this._windowClones.get(w);
+      // A clone can be destroyed out from under this map — its container is
+      // torn down and rebuilt by rebuildClones(), and Clutter destroys
+      // children with their parent. Touching the stale wrapper throws, so
+      // treat a dead entry as "no clone" and build a fresh one.
+      if (clone && !isActorValid(clone)) {
+        this._windowClones.delete(w);
+        clone = undefined;
+      }
+      if (!clone) {
         clone = new UnpickableClone({ source: w });
+        const wTitle = (() => {
+          try { return metaWindow.get_title() || '(untitled)'; } catch (_) { return '(?)'; }
+        })();
+        clone.set_name(`${this.label}-winclone:${wTitle}`);
+        clone.connect('destroy', () => { this._windowClones.delete(w); });
         this.windowClonesContainer?.add_child(clone);
         this._windowClones.set(w, clone);
-      } else {
-        clone = this._windowClones.get(w);
       }
 
       clone.remove_transition('position');
       clone.remove_transition('size');
-      clone.set_position(w.x, w.y);
+      clone.remove_transition('translation-x');
+      clone.remove_transition('translation-y');
+
+      // [FIX] Place the clone with translation_x/y, NOT set_position().
+      //
+      // set_position() only moves the actor once Clutter has run a relayout
+      // and handed it a new allocation. translation is a paint-time
+      // transform: it needs a redraw and nothing else. Clutter adds the two
+      // together in exactly the same place —
+      //     translate(allocation.x1 + translation_x, ...)
+      // happens before the pivot/scale block — so this is arithmetically
+      // identical while depending on strictly less machinery.
+      //
+      // Why it matters: the Looking Glass audit caught this clone with
+      //     pos=(507,89)      <- set_position() had been applied, correctly
+      //     screen=(642,767)  <- the allocation, hundreds of px out of date
+      //     hasAlloc=false
+      // and the same for every ancestor up to the glass root, i.e. the
+      // subtree had stopped receiving allocations while our per-frame sync
+      // went on setting the property. Everything downstream of that reads
+      // the allocation, so the clone painted where the window used to be.
+      //
+      // The decisive contrast is in the same audit: ApplicationManager's
+      // per-window glass, which has always placed its clones with
+      // translation and pins x/y at 0, was completely healthy in the very
+      // same snapshot (DELTA=(0,0), hasAlloc=true everywhere). Positioning
+      // that cannot be starved by the layout system does not go stale.
+      if (clone.x !== 0 || clone.y !== 0) clone.set_position(0, 0);
+      clone.translation_x = w.x + w.translation_x;
+      clone.translation_y = w.y + w.translation_y;
+
       clone.set_size(width, height);
 
       clone.remove_transition('scale-x');
       clone.remove_transition('scale-y');
       clone.set_scale(w.scale_x, w.scale_y);
 
-      // Copy translation directly too, so animation interpolation is
-      // reflected immediately rather than lagging a frame behind.
-      clone.translation_x = w.translation_x;
-      clone.translation_y = w.translation_y;
-
       let pX = w.pivot_point ? w.pivot_point.x : 0;
       let pY = w.pivot_point ? w.pivot_point.y : 0;
       clone.set_pivot_point(pX, pY);
+
+      // Clutter.Clone paints its source with the clone's own opacity, not
+      // the source's — so without this the glass shows a window at full
+      // opacity for the whole of GNOME's map/destroy animation, which eases
+      // MetaWindowActor.opacity from 0 (and back) while scale animates.
+      // That is the "the clone is offset/too solid during the open and
+      // close animation" artifact: the geometry follows the animation but
+      // the fade does not.
+      clone.opacity = w.opacity;
 
       this.windowClonesContainer?.set_child_at_index(clone, zIndex);
       zIndex++;
@@ -1399,19 +1668,19 @@ export class WindowCloneManager {
     // Overview starts.
     for (let [w, clone] of this._windowClones.entries()) {
       if (!activeWindows.has(w)) {
-        clone.destroy();
+        if (isActorValid(clone)) clone.destroy();
         this._windowClones.delete(w);
       }
     }
   }
 
   destroy() {
-    if (this.windowClonesContainer) {
-      this.windowClonesContainer.destroy();
+    if (isActorValid(this.windowClonesContainer)) {
+      try { this.windowClonesContainer!.destroy(); } catch (_) { /* noop */ }
     }
     this._windowClones.clear();
-    if (this.bgClone) {
-      this.bgClone.destroy();
+    if (isActorValid(this.bgClone)) {
+      try { this.bgClone!.destroy(); } catch (_) { /* noop */ }
     }
     this.container = null;
   }
@@ -1608,9 +1877,54 @@ export const InvertedPositionConstraint = GObject.registerClass({
 
     // sourceプロパティ自体が変更されたときの監視
     this.connect('notify::source', this._onSourceChanged.bind(this));
+
+    // [FIX] オフセット変更でもレイアウトを無効化する。
+    //
+    // vfunc_update_allocation() は「このアクターが allocate される」ときにしか
+    // 走らない。以前はそれを促すトリガーが source の notify::x / notify::y
+    // だけだった ＝ **ウィンドウが動いたときだけ**。
+    //
+    // ところが offset は毎フレーム作り直される動的な値で、しかも
+    // ApplicationManager._syncStateInner() では
+    //     offsetX = -(translation_x + pivot_px * (1 - scale)) - localX
+    // と、**scale の関数**になっている。GNOME のウィンドウ開閉アニメーションは
+    // 位置を一切変えず scale と pivot だけを動かすので、まさにオフセットが
+    // 毎フレーム大きく変わる場面で notify::x / notify::y が一度も飛ばない。
+    // その間 allocation は据え置かれ、ガラスの箱だけが縮み/伸びして、中身
+    // （壁紙クローン・背後ウィンドウのクローン）は前の位置に取り残される。
+    // これが「開く/閉じるアニメーション中にクローンの位置がズレる（オフセット
+    // が遅れているように見える）」の正体。
+    this.connect('notify::offset-x', () => this._queueRelayout());
+    this.connect('notify::offset-y', () => this._queueRelayout());
+
     if (this.source) {
       this._onSourceChanged();
     }
+  }
+
+  private _queueRelayout(): void {
+    try {
+      const actor = this.get_actor();
+      if (actor) actor.queue_relayout();
+    } catch (_) { /* noop */ }
+  }
+
+  /**
+   * Assigns both offsets and invalidates the allocation exactly once.
+   *
+   * Preferred over writing `offset_x` / `offset_y` directly: it skips the
+   * work entirely when nothing changed (the steady state, 60 times a second
+   * per constrained actor) and guarantees the relayout even if GJS's
+   * generated property setter ever stops emitting `notify` for an unchanged
+   * value.
+   */
+  setOffset(x: number, y: number): void {
+    const nx = Number.isFinite(x) ? x : 0;
+    const ny = Number.isFinite(y) ? y : 0;
+    if (this.offset_x === nx && this.offset_y === ny) return;
+    this.offset_x = nx;
+    this.offset_y = ny;
+    this._queueRelayout();
   }
 
   private _onSourceChanged() {

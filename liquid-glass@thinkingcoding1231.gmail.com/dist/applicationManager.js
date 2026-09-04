@@ -5,7 +5,7 @@ import Meta from 'gi://Meta';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { LiquidEffect } from './liquidEffect.js';
 import GLib from 'gi://GLib';
-import { UnpickableClone, UnpickableActor, InverseCornerEffect, getWindowActors, isActorValid, InvertedPositionConstraint, getAllocatedSize } from './utils.js';
+import { UnpickableClone, UnpickableActor, InverseCornerEffect, getWindowActors, isActorValid, InvertedPositionConstraint, getAllocatedSize, setActorVisible, ensureGlassAllocated } from './utils.js';
 // Padding to allow the shader to draw effects (like refraction and blur) outside the actor's strict bounds.
 const SHADER_PADDING = 10;
 // Inward padding for corner rounding
@@ -420,7 +420,16 @@ export class ApplicationManager {
         // it is actually visible; restored in _cleanupState when the effect is removed.
         let originalOpacity = surfaceActor.opacity;
         surfaceActor.opacity = Math.round(this._getContentOpacity() * 255);
+        // Every actor this window's glass owns carries a name. Clutter's own
+        // "Can't update stage views actor <name> ... because it needs an
+        // allocation" warning is the one diagnostic that reliably fires while
+        // the "clone stuck at the wrong position" bug is on screen, and it read
+        // "unnamed" for all of these — which made it impossible to tell which
+        // actor's allocation had gone stale. Deliberately NOT named
+        // 'liquid-glass-bg-actor' / 'liquid-box': UILayerSampler treats those
+        // two names as "another glass instance, do not clone".
         let baseActor = new St.Widget({
+            name: 'lgw-base',
             style_class: 'liquid-glass-base-actor',
             reactive: false,
             clip_to_allocation: true,
@@ -428,6 +437,7 @@ export class ApplicationManager {
         });
         windowActor.insert_child_below(baseActor, surfaceActor);
         let bgActor = new St.Widget({
+            name: 'lgw-bg',
             style_class: 'liquid-glass-bg-actor',
             reactive: false,
             clip_to_allocation: false,
@@ -466,6 +476,7 @@ export class ApplicationManager {
         // resize/refocus it, that's this old bug back; please report it so we
         // can find an inhibit_culling-free fix specifically for that case.
         let clipBox = new St.Widget({
+            name: 'lgw-clipbox',
             clip_to_allocation: true,
             reactive: false,
         });
@@ -475,15 +486,18 @@ export class ApplicationManager {
         let baseClone = new UnpickableClone({
             source: Main.layoutManager._backgroundGroup,
         });
+        baseClone.set_name('lgw-base-wallpaper-clone');
         if (monitor) {
             baseClone.set_size(monitor.width, monitor.height);
         }
         baseActor.add_child(baseClone);
         let baseWindowsContainer = new Clutter.Actor();
+        baseWindowsContainer.set_name('lgw-base-windows');
         baseActor.add_child(baseWindowsContainer);
         let bgClone = new UnpickableClone({
             source: Main.layoutManager._backgroundGroup,
         });
+        bgClone.set_name('lgw-bg-wallpaper-clone');
         if (monitor) {
             bgClone.set_size(monitor.width, monitor.height);
         }
@@ -525,12 +539,15 @@ export class ApplicationManager {
         effect.setShadowMaxRadius(SHADER_PADDING);
         bgActor.add_effect(effect);
         let windowsContainer = new Clutter.Actor();
+        windowsContainer.set_name('lgw-bg-windows');
         clipBox.add_child(windowsContainer);
         let cornerOverlay = new UnpickableActor({
+            name: 'lgw-corner-overlay',
             clip_to_allocation: true,
             reactive: false,
         });
         let cornerOverlayClone = new UnpickableClone({ source: baseActor });
+        cornerOverlayClone.set_name('lgw-corner-overlay-clone');
         cornerOverlay.add_child(cornerOverlayClone);
         let roundingEffect = new InverseCornerEffect();
         roundingEffect.setRadius(cornerRadius + CORNER_PADDING);
@@ -585,6 +602,9 @@ export class ApplicationManager {
             state.signals.push({
                 obj: metaWin,
                 id: metaWin.connect('size-changed', () => {
+                    // The invisible-border offset can genuinely change here (maximize,
+                    // tiling), so drop the cached value — see _frameLocalOffset().
+                    state.frameLocal = undefined;
                     this._rebuildWindowClones(state);
                     // this._syncState(state);
                     state.isDirty = true;
@@ -672,6 +692,16 @@ export class ApplicationManager {
                 continue;
             }
             let clone = new UnpickableClone({ source: actor });
+            const behindTitle = (() => {
+                try {
+                    const mw = actor.get_meta_window();
+                    return (mw && mw.get_title()) || '(untitled)';
+                }
+                catch (_) {
+                    return '(?)';
+                }
+            })();
+            clone.set_name(`lgw-behind:${behindTitle}`);
             // [FIX] Give the clone its correct geometry RIGHT NOW, synchronously,
             // instead of leaving it at whatever default position a freshly
             // constructed actor starts at (effectively (0,0)) until the next
@@ -683,20 +713,61 @@ export class ApplicationManager {
             // clone at the wrong (0,0) spot. That one-frame "content that belongs
             // at local (x,y) inside window A renders at screen (~0,0) instead" is
             // exactly the shape of the reported texture-shift artifact.
-            clone.set_position(actor.x, actor.y);
+            //
+            // Seeded in the same form _syncStateInner() maintains — x/y pinned at
+            // 0, placement carried by translation — so the very first frame is
+            // already in the steady-state representation instead of switching
+            // representation on the next sync.
+            clone.set_position(0, 0);
+            clone.translation_x = actor.x;
+            clone.translation_y = actor.y;
             clone.set_size(srcW, srcH);
             clone.set_scale(actor.scale_x, actor.scale_y);
             clone.opacity = actor.opacity;
             state.windowsContainer.add_child(clone);
             state.clones.set(actor, clone);
             let baseClone = new UnpickableClone({ source: actor });
-            baseClone.set_position(actor.x, actor.y);
+            baseClone.set_name(`lgw-base-behind:${behindTitle}`);
+            baseClone.set_position(0, 0);
+            baseClone.translation_x = actor.x;
+            baseClone.translation_y = actor.y;
             baseClone.set_size(srcW, srcH);
             baseClone.set_scale(actor.scale_x, actor.scale_y);
             baseClone.opacity = actor.opacity;
             state.baseWindowsContainer.add_child(baseClone);
             state.baseClones.set(actor, baseClone);
         }
+    }
+    // The frame rect's origin inside the buffer rect — i.e. the width of the
+    // window's invisible CSD border on the left/top — held stable across a move.
+    //
+    // get_frame_rect() and get_buffer_rect() do not update in lockstep. During
+    // an interactive drag the frame rect trails the buffer rect (and
+    // windowActor.x/y, which track the buffer rect) by one frame, so their
+    // difference — a constant in reality — reads up to ~50px off for that
+    // frame. Since this value feeds the glass box position, the shader
+    // geometry AND the absolute anchor of every clone container, that lag was
+    // visible as the whole glass and its sampled content jumping around while
+    // dragging, with the last frame's bad value latched until the next sync.
+    //
+    // Both rects have settled on any frame where the actor did not move, so
+    // sample it there and reuse the last good value while the window is
+    // moving. `size-changed` clears the cache so a genuine decoration change
+    // (maximize, unmaximize, tiling) is picked up immediately.
+    _frameLocalOffset(state, actor, rect, bufferRect) {
+        const px = actor.x;
+        const py = actor.y;
+        const prev = state.frameLocalActorPos;
+        const stationary = !!prev && prev[0] === px && prev[1] === py;
+        state.frameLocalActorPos = [px, py];
+        if (!state.frameLocal || stationary) {
+            const fx = rect.x - bufferRect.x;
+            const fy = rect.y - bufferRect.y;
+            if (Number.isFinite(fx) && Number.isFinite(fy)) {
+                state.frameLocal = [fx, fy];
+            }
+        }
+        return state.frameLocal ?? [0, 0];
     }
     // ── Counter-scale placement (resize/open/close animation) ─────────────────
     // bgActor / baseActor / cornerOverlay are literal children of `windowActor`
@@ -831,12 +902,9 @@ export class ApplicationManager {
         const activeWorkspace = workspaceManager.get_active_workspace();
         const winWorkspace = metaWin.get_workspace();
         if (winWorkspace && winWorkspace !== activeWorkspace) {
-            if (state.bgActor.visible)
-                state.bgActor.visible = false;
-            if (state.baseActor.visible)
-                state.baseActor.visible = false;
-            if (state.cornerOverlay.visible)
-                state.cornerOverlay.visible = false;
+            setActorVisible(state.bgActor, false);
+            setActorVisible(state.baseActor, false);
+            setActorVisible(state.cornerOverlay, false);
             return;
         }
         if (this._debugFocusLogFrames > 0)
@@ -844,21 +912,38 @@ export class ApplicationManager {
         const rect = metaWin.get_frame_rect();
         const bufferRect = metaWin.get_buffer_rect();
         if (!rect || !bufferRect || rect.width <= 0 || rect.height <= 0) {
-            if (state.bgActor.visible)
-                state.bgActor.visible = false;
-            if (state.baseActor.visible)
-                state.baseActor.visible = false;
-            if (state.cornerOverlay.visible)
-                state.cornerOverlay.visible = false;
+            setActorVisible(state.bgActor, false);
+            setActorVisible(state.baseActor, false);
+            setActorVisible(state.cornerOverlay, false);
             return;
         }
-        if (!state.bgActor.visible)
-            state.bgActor.visible = true;
-        if (!state.baseActor.visible)
-            state.baseActor.visible = true;
-        // Local offset of the visible frame within the window actor's full buffer.
-        const frameLocalX = rect.x - bufferRect.x;
-        const frameLocalY = rect.y - bufferRect.y;
+        setActorVisible(state.bgActor, true);
+        setActorVisible(state.baseActor, true);
+        // Local offset of the visible frame within the window actor's full buffer
+        // — i.e. the width of the invisible CSD border on the left/top. It is a
+        // property of the window's decorations, so it only ever changes when the
+        // frame itself does, never while the window is merely being moved.
+        //
+        // [FIX] It must NOT be recomputed from `rect.x - bufferRect.x` on a frame
+        // where the window is moving. get_frame_rect() and get_buffer_rect()
+        // update at different points, and during an interactive drag the frame
+        // rect trails the buffer rect (and windowActor.x, which matches the
+        // buffer rect) by exactly one frame's mouse movement. The [anchor] log
+        // caught it directly: while dragging with scale=1 and translation=0, the
+        // constraint offset — which is nothing but -frameLocalX + SHADER_PADDING
+        // — swung between -35 (the window's true 45px border) and -85, and each
+        // excursion equalled that frame's mouse movement — i.e. purely the lag, not any
+        // real geometry change. Every consumer below inherits it: the glass box,
+        // the shader geometry AND the clone containers' absolute anchor, so the
+        // whole glass and everything sampled through it jumped by up to 50px per
+        // frame, and whatever value happened to be latched on the last frame of
+        // the drag stayed until the next sync.
+        //
+        // So: sample it only while the actor is stationary (the two rects agree
+        // then), and hold the last known-good value for the duration of a move.
+        const frameLocal = this._frameLocalOffset(state, actor, rect, bufferRect);
+        const frameLocalX = frameLocal[0];
+        const frameLocalY = frameLocal[1];
         // GNOME animates a resize by easing windowActor's scale, never by
         // changing the frame rect — get_frame_rect() is already the FINAL rect
         // the whole time (windowManager.js _sizeChangedWindow). So every number
@@ -942,26 +1027,25 @@ export class ApplicationManager {
         const anchorDY = (actor.translation_y || 0) + pivotPxY * (1 - sy);
         const offsetX = -anchorDX - localX;
         const offsetY = -anchorDY - localY;
-        state.constraints.bg.offset_x = offsetX;
-        state.constraints.bg.offset_y = offsetY;
-        state.constraints.windows.offset_x = offsetX;
-        state.constraints.windows.offset_y = offsetY;
-        state.constraints.base.offset_x = offsetX;
-        state.constraints.base.offset_y = offsetY;
-        state.constraints.baseWindows.offset_x = offsetX;
-        state.constraints.baseWindows.offset_y = offsetY;
+        // setOffset() ではなく生の offset_x/offset_y 代入だと、値は変わっても
+        // allocation の再計算が要求されない。ウィンドウが動かない開閉アニメーション
+        // 中（scale だけが変わる ＝ offsetX は毎フレーム変わる）はそれで完全に
+        // 取り残される。InvertedPositionConstraint.setOffset() 参照。
+        state.constraints.bg.setOffset(offsetX, offsetY);
+        state.constraints.windows.setOffset(offsetX, offsetY);
+        state.constraints.base.setOffset(offsetX, offsetY);
+        state.constraints.baseWindows.setOffset(offsetX, offsetY);
         // ▼ 個別ウィンドウのクローン同期 (translation_x/yを使用) ▼
         // Sync blurred clones
         for (let [src, clone] of state.clones.entries()) {
             if (!isActorValid(src) || !src.visible || !src.mapped) {
-                if (isActorValid(clone) && clone.visible)
-                    clone.hide();
+                if (isActorValid(clone))
+                    setActorVisible(clone, false);
                 this._clearCloneAnomaly(clone);
                 continue;
             }
             if (isActorValid(clone)) {
-                if (!clone.visible)
-                    clone.show();
+                setActorVisible(clone, true);
                 // 実際のプロパティ(x,y)は0,0に固定し、描画オフセットのみで配置する
                 if (clone.x !== 0 || clone.y !== 0)
                     clone.set_position(0, 0);
@@ -976,14 +1060,13 @@ export class ApplicationManager {
         // Sync base clones (unblurred)
         for (let [src, clone] of state.baseClones.entries()) {
             if (!isActorValid(src) || !src.visible || !src.mapped) {
-                if (isActorValid(clone) && clone.visible)
-                    clone.hide();
+                if (isActorValid(clone))
+                    setActorVisible(clone, false);
                 this._clearCloneAnomaly(clone);
                 continue;
             }
             if (isActorValid(clone)) {
-                if (!clone.visible)
-                    clone.show();
+                setActorVisible(clone, true);
                 if (clone.x !== 0 || clone.y !== 0)
                     clone.set_position(0, 0);
                 clone.translation_x = src.x;
@@ -995,9 +1078,7 @@ export class ApplicationManager {
             }
         }
         // Sync corner overlays
-        if (!state.cornerOverlay.visible) {
-            state.cornerOverlay.show();
-        }
+        setActorVisible(state.cornerOverlay, true);
         const baseW = visW + (SHADER_PADDING * 2);
         const baseH = visH + (SHADER_PADDING * 2);
         this._applyCounterScale(state.cornerOverlay, actor, frameDX - SHADER_PADDING, frameDY - SHADER_PADDING, baseW, baseH);
@@ -1051,6 +1132,14 @@ export class ApplicationManager {
                 // is missed and the whole per-frame sync chain stops permanently.
                 if (!metaWin)
                     continue;
+                // bgActor / baseActor / cornerOverlay are direct children of the
+                // window actor, which Mutter flags NO_LAYOUT — so they are stage
+                // relayout-queue boundary actors exactly like a dock/menu glass
+                // root, and can be stranded the same way. See
+                // ensureGlassAllocated().
+                ensureGlassAllocated(state.bgActor);
+                ensureGlassAllocated(state.baseActor);
+                ensureGlassAllocated(state.cornerOverlay);
                 this._syncState(state);
                 if (this._debugFocusLogFrames > 0)
                     this._logFocusDebugInfo(state);
@@ -1206,19 +1295,33 @@ export class ApplicationManager {
             });
             state.signals = [];
         }
+        // [FIX] Every actor below is a child of the window actor, so by the time
+        // this runs from the 'destroy' handler (windowManager's destroy-animation
+        // completion) Clutter has usually already disposed the whole subtree.
+        // Reaching into those wrappers unguarded is what produced the
+        // "Object ... has been already disposed" Gjs-CRITICALs with backtraces
+        // into this function; worse, a method call on a disposed GObject throws,
+        // which used to abort the rest of the cleanup (the effect was never
+        // cleaned up, the constraints kept their source).
         if (state.constraints) {
-            state.bgClone.remove_constraint(state.constraints.bg);
-            state.windowsContainer.remove_constraint(state.constraints.windows);
-            state.baseClone.remove_constraint(state.constraints.base);
-            state.baseWindowsContainer.remove_constraint(state.constraints.baseWindows);
+            if (isActorValid(state.bgClone))
+                state.bgClone.remove_constraint(state.constraints.bg);
+            if (isActorValid(state.windowsContainer))
+                state.windowsContainer.remove_constraint(state.constraints.windows);
+            if (isActorValid(state.baseClone))
+                state.baseClone.remove_constraint(state.constraints.base);
+            if (isActorValid(state.baseWindowsContainer))
+                state.baseWindowsContainer.remove_constraint(state.constraints.baseWindows);
             state.constraints.bg.source = null;
             state.constraints.windows.source = null;
             state.constraints.base.source = null;
             state.constraints.baseWindows.source = null;
         }
-        state.clones.forEach(clone => clone.destroy());
+        state.clones.forEach(clone => { if (isActorValid(clone))
+            clone.destroy(); });
         state.clones.clear();
-        state.baseClones.forEach(clone => clone.destroy());
+        state.baseClones.forEach(clone => { if (isActorValid(clone))
+            clone.destroy(); });
         state.baseClones.clear();
         if (state.effect) {
             try {
@@ -1226,11 +1329,11 @@ export class ApplicationManager {
             }
             catch (e) { }
         }
-        if (state.bgActor)
+        if (isActorValid(state.bgActor))
             state.bgActor.destroy();
-        if (state.baseActor)
+        if (isActorValid(state.baseActor))
             state.baseActor.destroy();
-        if (state.cornerOverlay)
+        if (isActorValid(state.cornerOverlay))
             state.cornerOverlay.destroy();
     }
 }

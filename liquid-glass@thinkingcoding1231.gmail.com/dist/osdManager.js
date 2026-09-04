@@ -6,7 +6,7 @@ import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import { LiquidEffect } from './liquidEffect.js';
 import { StageContrastSampler, AdaptiveContrastConfig } from './contrastSampler.js';
-import { UnpickableActor, UILayerSampler, WindowCloneManager, } from './utils.js';
+import { UnpickableActor, UILayerSampler, WindowCloneManager, reportFrameLoopError, ensureGlassAllocated, } from './utils.js';
 // ========== Configuration Parameters (Defaults, overridden by settings) ==========
 const SHADER_PADDING = 20;
 export class OsdManager {
@@ -215,7 +215,17 @@ export class OsdManager {
             if (!this._isEffectActive)
                 return GLib.SOURCE_REMOVE;
             for (let state of this._osdStates) {
-                this._syncGeometry(state);
+                // Per-state try/catch: one broken OSD must not stop the others, and
+                // must not skip the reschedule below (see DockManager's frameTick).
+                // See ensureGlassAllocated(): keeps this glass root in the
+                // stage's relayout queue so its clones can never strand.
+                ensureGlassAllocated(state.bgActor);
+                try {
+                    this._syncGeometry(state);
+                }
+                catch (e) {
+                    reportFrameLoopError('OSDManager', e);
+                }
             }
             this._frameSyncId = this._laterAdd(frameLaterType, frameTick);
             return GLib.SOURCE_REMOVE;
@@ -315,7 +325,7 @@ export class OsdManager {
         liquidBox.add_effect(effect);
         bgActor.hide();
         // ── 5. WindowCloneManager + UILayerSampler ────────────────────────────────
-        let windowCloneManager = new WindowCloneManager(liquidBox, cloneContainer);
+        let windowCloneManager = new WindowCloneManager(liquidBox, cloneContainer, 'lg-osd');
         let uiSampler = new UILayerSampler(bgActor, liquidBox, [osdRoot, global.windowGroup, global.window_group], cloneContainer);
         // ── 7. Build initial clones ───────────────────────────────────────────────
         windowCloneManager.rebuildClones();
