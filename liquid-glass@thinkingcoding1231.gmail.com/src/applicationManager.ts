@@ -211,6 +211,8 @@ export class ApplicationManager {
     // Opacity of the window's own content layer, so the glass underneath is visible through it.
     connectSetting('application-content-opacity', () => this._updateWindowOpacities());
     connectSetting('application-window-whitelist', () => this._syncWhitelist());
+    // Exclusion list, consulted only while "apply to all windows" is on.
+    connectSetting('application-window-blacklist', () => this._syncWhitelist());
     connectSetting('application-tint-color', () => this._updateEffectParams());
     connectSetting('application-tint-strength', () => this._updateEffectParams());
     connectSetting('application-blur-radius', () => this._updateEffectParams());
@@ -247,6 +249,21 @@ export class ApplicationManager {
     return whitelist;
   }
 
+  _getBlacklist(): string[] {
+    let blacklist = this._settings.get_strv('application-window-blacklist');
+    return blacklist;
+  }
+
+  // WM_CLASS casing is not stable across toolkits (GTK reports "Firefox" where
+  // xprop may show "firefox"), and the preferences UI advertises the matching as
+  // case-insensitive, so compare case-folded on both sides.
+  _listContainsClass(list: string[], wmClass: string | null): boolean {
+    if (!wmClass)
+      return false;
+    const normalized = wmClass.toLowerCase();
+    return list.some((entry) => entry.toLowerCase() === normalized);
+  }
+
   _windowMatchesWhitelist(metaWindow: Meta.Window): boolean {
     const whitelist = this._getWhitelist();
     const appName = metaWindow.get_wm_class();
@@ -254,11 +271,25 @@ export class ApplicationManager {
       return false;
     }
 
-    let ret = !!appName && whitelist.includes(appName);
+    let ret = this._listContainsClass(whitelist, appName);
     if (!ret) {
       this._logger.log("[Liquid Glass] window is not in whitelist. name = " + appName);
     } else {
       this._logger.log("[Liquid Glass] window is in whitelist. name = " + appName);
+    }
+    return ret;
+  }
+
+  _windowMatchesBlacklist(metaWindow: Meta.Window): boolean {
+    const blacklist = this._getBlacklist();
+    if (blacklist.length === 0) {
+      return false;
+    }
+
+    const appName = metaWindow.get_wm_class();
+    const ret = this._listContainsClass(blacklist, appName);
+    if (ret) {
+      this._logger.log("[Liquid Glass] window is in blacklist, skipping. name = " + appName);
     }
     return ret;
   }
@@ -274,7 +305,8 @@ export class ApplicationManager {
     }
 
     // "Apply to all windows" bypasses the whitelist, but is still restricted to
-    // normal/dialog windows so we never touch desktop backgrounds, panels, etc.
+    // normal/dialog windows so we never touch desktop backgrounds, panels, etc.,
+    // and still honours the blacklist as an opt-out for individual apps.
     const applyAll = this._settings.get_boolean('application-glass-all-windows');
     if (applyAll) {
       const windowType = metaWindow.get_window_type();
@@ -283,6 +315,9 @@ export class ApplicationManager {
         windowType === Meta.WindowType.MODAL_DIALOG;
       if (!isNormal) {
         this._logger.log(`[Liquid Glass] window "${metaWindow.get_title()}" has special type ${windowType}, skipping...`);
+        return false;
+      }
+      if (this._windowMatchesBlacklist(metaWindow)) {
         return false;
       }
       return true;

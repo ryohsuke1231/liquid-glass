@@ -83,7 +83,7 @@ The effect can be enabled or disabled per UI element, and each element has its o
 | **Notifications** | Glass behind notification banners. Supports **adaptive text coloring** and a hide safety margin to avoid flicker while the banner is dismissed. |
 | **Quick Settings** | Two modes: **Background mode** applies one sheet of glass behind the whole panel, and **Toggle mode** turns every individual toggle button into its own piece of glass, keeping each toggle's own accent color (see "Base Color Strength"). Also supports spring animation and adaptive text coloring. |
 | **OSD** | Glass behind the on-screen displays (volume, brightness, and so on), with adaptive text coloring. |
-| **Application Windows** | Glass behind application windows, with a **window content opacity** slider so the glass shows through the window itself. Applies to all windows, or only to the `WM_CLASS` names you add to the whitelist (find them with `xprop WM_CLASS`). |
+| **Application Windows** | Glass behind application windows, with a **window content opacity** slider so the glass shows through the window itself. Applies either to a **whitelist** of applications, or to all windows minus a **blacklist**. Both lists are filled from a live picker of your currently open windows, so there is no need to look up `WM_CLASS` values by hand. |
 
 ### Adaptive Text Coloring
 
