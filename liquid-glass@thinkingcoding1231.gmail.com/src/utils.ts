@@ -102,7 +102,24 @@ function utilsLog(msg: string): void {
 const _strandedFrames: WeakMap<Clutter.Actor, number> = new WeakMap();
 const STRANDED_FRAMES_BEFORE_RESCUE = 3;
 
-export function ensureGlassAllocated(actor: Clutter.Actor | null): boolean {
+/**
+ * @param framesBeforeRescue how many consecutive stranded frames to require
+ *   before remapping. The default is fine for our own glass actors, which
+ *   nothing else owns. Callers that hand this an actor belonging to Mutter —
+ *   see ApplicationManager._frameTick(), which has to rescue the
+ *   MetaWindowActor itself because point 4 of the comment above means a
+ *   stranded window actor swallows every relayout request its glass children
+ *   make (and MetaWindowActor is NOT flagged NO_LAYOUT: it has no allocate
+ *   vfunc at all, so its children go through
+ *   `_clutter_actor_queue_only_relayout(parent)` and die there, instead of
+ *   through `clutter_actor_queue_shallow_relayout(child)` straight onto the
+ *   stage) — should ask for a longer streak, so a live window is never
+ *   remapped for a relayout that was merely slow.
+ */
+export function ensureGlassAllocated(
+  actor: Clutter.Actor | null,
+  framesBeforeRescue: number = STRANDED_FRAMES_BEFORE_RESCUE
+): boolean {
   try {
     if (!actor) return false;
 
@@ -115,7 +132,7 @@ export function ensureGlassAllocated(actor: Clutter.Actor | null): boolean {
     }
 
     const strandedFor = (_strandedFrames.get(actor) ?? 0) + 1;
-    if (strandedFor < STRANDED_FRAMES_BEFORE_RESCUE) {
+    if (strandedFor < framesBeforeRescue) {
       _strandedFrames.set(actor, strandedFor);
       return false;
     }

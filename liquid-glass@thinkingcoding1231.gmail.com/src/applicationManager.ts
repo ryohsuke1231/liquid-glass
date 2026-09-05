@@ -16,6 +16,35 @@ const SHADER_PADDING = 10;
 // Inward padding for corner rounding
 const CORNER_PADDING = 3;
 
+// Consecutive frames a MetaWindowActor must sit visible + mapped +
+// !has_allocation() before _frameTick() remaps it. Ten frames is ~160ms —
+// far longer than any legitimate pending relayout, and short enough that the
+// glass under it is only wrong for a fraction of a second. See the comment
+// at the call site.
+const WINDOW_ACTOR_STRANDED_FRAMES = 10;
+
+// How far the clone containers' screen origin may be from (0,0) before the
+// glass is treated as unrenderable and hidden for that frame.
+//
+// The invariant is that it sits EXACTLY on (0,0) (see _checkContainerAnchor),
+// and the values seen while animating are single- to low-double-digit. This
+// threshold is not for those: it is for the failure mode where the subtree
+// stops being allocated while _applyCounterScale() keeps writing a fresh
+// counter-scale — set_scale() is a transform, so it lands even when nothing
+// can be re-allocated. A window minimising to the dock reaches scale 0.03,
+// i.e. a 30x counter-scale multiplying a frozen container origin of about
+// -1200px: the journal caught containerAnchor=(-34237,-11261). At that point
+// update_stage_views() has given the actor EVERY stage view (it does that for
+// any actor with needs_allocation set), so nothing culls the result — it is
+// painted, full-screen, every frame, with damage rectangles that make
+// mutter's own pixman calls fail ("In pixman_region32_init_rect: Invalid
+// rectangle passed"). That is the giant smeared texture, the black residue
+// spreading around the window, and the freeze.
+//
+// Hiding the glass for those frames costs a plain window with no glass behind
+// it; not hiding it costs the session.
+const MAX_ANCHOR_DISPLACEMENT = 256;
+
 interface WindowState {
   windowActor: Meta.WindowActor;
   // The window's own content/surface actor (the actual client texture). Cached here
@@ -1186,7 +1215,11 @@ export class ApplicationManager {
     // steady state still costs nothing.
     this._syncAnimatedCornerRadius(state, sx);
 
-    this._checkContainerAnchor(state);
+    // Reads LAST frame's anchor: the offsets written below only reach the
+    // scene graph at the next relayout, which is the whole point — if the
+    // subtree is stranded that relayout never comes, and this is how we find
+    // out. See MAX_ANCHOR_DISPLACEMENT.
+    const anchorOffBy = this._checkContainerAnchor(state);
 
     // ▼ Constraintによる画面全体(0,0)への絶対座標固定 ▼
     // クローン群は絶対スクリーン座標で配置されるので、そのコンテナの原点が
@@ -1294,6 +1327,20 @@ export class ApplicationManager {
     state.cornerOverlayClone.set_position(0, 0);
     state.cornerOverlayClone.set_size(baseW, baseH);
 
+    // [FIX] Last line of defence, applied after every setActorVisible(…, true)
+    // above so it wins. If the clone containers are anchored hundreds of
+    // pixels away from screen (0,0), this glass cannot draw anything but
+    // garbage this frame — the constraint offsets are computed correctly (the
+    // [anchor] log prints them) but are not reaching the allocation, which
+    // only happens when the subtree is stranded. Everything inside is then
+    // painting the wrong part of the screen, magnified by whatever
+    // counter-scale the current animation asked for. Hide it and let
+    // _frameTick()'s ensureGlassAllocated() calls do the repair.
+    if (anchorOffBy > MAX_ANCHOR_DISPLACEMENT) {
+      setActorVisible(state.bgActor, false);
+      setActorVisible(state.baseActor, false);
+      setActorVisible(state.cornerOverlay, false);
+    }
   }
   // [FIX] See the 3-2 investigation comment above _syncState()'s clone sync
   // loops. `kind` is just "blurred"/"base" for the log line. Deliberately
@@ -1340,11 +1387,46 @@ export class ApplicationManager {
         // Skip this window only — never return, or the reschedule at the end
         // is missed and the whole per-frame sync chain stops permanently.
         if (!metaWin) continue;
-        // bgActor / baseActor / cornerOverlay are direct children of the
-        // window actor, which Mutter flags NO_LAYOUT — so they are stage
-        // relayout-queue boundary actors exactly like a dock/menu glass
-        // root, and can be stranded the same way. See
-        // ensureGlassAllocated().
+        // [FIX] Rescue the WINDOW ACTOR first, not just our own three roots.
+        //
+        // The earlier comment here claimed MetaWindowActor is flagged
+        // NO_LAYOUT, which would make bgActor/baseActor/cornerOverlay queue
+        // their relayouts straight onto the stage
+        // (clutter_actor_queue_shallow_relayout) and be rescuable on their
+        // own. It is not: mutter's MetaWindowActor sets no such flag and
+        // implements no allocate vfunc — its children are laid out by
+        // Clutter's default fixed layout. So a glass root's
+        // queue_relayout() goes to
+        //
+        //     clutter_actor_real_queue_relayout()
+        //       -> _clutter_actor_queue_only_relayout(windowActor)
+        //            if (needs_width_request && needs_height_request &&
+        //                needs_allocation) return;  // save some cpu cycles
+        //
+        // and dies there whenever the window actor itself is stranded. That
+        // made the rescue below unable to ever land: hide()/show() cleared
+        // the glass root's own three flags via real_map(), the follow-up
+        // queue_relayout() was swallowed by the stranded window actor, and
+        // the root was unallocated again on the very next frame. journalctl
+        // from the bad session shows exactly that — "Can't update stage
+        // views actor lgw-base ... needs an allocation" at 60/s per window,
+        // for a minute and a half, never once recovering, with the window
+        // actor itself ("unnamed [MetaWindowActorWayland]") warned about in
+        // the same stretch.
+        //
+        // Remapping the window actor clears the flags for the whole subtree
+        // in one go (real_map() recurses into every child), so this single
+        // call is what makes the three below effective again. Gated on a
+        // longer stranded streak than our own actors get: this one is
+        // Mutter's, and a live window must never be remapped just because a
+        // legitimate relayout took a few frames.
+        if (ensureGlassAllocated(state.windowActor, WINDOW_ACTOR_STRANDED_FRAMES)) {
+          const title = metaWin.get_title() || '(untitled)';
+          this._logger.log(
+            `[Liquid Glass][strand] remapped stranded window actor for "${title}" ` +
+            `(its glass subtree could not be re-allocated while it stayed stranded)`
+          );
+        }
         ensureGlassAllocated(state.bgActor);
         ensureGlassAllocated(state.baseActor);
         ensureGlassAllocated(state.cornerOverlay);
@@ -1395,15 +1477,21 @@ export class ApplicationManager {
   // it must be a constant -35). Anything computing that offset from an
   // allocation-derived read inside the BEFORE_REDRAW later will trip it, so
   // it is worth leaving armed.
-  _checkContainerAnchor(state: WindowState) {
+  //
+  // Returns how far the anchor is off, in screen pixels (Infinity when it is
+  // not a finite position at all), so the caller can refuse to draw glass
+  // that is grossly displaced — see MAX_ANCHOR_DISPLACEMENT.
+  _checkContainerAnchor(state: WindowState): number {
     const container = state.windowsContainer;
-    if (!isActorValid(container)) return;
+    if (!isActorValid(container)) return 0;
 
     let x = NaN, y = NaN;
-    try { [x, y] = container.get_transformed_position(); } catch (e) { return; }
+    try { [x, y] = container.get_transformed_position(); } catch (e) { return 0; }
 
-    const displaced = !Number.isFinite(x) || !Number.isFinite(y) ||
-      Math.abs(x) > 1 || Math.abs(y) > 1;
+    const offBy = (!Number.isFinite(x) || !Number.isFinite(y))
+      ? Infinity
+      : Math.max(Math.abs(x), Math.abs(y));
+    const displaced = offBy > 1;
     const known = this._displacedContainers.has(container);
 
     if (displaced && !known) {
@@ -1423,6 +1511,8 @@ export class ApplicationManager {
       this._displacedContainers.delete(container);
       this._logger.log('[Liquid Glass][anchor] RECOVERED');
     }
+
+    return offBy;
   }
 
   _logFocusDebugInfo(state: WindowState) {
