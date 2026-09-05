@@ -4,6 +4,85 @@ import Gtk from 'gi://Gtk';
 import Gio from 'gi://Gio';
 import Gdk from 'gi://Gdk';
 
+// gnome-extensions-prefs runs in its own process and cannot touch Meta/Shell, so
+// the list of open windows is fetched from the shell-side WindowListService over
+// D-Bus (see src/windowListService.ts). The proxy is created lazily and shared by
+// every picker in the window.
+const WINDOW_LIST_BUS_NAME = 'org.gnome.Shell';
+const WINDOW_LIST_OBJECT_PATH = '/org/gnome/Shell/Extensions/LiquidGlass';
+const WINDOW_LIST_INTERFACE_NAME = 'org.gnome.Shell.Extensions.LiquidGlass';
+
+class WindowListClient {
+  constructor() {
+    this._proxy = null;
+    this._proxyError = null;
+    this._watchers = new Set();
+    this._signalId = 0;
+  }
+
+  _ensureProxy() {
+    if (this._proxy || this._proxyError)
+      return this._proxy;
+
+    try {
+      this._proxy = Gio.DBusProxy.new_for_bus_sync(
+        Gio.BusType.SESSION,
+        Gio.DBusProxyFlags.DO_NOT_AUTO_START | Gio.DBusProxyFlags.DO_NOT_LOAD_PROPERTIES,
+        null,
+        WINDOW_LIST_BUS_NAME,
+        WINDOW_LIST_OBJECT_PATH,
+        WINDOW_LIST_INTERFACE_NAME,
+        null);
+
+      this._signalId = this._proxy.connect('g-signal', (_proxy, _sender, signalName) => {
+        if (signalName === 'WindowsChanged')
+          this._notify();
+      });
+    } catch (e) {
+      this._proxy = null;
+      this._proxyError = e;
+    }
+
+    return this._proxy;
+  }
+
+  _notify() {
+    for (const watcher of [...this._watchers])
+      watcher();
+  }
+
+  // Registers a callback fired whenever the shell reports that the set of open
+  // windows changed. Returns a function that unsubscribes it.
+  addWatcher(callback) {
+    this._ensureProxy();
+    this._watchers.add(callback);
+    return () => this._watchers.delete(callback);
+  }
+
+  // callback(windows, errorMessage): exactly one of the two is meaningful.
+  listWindows(callback) {
+    const proxy = this._ensureProxy();
+    if (!proxy) {
+      callback(null, 'Could not connect to GNOME Shell.');
+      return;
+    }
+
+    proxy.call('ListWindows', null, Gio.DBusCallFlags.NONE, -1, null, (source, result) => {
+      let windows = null;
+      let error = null;
+      try {
+        const [json] = source.call_finish(result).deep_unpack();
+        windows = JSON.parse(json);
+      } catch (e) {
+        // The usual cause is the extension being disabled: the object is only
+        // exported while it is running, so the call fails with UnknownMethod.
+        error = 'The window list is only available while the extension is enabled.';
+      }
+      callback(windows, error);
+    });
+  }
+}
+
 export default class LiquidGlassPreferences extends ExtensionPreferences {
   fillPreferencesWindow(window) {
     const settings = this.getSettings("org.gnome.shell.extensions.liquid-glass@thinkingcoding1231.gmail.com");
@@ -298,9 +377,9 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
     appPage.add(appGroup);
 
     this._addSwitchRow(appGroup, settings, 'enable-application-glass', 'Enable Glass Effect', 'Apply to application windows');
-    // Switch to apply to all windows, bypassing the whitelist below.
-    this._addSwitchRow(appGroup, settings, 'application-glass-all-windows', 'Apply to All Windows', 'Apply to all application windows, bypassing the whitelist below');
-    this._addWhitelistEditor(appPage, settings, 'application-window-whitelist');
+    // Switch to apply to all windows: the whitelist is bypassed and the blacklist
+    // below takes over as the way to exclude individual applications.
+    this._addSwitchRow(appGroup, settings, 'application-glass-all-windows', 'Apply to All Windows', 'Apply to all application windows, using the blacklist below instead of the whitelist');
     this._addColorRow(appGroup, settings, 'application-tint-color', 'Tint Color', 'Color of the glass tint');
     this._addSliderRow(appGroup, settings, 'application-tint-strength', 'Tint Strength', 'Intensity of the color tint', 0.0, 1.0, 0.01);
     const appBlurRow = this._addSliderRow(appGroup, settings, 'application-blur-radius', 'Blur Radius', '', 0, 30, 1);
@@ -318,6 +397,33 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
     this._addSliderRow(appAdvanced, settings, 'application-brightness', 'Brightness', 'Adjusts brightness', 0.5, 1.5, 0.01);
     this._addSliderRow(appAdvanced, settings, 'application-contrast', 'Contrast', 'Adjusts contrast', 0.5, 1.5, 0.01);
     this._addSliderRow(appAdvanced, settings, 'application-saturation', 'Saturation', 'Adjusts saturation', 0.0, 2.0, 0.01);
+
+    // Whitelist (used when "Apply to All Windows" is off) and blacklist (used
+    // when it is on). Both are edited through the same live picker of open
+    // windows, so the user never has to look a WM_CLASS up by hand.
+    const windowListClient = new WindowListClient();
+
+    this._addWindowClassEditor(appPage, settings, windowListClient, {
+      key: 'application-window-whitelist',
+      title: 'Whitelist',
+      description: 'Only these applications get the glass effect. Used while "Apply to All Windows" is off.',
+      emptyTitle: 'No applications whitelisted',
+      emptySubtitle: 'Add one below to enable the effect on it',
+      pickerTitle: 'Add to Whitelist',
+      activeKey: 'application-glass-all-windows',
+      activeWhen: false,
+    });
+
+    this._addWindowClassEditor(appPage, settings, windowListClient, {
+      key: 'application-window-blacklist',
+      title: 'Blacklist',
+      description: 'These applications never get the glass effect. Used while "Apply to All Windows" is on.',
+      emptyTitle: 'No applications blacklisted',
+      emptySubtitle: 'Add one below to exclude it from the effect',
+      pickerTitle: 'Add to Blacklist',
+      activeKey: 'application-glass-all-windows',
+      activeWhen: true,
+    });
 
 
     // --- Glass Properties タブ ---
@@ -487,18 +593,38 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
     return row;
   }
 
-  // アプリケーションウィンドウのホワイトリスト編集UI（WM_CLASS の追加/削除）
-  _addWhitelistEditor(page, settings, key) {
-    const listGroup = new Adw.PreferencesGroup({
-      title: 'Whitelisted Windows',
-      description: 'WM_CLASS values (run: xprop WM_CLASS on a window). Matching is case-insensitive. Ignored while "Apply to All Windows" is on.',
-    });
+  // アプリケーションウィンドウのホワイトリスト／ブラックリスト編集UI。
+  // WM_CLASS を直接打たせるのはユーザーフレンドリーではないので、開いている
+  // ウィンドウ一覧（リアルタイム更新）から選んで追加できるようにしてある。
+  _addWindowClassEditor(page, settings, client, options) {
+    const { key, title, description, emptyTitle, emptySubtitle, pickerTitle, activeKey, activeWhen } = options;
+
+    const listGroup = new Adw.PreferencesGroup({ title, description });
     page.add(listGroup);
 
-    const listBox = new Gtk.ListBox({
-      selection_mode: Gtk.SelectionMode.NONE,
+    // The list that is not currently in effect is greyed out, so it is obvious
+    // which of the two the "Apply to All Windows" switch is consulting.
+    if (activeKey) {
+      let flags = Gio.SettingsBindFlags.GET;
+      if (!activeWhen)
+        flags |= Gio.SettingsBindFlags.INVERT_BOOLEAN;
+      settings.bind(activeKey, listGroup, 'sensitive', flags);
+    }
+
+    const addButton = new Gtk.Button({
+      valign: Gtk.Align.CENTER,
+      css_classes: ['flat'],
+      icon_name: 'list-add-symbolic',
+      tooltip_text: pickerTitle,
     });
+    addButton.connect('clicked', () => {
+      this._presentWindowPicker(addButton, settings, client, key, pickerTitle);
+    });
+    listGroup.set_header_suffix(addButton);
+
+    const listBox = new Gtk.ListBox({ selection_mode: Gtk.SelectionMode.NONE });
     listBox.add_css_class('boxed-list');
+    listGroup.add(listBox);
 
     const refreshList = () => {
       let child = listBox.get_first_child();
@@ -510,55 +636,210 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
 
       const items = settings.get_strv(key);
       for (const item of items) {
-        const row = new Adw.ActionRow({ title: item });
+        const row = new Adw.ActionRow({ title: item, subtitle: 'WM_CLASS' });
         const removeButton = new Gtk.Button({
           icon_name: 'user-trash-symbolic',
           valign: Gtk.Align.CENTER,
           css_classes: ['flat', 'error'],
+          tooltip_text: 'Remove',
         });
         removeButton.connect('clicked', () => {
-          const current = settings.get_strv(key).filter((v) => v !== item);
-          settings.set_strv(key, current);
-          refreshList();
+          settings.set_strv(key, settings.get_strv(key).filter((v) => v !== item));
         });
         row.add_suffix(removeButton);
         listBox.append(row);
       }
 
       if (items.length === 0) {
-        const emptyRow = new Adw.ActionRow({
-          title: 'No windows whitelisted',
-          subtitle: 'Add a WM_CLASS below to enable the effect on that application',
-        });
+        const emptyRow = new Adw.ActionRow({ title: emptyTitle, subtitle: emptySubtitle });
         emptyRow.add_css_class('dim-label');
         listBox.append(emptyRow);
       }
     };
 
-    settings.connect(`changed::${key}`, refreshList);
+    const changedId = settings.connect(`changed::${key}`, refreshList);
+    listBox.connect('destroy', () => settings.disconnect(changedId));
     refreshList();
 
-    listGroup.add(listBox);
-
-    const entryGroup = new Adw.PreferencesGroup({ title: 'Add Window Class' });
-    page.add(entryGroup);
-
-    const entryRow = new Adw.EntryRow({
-      title: 'WM_CLASS',
-      show_apply_button: true,
+    // Manual entry is kept for windows that are not currently open (or that the
+    // shell cannot report), but it is folded away so the picker is the default.
+    const manualExpander = new Adw.ExpanderRow({
+      title: 'Enter a WM_CLASS manually',
+      subtitle: 'For applications that are not running right now (run: xprop WM_CLASS)',
     });
+    listGroup.add(manualExpander);
+
+    const entryRow = new Adw.EntryRow({ title: 'WM_CLASS', show_apply_button: true });
     entryRow.connect('apply', () => {
       const value = entryRow.get_text().trim();
       if (!value) return;
-
-      const normalized = value.toLowerCase();
-      const items = settings.get_strv(key);
-      if (!items.some((v) => v.toLowerCase() === normalized)) {
-        settings.set_strv(key, [...items, value.trim()]);
-      }
+      this._addWindowClass(settings, key, value);
       entryRow.set_text('');
     });
-    entryGroup.add(entryRow);
+    manualExpander.add_row(entryRow);
+  }
+
+  // 追加は大文字小文字を区別せずに重複チェックする（マッチング側も同様）
+  _addWindowClass(settings, key, wmClass) {
+    const value = wmClass.trim();
+    if (!value) return false;
+
+    const normalized = value.toLowerCase();
+    const items = settings.get_strv(key);
+    if (items.some((v) => v.toLowerCase() === normalized))
+      return false;
+
+    settings.set_strv(key, [...items, value]);
+    return true;
+  }
+
+  // 開いているウィンドウ一覧のピッカー。開いている間は WindowsChanged シグナルを
+  // 購読し、ウィンドウの開閉に追従して中身を更新する。
+  _presentWindowPicker(parentWidget, settings, client, key, title) {
+    const dialog = new Adw.Dialog({
+      title,
+      content_width: 500,
+      content_height: 560,
+    });
+
+    const toolbarView = new Adw.ToolbarView();
+    toolbarView.add_top_bar(new Adw.HeaderBar());
+    dialog.set_child(toolbarView);
+
+    const contentBox = new Gtk.Box({
+      orientation: Gtk.Orientation.VERTICAL,
+      spacing: 12,
+      margin_top: 12,
+      margin_bottom: 12,
+      margin_start: 12,
+      margin_end: 12,
+    });
+
+    const scrolled = new Gtk.ScrolledWindow({
+      hscrollbar_policy: Gtk.PolicyType.NEVER,
+      vexpand: true,
+      child: contentBox,
+    });
+    toolbarView.set_content(scrolled);
+
+    const clearContent = () => {
+      let child = contentBox.get_first_child();
+      while (child) {
+        const next = child.get_next_sibling();
+        contentBox.remove(child);
+        child = next;
+      }
+    };
+
+    const showStatus = (iconName, statusTitle, statusDescription) => {
+      clearContent();
+      contentBox.append(new Adw.StatusPage({
+        icon_name: iconName,
+        title: statusTitle,
+        description: statusDescription,
+        vexpand: true,
+      }));
+    };
+
+    const showWindows = (windows) => {
+      clearContent();
+
+      if (!windows || windows.length === 0) {
+        showStatus('window-symbolic', 'No open windows',
+          'Open an application window and it will appear here.');
+        return;
+      }
+
+      const listBox = new Gtk.ListBox({ selection_mode: Gtk.SelectionMode.NONE });
+      listBox.add_css_class('boxed-list');
+      contentBox.append(listBox);
+
+      const current = settings.get_strv(key).map((v) => v.toLowerCase());
+
+      for (const info of windows) {
+        const wmClass = info.wmClass;
+        if (!wmClass) continue;
+
+        const rowTitle = info.appName || wmClass;
+        const details = [];
+        // The WM_CLASS is what actually gets stored, so it is worth showing —
+        // except when it is already the row's title.
+        if (rowTitle !== wmClass)
+          details.push(wmClass);
+        if (info.count > 1)
+          details.push(`${info.count} windows`);
+        if (!info.normal)
+          details.push('not a normal window — the effect cannot apply');
+
+        const row = new Adw.ActionRow({
+          title: rowTitle,
+          subtitle: details.join(' · '),
+          tooltip_text: (info.titles && info.titles.length) ? info.titles.join('\n') : null,
+        });
+
+        const image = new Gtk.Image({ pixel_size: 32, valign: Gtk.Align.CENTER });
+        let icon = null;
+        try {
+          if (info.iconName)
+            icon = Gio.Icon.new_for_string(info.iconName);
+        } catch (e) {
+          icon = null;
+        }
+        if (icon)
+          image.set_from_gicon(icon);
+        else
+          image.set_from_icon_name('application-x-executable-symbolic');
+        row.add_prefix(image);
+
+        if (current.includes(wmClass.toLowerCase())) {
+          const added = new Gtk.Image({
+            icon_name: 'object-select-symbolic',
+            valign: Gtk.Align.CENTER,
+            tooltip_text: 'Already in the list',
+          });
+          added.add_css_class('success');
+          row.add_suffix(added);
+          row.set_sensitive(false);
+        } else {
+          const button = new Gtk.Button({
+            icon_name: 'list-add-symbolic',
+            valign: Gtk.Align.CENTER,
+            css_classes: ['flat'],
+            tooltip_text: 'Add',
+          });
+          // The `changed::` handler below re-renders the list, so the row flips
+          // to the "already added" state on its own.
+          button.connect('clicked', () => this._addWindowClass(settings, key, wmClass));
+          row.add_suffix(button);
+          row.activatable_widget = button;
+        }
+
+        listBox.append(row);
+      }
+    };
+
+    const refresh = () => {
+      client.listWindows((windows, error) => {
+        if (error)
+          showStatus('dialog-warning-symbolic', 'Window list unavailable', error);
+        else
+          showWindows(windows);
+      });
+    };
+
+    // Live updates: the shell tells us when windows come and go, and the settings
+    // change tells us when this list itself was edited.
+    const unwatch = client.addWatcher(refresh);
+    const changedId = settings.connect(`changed::${key}`, refresh);
+    dialog.connect('closed', () => {
+      unwatch();
+      settings.disconnect(changedId);
+    });
+
+    showStatus('content-loading-symbolic', 'Loading…', null);
+    refresh();
+
+    dialog.present(parentWidget);
   }
 
   // 色選択

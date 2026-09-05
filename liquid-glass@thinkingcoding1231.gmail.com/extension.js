@@ -6,6 +6,7 @@ import { NotificationManager } from './dist/notificationManager.js';
 import { QuickSettingsManager } from './dist/quickSettingsManager.js';
 import { OsdManager } from './dist/osdManager.js';
 import { ApplicationManager } from './dist/applicationManager.js';
+import { WindowListService } from './dist/windowListService.js';
 import { Logger } from './dist/logger.js';
 import { setUtilsLogger } from './dist/utils.js';
 import GLib from 'gi://GLib';
@@ -38,6 +39,12 @@ export default class LiquidGlassExtension extends Extension {
     // Initialize the Application manager to apply effects to whitelisted (or all) application windows
     this._applicationManager = new ApplicationManager(this.dir.get_path(), this._settings, this._logger);
     this._applicationManager.setup();
+
+    // Publishes the list of open windows over D-Bus so the preferences window —
+    // which runs in a separate process with no access to Meta/Shell — can offer a
+    // live picker instead of asking the user to type WM_CLASS values by hand.
+    this._windowListService = new WindowListService(this._logger);
+    this._windowListService.setup();
 
     this._quickSettingsTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 1500, () => {
       this._quickSettingsManager = new QuickSettingsManager(this.dir.get_path(), this._settings, this._logger);
@@ -189,6 +196,11 @@ export default class LiquidGlassExtension extends Extension {
     if (this._applicationManager) {
       this._applicationManager.cleanup();
       this._applicationManager = null;
+    }
+
+    if (this._windowListService) {
+      this._windowListService.cleanup();
+      this._windowListService = null;
     }
 
     this._settings = null;
