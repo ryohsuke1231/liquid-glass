@@ -6,7 +6,7 @@ import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import { LiquidEffect } from './liquidEffect.js';
 import { StageContrastSampler, AdaptiveContrastConfig } from './contrastSampler.js';
-import { UnpickableActor, UILayerSampler, WindowCloneManager, isActorValid, LayoutOpaqueActor, UnpickableStyledWidget, } from './utils.js';
+import { UnpickableActor, UILayerSampler, WindowCloneManager, reportFrameLoopError, ensureGlassAllocated, isActorValid, LayoutOpaqueActor, UnpickableStyledWidget, getAllocatedSize, getTransformedRect, } from './utils.js';
 // ========== Configuration Parameters ==========
 // Transparent padding outside the glass area.
 // This prevents the shader distortion or rounded corners from being clipped by the actor bounds.
@@ -482,7 +482,7 @@ export class QuickSettingsManager {
         this.effect.setBlurRadius(blurRadius);
         this.liquidBox.add_effect(this.effect);
         // ── 5. WindowCloneManager + UILayerSampler ────────────────────────────────
-        this._windowCloneManager = new WindowCloneManager(this.liquidBox, this._cloneContainer);
+        this._windowCloneManager = new WindowCloneManager(this.liquidBox, this._cloneContainer, 'lg-qs');
         this._uiSampler = new UILayerSampler(this.bgActor, this.liquidBox, [menuRoot, global.windowGroup, global.window_group], this._cloneContainer);
         this.bgActor.hide();
         // ── Helper functions for GNOME's render pipeline ──────────────────────────
@@ -517,11 +517,24 @@ export class QuickSettingsManager {
             this._uiSampler?.refresh();
         };
         // Frame render loop (runs every frame while the menu is mapped)
+        // The reschedule must survive a throw out of _syncGeometry() — see the
+        // comment on DockManager's frameTick: skipping it froze the glass until
+        // the menu was closed and reopened.
         let frameTick = () => {
             this._frameSyncId = 0;
             if (!this.bgActor || !this.targetActor.mapped)
                 return GLib.SOURCE_REMOVE;
-            this._syncGeometry();
+            // Repair the subtree if Clutter has stopped allocating it. Sampled
+            // here, at the top of the tick, because the previous frame's relayout
+            // has settled by now and this frame's sync has not dirtied anything
+            // yet. See ensureGlassAllocated().
+            ensureGlassAllocated(this.bgActor);
+            try {
+                this._syncGeometry();
+            }
+            catch (e) {
+                reportFrameLoopError('QuickSettingsManager', e);
+            }
             this._frameSyncId = laterAdd(frameLaterType, frameTick);
             return GLib.SOURCE_REMOVE;
         };
@@ -728,7 +741,7 @@ export class QuickSettingsManager {
         this.effect.setMultiRegionMode(true);
         this.liquidBox.add_effect(this.effect);
         // ── 5. WindowCloneManager + UILayerSampler (ONE shared instance) ──────────
-        this._windowCloneManager = new WindowCloneManager(this.liquidBox, this._cloneContainer);
+        this._windowCloneManager = new WindowCloneManager(this.liquidBox, this._cloneContainer, 'lg-qs-toggles');
         this._uiSampler = new UILayerSampler(this.bgActor, this.liquidBox, [menuRoot, global.windowGroup, global.window_group], this._cloneContainer);
         this.bgActor.hide();
         const laterAdd = (laterType, callback) => {
@@ -759,11 +772,22 @@ export class QuickSettingsManager {
             this._uiSampler?.rebindSelf();
             this._uiSampler?.refresh();
         };
+        // Same reschedule-survives-a-throw rule as above.
         let frameTick = () => {
             this._frameSyncId = 0;
             if (!this.bgActor || !this.targetActor.mapped)
                 return GLib.SOURCE_REMOVE;
-            this._syncToggleRegions();
+            // Repair the subtree if Clutter has stopped allocating it. Sampled
+            // here, at the top of the tick, because the previous frame's relayout
+            // has settled by now and this frame's sync has not dirtied anything
+            // yet. See ensureGlassAllocated().
+            ensureGlassAllocated(this.bgActor);
+            try {
+                this._syncToggleRegions();
+            }
+            catch (e) {
+                reportFrameLoopError('QuickSettingsManager(toggles)', e);
+            }
             this._frameSyncId = laterAdd(frameLaterType, frameTick);
             return GLib.SOURCE_REMOVE;
         };
@@ -1594,7 +1618,17 @@ export class QuickSettingsManager {
         this._cloneContainer.set_child_above_sibling(this._panelContentClone, null);
         let rect = this._resolvePanelRect();
         if (rect) {
-            this._panelContentClone.set_position(rect[0] - monitorX, rect[1] - monitorY);
+            // Placed by translation, not set_position() — the same rule as every
+            // other per-frame actor inside a glass subtree (see the note in
+            // WindowCloneManager.sync()). set_position() only takes effect once
+            // Clutter hands out a new allocation, so a subtree that stops being
+            // allocated leaves this material frozen at an old rect while the
+            // property says otherwise. Size still needs the allocation, which is
+            // what ensureGlassAllocated() exists to guarantee.
+            if (this._panelContentClone.x !== 0 || this._panelContentClone.y !== 0)
+                this._panelContentClone.set_position(0, 0);
+            this._panelContentClone.translation_x = rect[0] - monitorX;
+            this._panelContentClone.translation_y = rect[1] - monitorY;
             this._panelContentClone.set_size(rect[2], rect[3]);
         }
     }
@@ -1754,8 +1788,20 @@ export class QuickSettingsManager {
         for (let toggle of toggles) {
             if (!toggle.visible || !toggle.mapped)
                 continue;
-            let [absX, absY] = toggle.get_transformed_position();
-            let [w, h] = toggle.get_size();
+            // One fully-transformed rect, rather than a transformed position
+            // paired with an untransformed size. Everything below works in
+            // monitor-local SCREEN pixels (bgActor is counter-scaled to be 1:1
+            // with the screen, see the accScale block above), so the region has
+            // to be the toggle's real on-screen footprint.
+            //
+            // Reading the size separately is what made the toggle glass render
+            // too large for the whole open AND close animation: the menu is
+            // animated by easing scale on an ancestor (BoxPointer.open(), plus
+            // this extension's own spring), and neither get_size() nor the
+            // allocation box carries an inherited scale — only the position did.
+            // So while scale < 1 the region kept the toggle's full unscaled size
+            // and the glass overhung the button, converging only as scale hit 1.
+            let [absX, absY, w, h] = getTransformedRect(toggle);
             if (Number.isNaN(absX) || Number.isNaN(absY) || Number.isNaN(w) || Number.isNaN(h) || w <= 0 || h <= 0)
                 continue;
             // Expand by glassExpand + SHADER_PADDING, exactly like Background
@@ -2564,7 +2610,13 @@ export class QuickSettingsManager {
             return;
         // Get the absolute coordinates and size as the parent's base (animActor = the visual bounding box of the menu)
         let [parentAbsX, parentAbsY] = this.animActor.get_transformed_position();
-        let [parentW, parentH] = this.animActor.get_size();
+        // Every size read in this function comes from the allocation, to stay
+        // consistent with the get_transformed_position() calls it is paired
+        // with — those are allocation-derived, while get_size() silently falls
+        // back to the preferred size whenever a relayout is still pending (see
+        // getAllocatedSize). Mixing the two yields geometry that matches
+        // neither.
+        let [parentW, parentH] = getAllocatedSize(this.animActor);
         if (Number.isNaN(parentAbsX) || Number.isNaN(parentAbsY) ||
             Number.isNaN(parentW) || Number.isNaN(parentH) ||
             parentW <= 0 || parentH <= 0)
@@ -2573,7 +2625,7 @@ export class QuickSettingsManager {
             if (!submenu.mapped || !submenu.visible)
                 continue;
             let [subAbsX, subAbsY] = submenu.get_transformed_position();
-            let [subW, subH] = submenu.get_size();
+            let [subW, subH] = getAllocatedSize(submenu);
             if (Number.isNaN(subAbsX) || Number.isNaN(subAbsY) ||
                 Number.isNaN(subW) || Number.isNaN(subH) ||
                 subW <= 0 || subH <= 0)
@@ -2602,7 +2654,7 @@ export class QuickSettingsManager {
                     return;
                 }
                 let [, nodeY] = n.get_transformed_position();
-                let [nodeW, nodeH] = n.get_size();
+                let [nodeW, nodeH] = getAllocatedSize(n);
                 if (Number.isNaN(nodeY) || Number.isNaN(nodeW) || Number.isNaN(nodeH) ||
                     nodeH <= 5 || nodeW <= 5)
                     return;

@@ -3,7 +3,7 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import { LiquidEffect } from './liquidEffect.js';
-import { UnpickableActor, UILayerSampler, WindowCloneManager, getAllocatedSize } from './utils.js';
+import { UnpickableActor, UILayerSampler, WindowCloneManager, reportFrameLoopError, ensureGlassAllocated } from './utils.js';
 // Padding to allow the shader to draw effects (like refraction and blur) outside the actor's strict bounds.
 const SHADER_PADDING = 20;
 // Utility: Convert HEX color string (e.g., "#ffffff") to normalized RGB array [1.0, 1.0, 1.0]
@@ -257,7 +257,7 @@ export class DashManager {
         this.effect.setIsDock(true);
         this.liquidBox.add_effect(this.effect);
         // WindowCloneManager + UILayerSampler deposit their clones inside liquidBox.
-        this._windowCloneManager = new WindowCloneManager(this.liquidBox, this._cloneContainer);
+        this._windowCloneManager = new WindowCloneManager(this.liquidBox, this._cloneContainer, 'lg-dock');
         this._uiSampler = new UILayerSampler(this.bgActor, this.liquidBox, [dockRoot, global.windowGroup, global.window_group], this._cloneContainer);
         this.bgActor.show();
         const laterAdd = (laterType, callback) => {
@@ -287,11 +287,29 @@ export class DashManager {
             this._uiSampler?.rebindSelf();
             this._uiSampler?.refresh();
         };
+        // The reschedule at the end is what keeps this chain alive, so it must
+        // not be reachable-only-on-success: a single throw out of
+        // _syncGeometry() (a disposed clone, a destroyed dash child, ...) used
+        // to skip it and freeze the dock's glass permanently — clones stuck at
+        // their last position, no new UI clones (the Overview's controls never
+        // appear inside the dock), and the only way back was hiding and
+        // re-showing the dock, since startFrameSync() only runs from
+        // 'notify::mapped'. Same shape as ApplicationManager._frameTick().
         let frameTick = () => {
             this._frameSyncId = 0;
             if (!this.bgActor || !this.targetActor.mapped)
                 return GLib.SOURCE_REMOVE;
-            this._syncGeometry();
+            // Repair the subtree if Clutter has stopped allocating it. Sampled
+            // here, at the top of the tick, because the previous frame's relayout
+            // has settled by now and this frame's sync has not dirtied anything
+            // yet. See ensureGlassAllocated().
+            ensureGlassAllocated(this.bgActor);
+            try {
+                this._syncGeometry();
+            }
+            catch (e) {
+                reportFrameLoopError('DockManager', e);
+            }
             this._frameSyncId = laterAdd(frameLaterType, frameTick);
             return GLib.SOURCE_REMOVE;
         };
@@ -651,38 +669,6 @@ export class DashManager {
         this._uiSampler?.refresh();
         this._uiSampler?.sync(monitor.x, monitor.y, screenW, screenH);
         this._windowCloneManager?.sync();
-    }
-    _syncActorProperties(source, clone) {
-        if (!source || !clone)
-            return;
-        // .x, .y, .width を直接読まず、計算済みの「画面上の絶対座標」と「サイズ」を関数で取得
-        let [absX, absY] = source.get_transformed_position();
-        // get_size() ではなくアロケーションを読む: BEFORE_REDRAW later は
-        // stage の relayout より前に走るため、get_size() が preferred size
-        // （ソースによっては 0）を返してクローンが 1 フレーム消える。
-        let [w, h] = getAllocatedSize(source);
-        // NaN（非数）や異常なマイナス値が紛れ込んだ場合は同期をキャンセルして描画を止める
-        if (Number.isNaN(absX) || Number.isNaN(absY) || Number.isNaN(w) || Number.isNaN(h) || w <= 0 || h <= 0) {
-            clone.visible = false;
-            return;
-        }
-        // 正しい絶対座標とサイズをクローンに適用
-        clone.remove_transition('position');
-        clone.remove_transition('size');
-        clone.set_position(absX, absY);
-        clone.set_size(w, h);
-        // スケールとピボット
-        clone.remove_transition('scale-x');
-        clone.remove_transition('scale-y');
-        clone.set_scale(source.scale_x, source.scale_y);
-        let pX = source.pivot_point ? source.pivot_point.x : 0;
-        let pY = source.pivot_point ? source.pivot_point.y : 0;
-        clone.set_pivot_point(pX, pY);
-        clone.translation_x = 0;
-        clone.translation_y = 0;
-        // 透明度と表示状態
-        clone.opacity = source.opacity;
-        clone.visible = source.visible && source.mapped;
     }
     // エフェクトを画面から消し、元に戻す処理
     _removeEffect() {
