@@ -872,6 +872,11 @@ export class UILayerSampler {
 
   private _selfRoot: Clutter.Actor | null = null;
   private _label: string = '?';
+  // Per cloned child: whether a Blur My Shell target was found under it at the
+  // moment its clone was built.
+  private _bmsStateAtClone: Map<Clutter.Actor, boolean> = new Map();
+  // The BMS target actor as of the last refresh(), so a change can be noticed.
+  private _lastBmsTarget: Clutter.Actor | null | undefined = undefined;
   private _ancestorExclusionSources: Clutter.Actor[] = [];
   // Names of the uiGroup children currently cloned, so a change can be logged
   // once instead of every frame.
@@ -1214,6 +1219,15 @@ export class UILayerSampler {
     const children = uiGroup.get_children();
     const seen = new Set<Clutter.Actor>();
 
+    // [FIX] One lookup per refresh, not per child: notice BMS appearing or
+    // disappearing and rebuild only the clones whose answer moved.
+    const bmsTarget = this._resolveBmsTargetActor();
+    if (this._lastBmsTarget !== bmsTarget) {
+      const first = this._lastBmsTarget === undefined;
+      this._lastBmsTarget = bmsTarget;
+      if (!first) this._reevaluateBmsClones();
+    }
+
     // [FIX] Resolved every refresh: see ancestorExclusions in the constructor.
     const dynamicExclusions = new Set<Clutter.Actor>();
     for (const src of this._ancestorExclusionSources) {
@@ -1287,6 +1301,10 @@ export class UILayerSampler {
           if (!sourceClone) {
             sourceClone = new UnpickableClone({ source: child });
           }
+          // [FIX] Remember whether this child was cloned as "BMS present" or
+          // not, so the answer can be re-checked when the extension set
+          // changes. See _reevaluateBmsClones().
+          this._bmsStateAtClone.set(child, !!bmsTarget);
           sourceClone.set_name(`${child.name}-sourceClone`);
 
           sourceClone.connect('destroy', () => {
@@ -1501,6 +1519,58 @@ export class UILayerSampler {
   }
 
   /**
+   * [FIX] Re-checks the Blur My Shell decision when BMS comes or goes.
+   *
+   * Which clone a uiGroup child gets depends on whether a BMS target is found
+   * underneath it, and that was decided once, when the clone was first built.
+   * So the two extensions behaved differently depending on the order they were
+   * switched on:
+   *
+   *   BMS first, then this one — the target is found, the child is supplied as
+   *     a self-excluding snapshot, and BMS keeps working.
+   *   This one first, then BMS — nothing was found, so the child is an
+   *     ordinary Clutter.Clone. BMS then installs its effect on an actor that
+   *     already has a second consumer, and its own panel rendering drifts
+   *     (reported: about 10px, whenever the dock overlaps the panel).
+   *
+   * Driven by comparing the resolved target each refresh rather than by
+   * extension-state-changed: BMS populates _panel_blur.actors_list during and
+   * after its own enable(), so a signal handler can easily look too early,
+   * while "the target is not what it was" is true whenever it settles.
+   */
+  private _reevaluateBmsClones(): void {
+    // The cache is keyed by actor and holds "is there an offscreen effect
+    // under here", which is exactly what an extension being toggled changes.
+    this._existingEffectCache.clear();
+
+    for (const [child, wasBms] of [...this._bmsStateAtClone]) {
+      try {
+        if (!isActorValid(child)) {
+          this._bmsStateAtClone.delete(child);
+          continue;
+        }
+        const isBms = !!this._findBmsDescendant(child);
+        if (isBms === wasBms) continue;
+
+        utilsLog(`[Liquid Glass][ui-sampler:${this._label}] BMS state changed for ` +
+          `name="${(child as any).name ?? '(unnamed)'}" (${wasBms} -> ${isBms}); rebuilding its clone`);
+
+        const clone = this._clones.get(child);
+        if (clone) {
+          this._clones.delete(child);
+          try { clone.destroy(); } catch (_) { }
+        }
+        this._bmsStateAtClone.delete(child);
+      } catch (e) {
+        reportFrameLoopError('UILayerSampler._reevaluateBmsClones', e);
+      }
+    }
+
+    // refresh() runs from each manager's per-frame tick and rebuilds whatever
+    // is missing, so nothing else is needed here.
+  }
+
+  /**
    * Logs which uiGroup children this sampler is cloning, whenever that set
    * changes.
    *
@@ -1522,6 +1592,7 @@ export class UILayerSampler {
   }
 
   destroy() {
+    this._bmsStateAtClone.clear();
     if (this._uiClonesContainer) {
       try { this._uiClonesContainer.destroy(); } catch (_) { }
     }
