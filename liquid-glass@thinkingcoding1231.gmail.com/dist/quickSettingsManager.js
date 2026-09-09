@@ -469,7 +469,7 @@ export class QuickSettingsManager {
         let contrast = this._settings.get_double('quick-settings-contrast');
         // LiquidEffect on liquidBox (includes built-in dual-Kawase blur)
         // Apply our custom GLSL liquid shader to the outer background actor
-        this.effect = new LiquidEffect({ extensionPath: this.extensionPath, settings: this._settings });
+        this.effect = new LiquidEffect({ extensionPath: this.extensionPath, settings: this._settings, owner: 'quick-settings' });
         // Tell the shader about the padding so it calculates refraction coordinates correctly
         this.effect.setPadding(SHADER_PADDING);
         this.effect.setTintColor(...this._hexToColorArray(tintColorStr));
@@ -483,7 +483,7 @@ export class QuickSettingsManager {
         this.liquidBox.add_effect(this.effect);
         // ── 5. WindowCloneManager + UILayerSampler ────────────────────────────────
         this._windowCloneManager = new WindowCloneManager(this.liquidBox, this._cloneContainer, 'lg-qs');
-        this._uiSampler = new UILayerSampler(this.bgActor, this.liquidBox, [menuRoot, global.windowGroup, global.window_group], this._cloneContainer);
+        this._uiSampler = new UILayerSampler(this.bgActor, this.liquidBox, [menuRoot, global.windowGroup, global.window_group], this._cloneContainer, 'quick-settings');
         this.bgActor.hide();
         // ── Helper functions for GNOME's render pipeline ──────────────────────────
         const laterAdd = (laterType, callback) => {
@@ -723,7 +723,7 @@ export class QuickSettingsManager {
         let brightness = this._settings.get_double('quick-settings-brightness');
         let saturation = this._settings.get_double('quick-settings-saturation');
         let contrast = this._settings.get_double('quick-settings-contrast');
-        this.effect = new LiquidEffect({ extensionPath: this.extensionPath, settings: this._settings });
+        this.effect = new LiquidEffect({ extensionPath: this.extensionPath, settings: this._settings, owner: 'quick-settings-toggles' });
         this.effect.setPadding(SHADER_PADDING);
         // [FIX-8] Toggles mode needs the tint_r/g/b uniform pushed too, now that
         // the custom-color layer reads it directly instead of the TS side folding
@@ -742,7 +742,7 @@ export class QuickSettingsManager {
         this.liquidBox.add_effect(this.effect);
         // ── 5. WindowCloneManager + UILayerSampler (ONE shared instance) ──────────
         this._windowCloneManager = new WindowCloneManager(this.liquidBox, this._cloneContainer, 'lg-qs-toggles');
-        this._uiSampler = new UILayerSampler(this.bgActor, this.liquidBox, [menuRoot, global.windowGroup, global.window_group], this._cloneContainer);
+        this._uiSampler = new UILayerSampler(this.bgActor, this.liquidBox, [menuRoot, global.windowGroup, global.window_group], this._cloneContainer, 'quick-settings-toggles');
         this.bgActor.hide();
         const laterAdd = (laterType, callback) => {
             return global.compositor?.get_laters?.().add(laterType, callback);

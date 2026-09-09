@@ -312,7 +312,7 @@ export class OsdManager {
         let saturation = this._settings.get_double('osd-saturation');
         let contrast = this._settings.get_double('osd-contrast');
         // LiquidEffect on liquidBox (includes built-in dual-Kawase blur)
-        let effect = new LiquidEffect({ extensionPath: this.extensionPath, settings: this._settings });
+        let effect = new LiquidEffect({ extensionPath: this.extensionPath, settings: this._settings, owner: 'osd' });
         effect.setPadding(SHADER_PADDING);
         effect.setTintColor(...this._hexToColorArray(tintColorStr));
         effect.setTintStrength(this._baseTint);
@@ -326,7 +326,7 @@ export class OsdManager {
         bgActor.hide();
         // ── 5. WindowCloneManager + UILayerSampler ────────────────────────────────
         let windowCloneManager = new WindowCloneManager(liquidBox, cloneContainer, 'lg-osd');
-        let uiSampler = new UILayerSampler(bgActor, liquidBox, [osdRoot, global.windowGroup, global.window_group], cloneContainer);
+        let uiSampler = new UILayerSampler(bgActor, liquidBox, [osdRoot, global.windowGroup, global.window_group], cloneContainer, 'osd');
         // ── 7. Build initial clones ───────────────────────────────────────────────
         windowCloneManager.rebuildClones();
         uiSampler.rebindSelf();

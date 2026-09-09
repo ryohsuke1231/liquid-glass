@@ -586,7 +586,7 @@ export class QuickSettingsManager {
 
     // LiquidEffect on liquidBox (includes built-in dual-Kawase blur)
     // Apply our custom GLSL liquid shader to the outer background actor
-    this.effect = new LiquidEffect({ extensionPath: this.extensionPath, settings: this._settings } as any);
+    this.effect = new LiquidEffect({ extensionPath: this.extensionPath, settings: this._settings, owner: 'quick-settings' } as any);
     // Tell the shader about the padding so it calculates refraction coordinates correctly
     this.effect.setPadding(SHADER_PADDING);
     this.effect.setTintColor(...this._hexToColorArray(tintColorStr));
@@ -605,7 +605,8 @@ export class QuickSettingsManager {
       this.bgActor,
       this.liquidBox,
       [menuRoot, global.windowGroup, global.window_group],
-      this._cloneContainer
+      this._cloneContainer,
+      'quick-settings'
     );
 
     this.bgActor.hide();
@@ -864,7 +865,7 @@ export class QuickSettingsManager {
     let saturation = this._settings.get_double('quick-settings-saturation');
     let contrast = this._settings.get_double('quick-settings-contrast');
 
-    this.effect = new LiquidEffect({ extensionPath: this.extensionPath, settings: this._settings } as any);
+    this.effect = new LiquidEffect({ extensionPath: this.extensionPath, settings: this._settings, owner: 'quick-settings-toggles' } as any);
     this.effect.setPadding(SHADER_PADDING);
     // [FIX-8] Toggles mode needs the tint_r/g/b uniform pushed too, now that
     // the custom-color layer reads it directly instead of the TS side folding
@@ -888,7 +889,8 @@ export class QuickSettingsManager {
       this.bgActor,
       this.liquidBox,
       [menuRoot, global.windowGroup, global.window_group],
-      this._cloneContainer
+      this._cloneContainer,
+      'quick-settings-toggles'
     );
 
     this.bgActor.hide();

@@ -871,6 +871,11 @@ export class UILayerSampler {
   private readonly _extraExclusions: Set<Clutter.Actor>;
 
   private _selfRoot: Clutter.Actor | null = null;
+  private _label: string = '?';
+  private _ancestorExclusionSources: Clutter.Actor[] = [];
+  // Names of the uiGroup children currently cloned, so a change can be logged
+  // once instead of every frame.
+  private _clonedNamesLogged: string = '';
   private _clones: Map<Clutter.Actor, Clutter.Actor> = new Map();
   private _uiClonesContainer: Clutter.Actor | null = null;
 
@@ -901,11 +906,28 @@ export class UILayerSampler {
     selfActor: Clutter.Actor,
     container: Clutter.Actor,
     extraExclusions: Clutter.Actor[] = [],
-    cloneContainer: Clutter.Actor | null = null
+    cloneContainer: Clutter.Actor | null = null,
+    label: string = '?',
+    /**
+     * [FIX] Actors whose uiGroup ANCESTOR should be excluded, resolved fresh on
+     * every refresh() instead of once at construction.
+     *
+     * extraExclusions above holds fixed actors, which is only correct while
+     * the thing being excluded keeps the same uiGroup child as its root.
+     * dockManager's use does not: it passes the uiGroup ancestor it walked to
+     * at setup time, and Dash to Dock destroys and rebuilds its container
+     * whenever its settings change — moving the dock to the top edge does
+     * exactly that ("Dash to Dock container destroyed (settings changed?)" in
+     * the log). A stale entry there means the sampler starts cloning the dock
+     * into the dock's own glass, which shows up as ghost icons inside it.
+     */
+    ancestorExclusions: Clutter.Actor[] = []
   ) {
     this._selfActor = selfActor;
     this._container = container;
     this._extraExclusions = new Set(extraExclusions);
+    this._ancestorExclusionSources = ancestorExclusions.slice();
+    this._label = label;
     this._selfRoot = this._findUiGroupAncestor(selfActor);
 
     this._uiClonesContainer = new UnpickableActor();
@@ -1192,6 +1214,16 @@ export class UILayerSampler {
     const children = uiGroup.get_children();
     const seen = new Set<Clutter.Actor>();
 
+    // [FIX] Resolved every refresh: see ancestorExclusions in the constructor.
+    const dynamicExclusions = new Set<Clutter.Actor>();
+    for (const src of this._ancestorExclusionSources) {
+      try {
+        if (!isActorValid(src)) continue;
+        const root = this._findUiGroupAncestor(src);
+        if (root) dynamicExclusions.add(root);
+      } catch (_) { /* noop */ }
+    }
+
     for (const child of children) {
       // Per-child containment: refresh() runs from the same per-frame
       // BEFORE_REDRAW tick as everything else, and one uiGroup child going
@@ -1203,6 +1235,7 @@ export class UILayerSampler {
         if (child === this._selfActor || child === this._selfRoot) continue;
         if (child === Main.layoutManager._backgroundGroup) continue;
         if (this._extraExclusions.has(child)) continue;
+        if (dynamicExclusions.has(child)) continue;
         if (!child.visible || !child.mapped) continue;
         // if (this._containsOtherLiquidGlassRoot(child)) continue;
         // Deep scan for nested Liquid Glass roots only once per newly discovered actor.
@@ -1275,6 +1308,8 @@ export class UILayerSampler {
         this._clones.delete(actor);
       }
     }
+
+    this._reportClonedSet();
   }
 
   private static _stageToLocal(
@@ -1463,6 +1498,27 @@ export class UILayerSampler {
     for (const [actor, sourceClone] of this._clones) {
       this.syncProperties(actor, sourceClone, contW, contH, contAbsX, contAbsY);
     }
+  }
+
+  /**
+   * Logs which uiGroup children this sampler is cloning, whenever that set
+   * changes.
+   *
+   * Exists because "what ended up inside this glass" is otherwise invisible:
+   * a wrongly-included child shows up only as a ghost of itself in the blurred
+   * backdrop, with nothing in the log to say why. The dock cloning ITSELF is
+   * the case this was written for.
+   */
+  private _reportClonedSet(): void {
+    let names = '';
+    for (const actor of this._clones.keys()) {
+      let n = '(unnamed)';
+      try { n = (actor as any).name || actor.constructor?.name || '(unnamed)'; } catch (_) { }
+      names += (names ? ', ' : '') + n;
+    }
+    if (names === this._clonedNamesLogged) return;
+    this._clonedNamesLogged = names;
+    utilsLog(`[Liquid Glass][ui-sampler:${this._label}] cloning [${names}]`);
   }
 
   destroy() {
@@ -1722,9 +1778,19 @@ export const InverseCornerEffect = GObject.registerClass(
   class InverseCornerEffect extends Clutter.ShaderEffect {
     private _radius: number = 0;
     private _inset: number = 0;
+    // The glass shape's OWN corner radius. _radius is that plus a couple of
+    // pixels (CORNER_PADDING) so the cut safely over-reveals past the glass's
+    // antialiased corner; keeping both lets the shader tell the two arcs
+    // apart, which is what confines the reveal to the corners.
+    private _glassRadius: number = 0;
 
     setRadius(radius: number) {
       this._radius = radius;
+      this._updateShader();
+    }
+
+    setGlassRadius(radius: number) {
+      this._glassRadius = radius;
       this._updateShader();
     }
 
@@ -1737,6 +1803,7 @@ export const InverseCornerEffect = GObject.registerClass(
       const shader = `
         uniform sampler2D cogl_sampler;
         uniform float radius;
+        uniform float glass_radius;
         uniform float inset;
         uniform float width;
         uniform float height;
@@ -1782,13 +1849,49 @@ export const InverseCornerEffect = GObject.registerClass(
           // 4 corners inward, not shift the straight edges too.
           vec2 windowHalf = max(resolution * 0.5 - vec2(inset), vec2(1.0));
 
-          float d = sdRoundRect(p, windowHalf, radius);
+          // [FIX] This overlay redraws the raw, sharp background on top of the
+          // glass, so every pixel it covers is a pixel of drop shadow that
+          // cannot be seen. It must therefore cover the corner arcs and
+          // NOTHING else. Three terms, each removing one way it used to
+          // overreach:
+          //
+          //   1. outside the cut arc          — the original test
+          //   2. still inside the glass shape — stops it reaching outward into
+          //                                     the shadow at all
+          //   3. only where the two arcs differ — zero along the straight
+          //                                     edges, so no seam there
+          //
+          // History: with only term 1, sdRoundRect is positive everywhere
+          // outside the box, so the overlay painted the ENTIRE margin ring and
+          // erased the whole drop shadow. Bounding it by the window's square
+          // bounds fixed the straight edges but not the corners: the notch
+          // between the rounded arc and the square corner is precisely where
+          // the shadow wraps around, and the overlay was still sitting on it.
+          // Bounding by the glass shape instead is what actually separates
+          // "erase the glass's corner" from "do not touch the shadow".
+          float dCut = sdRoundRect(p, windowHalf, radius);
+          float dGlass = sdRoundRect(p, windowHalf, max(glass_radius, 0.0));
 
-          // Sharper transition for the corner cut to avoid dark fringes
-          float alpha = smoothstep(-0.5, 0.5, d);
+          // 1. Outside the cut arc.
+          float alpha = smoothstep(-0.5, 0.5, dCut);
+
+          // 2. Inside the glass, plus a small outward guard so the glass's own
+          //    antialiased boundary is covered rather than left as a fringe.
+          //    Term 3 keeps this guard from eating shadow along the edges.
+          alpha *= 1.0 - smoothstep(-0.5, 0.5, dGlass - 1.5);
+
+          // 3. Corner-only. A rounded rect with a larger radius is a subset of
+          //    one with a smaller radius, and the two coincide exactly along
+          //    the straight sides — so this difference is 0 there and grows to
+          //    about 0.41 * (radius - glass_radius) at the square corner.
+          alpha *= smoothstep(0.15, 0.6, dCut - dGlass);
 
           // Fade out at the very edges of the overlay actor to ensure it blends seamlessly
           // with the background and hides any potential window shadow cutoff.
+          // (With the notch restriction above this is normally already 1
+          // throughout the painted region — the notches sit at least "inset"
+          // px in from the actor edge — but it still guards a degenerate
+          // inset smaller than the fade distance.)
           vec2 edgeDist = min(st, 1.0 - st) * resolution;
           float edgeFade = smoothstep(0.0, 10.0, min(edgeDist.x, edgeDist.y));
           alpha *= edgeFade;
@@ -1817,6 +1920,7 @@ export const InverseCornerEffect = GObject.registerClass(
       if (Number.isNaN(w) || Number.isNaN(h) || w <= 0 || h <= 0) return;
 
       this._setUniform('radius', this._radius);
+      this._setUniform('glass_radius', this._glassRadius);
       this._setUniform('inset', this._inset);
       this._setUniform('width', w);
       this._setUniform('height', h);

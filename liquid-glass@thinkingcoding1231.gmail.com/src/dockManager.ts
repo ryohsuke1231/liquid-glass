@@ -293,7 +293,7 @@ export class DashManager {
     let contrast = this._settings.get_double('dock-contrast');
     let saturation = this._settings.get_double('dock-saturation');
 
-    this.effect = new LiquidEffect({ extensionPath: this.extensionPath, settings: this._settings, logger: this._logger } as any);
+    this.effect = new LiquidEffect({ extensionPath: this.extensionPath, settings: this._settings, logger: this._logger, owner: 'dock' } as any);
     this.effect.setPadding(SHADER_PADDING);
     this.effect.setTintColor(...hexToColorArray(tintColorStr));
     this.effect.setTintStrength(tintStrength);
@@ -308,7 +308,18 @@ export class DashManager {
 
     // WindowCloneManager + UILayerSampler deposit their clones inside liquidBox.
     this._windowCloneManager = new WindowCloneManager(this.liquidBox, this._cloneContainer, 'lg-dock');
-    this._uiSampler = new UILayerSampler(this.bgActor, this.liquidBox, [dockRoot, global.windowGroup, global.window_group], this._cloneContainer);
+    // [FIX] dockRoot is passed BOTH as a fixed exclusion and as an ancestor
+    // source. The fixed entry covers the common case; the ancestor source is
+    // what keeps the exclusion correct after Dash to Dock destroys and
+    // rebuilds its container (which it does whenever its settings change,
+    // including a change of dock position). Without the second one the dock
+    // starts being cloned into its own glass — ghost icons inside the dock.
+    this._uiSampler = new UILayerSampler(
+      this.bgActor, this.liquidBox,
+      [dockRoot, global.windowGroup, global.window_group],
+      this._cloneContainer,
+      'dock',
+      [this.targetActor]);
 
     this.bgActor.show();
 

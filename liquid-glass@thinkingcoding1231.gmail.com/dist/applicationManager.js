@@ -7,9 +7,105 @@ import { LiquidEffect } from './liquidEffect.js';
 import GLib from 'gi://GLib';
 import { UnpickableClone, UnpickableActor, InverseCornerEffect, getWindowActors, isActorValid, InvertedPositionConstraint, getAllocatedSize, setActorVisible, ensureGlassAllocated } from './utils.js';
 // Padding to allow the shader to draw effects (like refraction and blur) outside the actor's strict bounds.
-const SHADER_PADDING = 10;
+// [FIX] How far the glass actor extends beyond the real window bounds, in
+// screen pixels. This is one number with two jobs: it is the sampling
+// headroom the refraction and blur need past the window edge, AND it is the
+// only room the drop shadow has to render outward.
+//
+// It used to be the fixed 10 below, and setShadowMaxRadius() was handed that
+// same 10 — so a shadow-radius of 100 was silently clamped to a 10px band no
+// matter what the slider said. (setShadowMaxRadius()'s own doc comment warns
+// about exactly this: it is meant to carry the actor's real outward room, the
+// way dockManager passes CLIP_PADDING - 20.)
+//
+// Simply raising it to a fixed large value would make every glass window's
+// offscreen framebuffer permanently bigger — the actor is (window + 2*margin)
+// on each axis, and that size flows into the capture, the crop, the blur pool
+// and the composite. So the margin is derived from the shadow settings
+// instead: a window pays for the room only when a shadow is actually asked
+// for, and 0-intensity or 0-radius keeps the original 10px.
+const GLASS_MIN_MARGIN = 10;
+// Slack between the margin and the largest radius the shadow may use, so the
+// penumbra fades to zero inside the actor rather than being cut at its edge.
+// Same 20px dockManager leaves (CLIP_PADDING - 20).
+const SHADOW_MARGIN_HEADROOM = 20;
+// prefs.js caps shadow-radius at 100; this leaves that reachable with the
+// headroom and refuses to grow the framebuffer beyond it.
+const GLASS_MAX_MARGIN = 100 + SHADOW_MARGIN_HEADROOM;
 // Inward padding for corner rounding
 const CORNER_PADDING = 3;
+// [FIX] Whether the corner overlay (cornerOverlay + InverseCornerEffect) paints
+// at all. Turned off, because it cannot do its job without destroying
+// something else.
+//
+// What it was for: the glass draws a rounded rect with the user's
+// application-corner-radius, which need not match the window's own corner
+// radius, so where the glass sticks out past the window's corner the true
+// background was redrawn over it — with CORNER_PADDING of over-reveal so the
+// glass's antialiased corner pixels were covered too.
+//
+// Why it cannot stay: that reveal has to sit exactly ON the glass's corner
+// boundary, and the boundary is shared. Inside it is the window; outside it is
+// the drop shadow. The geometry leaves no gap to aim at — along the corner
+// diagonal the two arcs differ by at most 0.41 * CORNER_PADDING (1.24px at
+// CORNER_PADDING = 3), so a band wide enough to cover a ~1px antialiased edge
+// necessarily straddles it. Raising CORNER_PADDING widens the band on BOTH
+// sides; it never separates them.
+//
+// On screen that was a ~3px ring at each corner showing the background
+// straight through the window — visible even with the glass radius set
+// exactly to the window's, i.e. in the very case where there is nothing to
+// correct. Reported as a serious defect, and correctly so: it is a hole in
+// the window.
+//
+// What is lost by turning it off: if application-corner-radius is set SMALLER
+// than the window's own corner radius, a wedge of glass shows past the
+// window's rounded corner. That is a misconfiguration, it is cosmetic, and it
+// costs nothing to look at — whereas the overlay cost a full extra paint of
+// baseActor's subtree (wallpaper clone + every behind-window clone) every
+// frame, on top of the artifact.
+//
+// The actors and the effect are left in place, just not painted, so this is
+// one flag to flip if a better corner treatment is designed later.
+const CORNER_REVEAL_ENABLED = false;
+// [PERF/FIX] Whether the unblurred "base" layer under the glass is painted.
+// Turned off, because with CORNER_REVEAL_ENABLED off it has no consumer left.
+//
+// baseActor exists, per its own WindowState comment, as the source for
+// cornerOverlayClone — "Unblurred base background, used to reveal the true
+// corners (see InverseCornerEffect below)". That overlay is gone, and nothing
+// else reads baseActor's pixels.
+//
+// It was also being painted in its own right, and that is the part worth
+// removing. Where the glass covers the window the composite writes alpha 1, so
+// baseActor is completely hidden there. The only place it showed was the
+// margin ring outside the window, where the glass writes just the drop
+// shadow — and what it showed there was its own reproduction of the desktop:
+// a monitor-sized wallpaper clone plus a clone of every window behind this
+// one, re-rendered every frame.
+//
+// With it hidden, that ring shows the real framebuffer contents instead — the
+// actual wallpaper and the actual windows, already drawn there by the
+// compositor before this window actor paints. The shadow composites over them
+// exactly the same way (it is premultiplied and never opaque), so the result
+// is identical when the clones are correct, and CORRECT rather than merely
+// identical when they are not.
+//
+// That second half matters: the ring is the region of the known "right after a
+// focus switch the outer edge briefly shows ONLY the wallpaper, no other
+// windows" artifact (see the rebuild debounce comment further down). That
+// artifact is a clone that has not caught up yet being shown in the ring. With
+// no clones in the ring there is nothing to catch up, so it cannot happen.
+//
+// NOTE it does not fix the other half of that report — a behind-window
+// missing from INSIDE the glass. The glass has to sample clones (that is what
+// gets blurred and refracted), so the interior keeps the same exposure.
+//
+// The actors stay in the tree (surfaceActor is still cached rather than
+// re-derived via get_first_child(), which baseActor's presence would break);
+// they are simply never shown, never laid out, and their behind-window clones
+// are never built or synced.
+const BASE_LAYER_ENABLED = false;
 // Consecutive frames a MetaWindowActor must sit visible + mapped +
 // !has_allocation() before _frameTick() remaps it. Ten frames is ~160ms —
 // far longer than any legitimate pending relayout, and short enough that the
@@ -80,6 +176,9 @@ export class ApplicationManager {
     // _removeAllEffects() can cancel it — otherwise a still-pending later
     // would fire after cleanup and touch destroyed state.
     _rebuildFollowupLaterId = 0;
+    // Current outward margin, recomputed whenever the shadow settings change.
+    // See GLASS_MIN_MARGIN.
+    _glassMargin = GLASS_MIN_MARGIN;
     constructor(extensionPath, settings, logger) {
         this.extensionPath = extensionPath;
         this._settings = settings;
@@ -92,6 +191,8 @@ export class ApplicationManager {
     }
     setup() {
         this._logger.log("[Liquid Glass] ApplicationManager setup starting...");
+        // Before anything is built: every actor size below derives from it.
+        this._glassMargin = this._computeGlassMargin();
         this._bindSettings();
         this._windowCreatedId = global.display.connect('window-created', (_d, metaWindow) => {
             this._logger.log(`[Liquid Glass] window-created event: window title = "${metaWindow.get_title()}", class = "${metaWindow.get_wm_class()}"`);
@@ -182,6 +283,11 @@ export class ApplicationManager {
         connectSetting('application-brightness', () => this._updateEffectParams());
         connectSetting('application-contrast', () => this._updateEffectParams());
         connectSetting('application-saturation', () => this._updateEffectParams());
+        // [FIX] The drop shadow needs actual room outside the window to render
+        // into, and that room is the actor's margin — so these two shared keys
+        // have to resize the glass, not just change a uniform.
+        connectSetting('shadow-radius', () => this._updateGlassMargin());
+        connectSetting('shadow-intensity', () => this._updateGlassMargin());
     }
     _getContentOpacity() {
         return this._settings.get_double('application-content-opacity');
@@ -314,6 +420,57 @@ export class ApplicationManager {
         }
         this._rebuildAllClones();
     }
+    /**
+     * Outward margin the glass actor should currently have, in screen px.
+     *
+     * Derived from the shadow settings rather than fixed: the margin is the
+     * only room the drop shadow has to render into (the shader clamps it via
+     * shadow_max_radius), but it is also what makes the actor — and therefore
+     * every framebuffer in the effect's chain — larger than the window. A
+     * window with no shadow keeps the original 10px and costs nothing extra.
+     */
+    _computeGlassMargin() {
+        let radius = 0;
+        let intensity = 0;
+        try {
+            radius = this._settings.get_double('shadow-radius');
+            intensity = this._settings.get_double('shadow-intensity');
+        }
+        catch (e) {
+            return GLASS_MIN_MARGIN;
+        }
+        if (!(radius > 0) || !(intensity > 0))
+            return GLASS_MIN_MARGIN;
+        return Math.min(GLASS_MAX_MARGIN, Math.max(GLASS_MIN_MARGIN, Math.ceil(radius) + SHADOW_MARGIN_HEADROOM));
+    }
+    /**
+     * Recomputes the margin and, if it moved, pushes it into every live window:
+     * the shader's own padding uniform, the shadow's outward limit, the corner
+     * overlay's inset, and the geometry itself.
+     *
+     * The geometry signature has to be dropped explicitly — every input it
+     * hashes (frame rect, scale, translation...) can be completely unchanged
+     * while the margin makes every derived size different, so without this the
+     * fast path in _syncStateInner() would keep the old actor size forever.
+     */
+    _updateGlassMargin() {
+        const next = this._computeGlassMargin();
+        if (next === this._glassMargin)
+            return;
+        this._glassMargin = next;
+        const shadowRoom = Math.max(0, next - SHADOW_MARGIN_HEADROOM);
+        for (let state of this._states.values()) {
+            try {
+                state.effect.setPadding(next);
+                state.effect.setShadowMaxRadius(shadowRoom);
+                state.roundingEffect.setInset(next);
+                state.geomSig = undefined;
+            }
+            catch (e) {
+                this._logger.error(`[Liquid Glass] Failed to apply the new glass margin: ${e}`);
+            }
+        }
+    }
     _updateEffectParams() {
         let tintColorStr = this._settings.get_string('application-tint-color');
         let tintStrength = this._settings.get_double('application-tint-strength');
@@ -332,6 +489,7 @@ export class ApplicationManager {
             state.effect.setContrast(contrast);
             state.effect.setSaturation(saturation);
             state.roundingEffect.setRadius(cornerRadius + CORNER_PADDING);
+            state.roundingEffect.setGlassRadius(cornerRadius);
             state.roundingEffect.setInset(this._cornerOverlayInset());
         }
     }
@@ -346,7 +504,7 @@ export class ApplicationManager {
     // has beyond the real window bounds), while CORNER_PADDING is applied
     // only to the radius (below) so it exclusively affects the corner arcs.
     _cornerOverlayInset() {
-        return SHADER_PADDING;
+        return this._glassMargin;
     }
     // ── Per-frame sync ─────────────────────────────────────────────────────────
     //
@@ -494,6 +652,8 @@ export class ApplicationManager {
             visible: true,
         });
         windowActor.insert_child_below(baseActor, surfaceActor);
+        if (!BASE_LAYER_ENABLED)
+            setActorVisible(baseActor, false);
         let bgActor = new St.Widget({
             name: 'lgw-bg',
             style_class: 'liquid-glass-bg-actor',
@@ -564,6 +724,7 @@ export class ApplicationManager {
             extensionPath: this.extensionPath,
             settings: this._settings,
             logger: this._logger,
+            owner: 'application',
         });
         let tintColorStr = this._settings.get_string('application-tint-color');
         let tintStrength = this._settings.get_double('application-tint-strength');
@@ -572,7 +733,7 @@ export class ApplicationManager {
         let brightness = this._settings.get_double('application-brightness');
         let contrast = this._settings.get_double('application-contrast');
         let saturation = this._settings.get_double('application-saturation');
-        effect.setPadding(SHADER_PADDING);
+        effect.setPadding(this._glassMargin);
         effect.setTintColor(...this._hexToColorArray(tintColorStr));
         effect.setTintStrength(tintStrength);
         effect.setCornerRadius(cornerRadius);
@@ -594,7 +755,7 @@ export class ApplicationManager {
         effect.setSurfaceLightEnabled(false);
         // Keep the drop-shadow within the small padded border around the window,
         // rather than the huge margin dockManager uses for its full-screen FBO.
-        effect.setShadowMaxRadius(SHADER_PADDING);
+        effect.setShadowMaxRadius(Math.max(0, this._glassMargin - SHADOW_MARGIN_HEADROOM));
         bgActor.add_effect(effect);
         let windowsContainer = new Clutter.Actor();
         windowsContainer.set_name('lgw-bg-windows');
@@ -609,13 +770,16 @@ export class ApplicationManager {
         cornerOverlay.add_child(cornerOverlayClone);
         let roundingEffect = new InverseCornerEffect();
         roundingEffect.setRadius(cornerRadius + CORNER_PADDING);
+        roundingEffect.setGlassRadius(cornerRadius);
         roundingEffect.setInset(this._cornerOverlayInset());
         cornerOverlay.add_effect(roundingEffect);
         windowActor.add_child(cornerOverlay);
+        if (!CORNER_REVEAL_ENABLED)
+            setActorVisible(cornerOverlay, false);
         const createConstraint = () => new InvertedPositionConstraint({
             source: windowActor,
-            offset_x: -SHADER_PADDING,
-            offset_y: -SHADER_PADDING
+            offset_x: -this._glassMargin,
+            offset_y: -this._glassMargin
         });
         const constraints = {
             bg: createConstraint(),
@@ -784,16 +948,20 @@ export class ApplicationManager {
             clone.opacity = actor.opacity;
             state.windowsContainer.add_child(clone);
             state.clones.set(actor, clone);
-            let baseClone = new UnpickableClone({ source: actor });
-            baseClone.set_name(`lgw-base-behind:${behindTitle}`);
-            baseClone.set_position(0, 0);
-            baseClone.translation_x = actor.x;
-            baseClone.translation_y = actor.y;
-            baseClone.set_size(srcW, srcH);
-            baseClone.set_scale(actor.scale_x, actor.scale_y);
-            baseClone.opacity = actor.opacity;
-            state.baseWindowsContainer.add_child(baseClone);
-            state.baseClones.set(actor, baseClone);
+            // [PERF] The second clone of the same window, for the unblurred base
+            // layer. Not built at all while that layer is not painted.
+            if (BASE_LAYER_ENABLED) {
+                let baseClone = new UnpickableClone({ source: actor });
+                baseClone.set_name(`lgw-base-behind:${behindTitle}`);
+                baseClone.set_position(0, 0);
+                baseClone.translation_x = actor.x;
+                baseClone.translation_y = actor.y;
+                baseClone.set_size(srcW, srcH);
+                baseClone.set_scale(actor.scale_x, actor.scale_y);
+                baseClone.opacity = actor.opacity;
+                state.baseWindowsContainer.add_child(baseClone);
+                state.baseClones.set(actor, baseClone);
+            }
         }
     }
     // The frame rect's origin inside the buffer rect — i.e. the width of the
@@ -915,6 +1083,7 @@ export class ApplicationManager {
         const cornerRadius = this._settings.get_double('application-corner-radius');
         state.effect.setCornerRadius(cornerRadius * s);
         state.roundingEffect.setRadius((cornerRadius + CORNER_PADDING) * s);
+        state.roundingEffect.setGlassRadius(cornerRadius * s);
     }
     _syncState(state) {
         let actor = state.windowActor;
@@ -922,20 +1091,18 @@ export class ApplicationManager {
             state.bgActor.visible = false;
             state.baseActor.visible = false;
             state.cornerOverlay.visible = false;
+            // [PERF] See the matching comment in _syncStateInner() — a hide that
+            // skips the write half must not leave a signature that would let the
+            // fast path suppress the re-show.
+            state.geomSig = undefined;
             return;
         }
         const metaWin = actor.get_meta_window();
         if (!metaWin)
             return;
-        // [PERF] Single flag, see LiquidEffect.DRAG_PERF_MODE_ENABLED — no-op
-        // (both calls below become no-ops internally) unless that's true.
-        // "grabbed AND this window has focus" is the proxy for "this window is
-        // the one currently being dragged" (GNOME 50 / Meta 18 removed
-        // get_grab_op() and get_grab_window()).
-        const isDraggingThisWindow = global.display.is_grabbed() && global.display.get_focus_window() === metaWin;
         state.effect.beginBatch();
         try {
-            this._syncStateInner(state, actor, metaWin, isDraggingThisWindow);
+            this._syncStateInner(state, actor, metaWin);
         }
         finally {
             // [PERF] try/finally is load-bearing here, not defensive style: the
@@ -953,8 +1120,7 @@ export class ApplicationManager {
     // endBatch()" before every one of the early returns already inside this
     // body — behavior is otherwise identical to before this file's
     // DRAG_PERF_MODE_ENABLED work.
-    _syncStateInner(state, actor, metaWin, isDraggingThisWindow) {
-        state.effect.setFastMode(isDraggingThisWindow);
+    _syncStateInner(state, actor, metaWin) {
         // PERFORMANCE: Only sync windows on the current active workspace.
         const workspaceManager = global.workspace_manager;
         const activeWorkspace = workspaceManager.get_active_workspace();
@@ -963,6 +1129,11 @@ export class ApplicationManager {
             setActorVisible(state.bgActor, false);
             setActorVisible(state.baseActor, false);
             setActorVisible(state.cornerOverlay, false);
+            // [PERF] Drop the geometry signature: this frame HID the glass without
+            // running the write half, so a later frame that comes back with the
+            // exact same geometry would match the stale signature, take the fast
+            // path, and never show the actors again.
+            state.geomSig = undefined;
             return;
         }
         if (this._debugFocusLogFrames > 0)
@@ -973,10 +1144,15 @@ export class ApplicationManager {
             setActorVisible(state.bgActor, false);
             setActorVisible(state.baseActor, false);
             setActorVisible(state.cornerOverlay, false);
+            // [PERF] Drop the geometry signature: this frame HID the glass without
+            // running the write half, so a later frame that comes back with the
+            // exact same geometry would match the stale signature, take the fast
+            // path, and never show the actors again.
+            state.geomSig = undefined;
             return;
         }
         setActorVisible(state.bgActor, true);
-        setActorVisible(state.baseActor, true);
+        setActorVisible(state.baseActor, BASE_LAYER_ENABLED);
         // Local offset of the visible frame within the window actor's full buffer
         // — i.e. the width of the invisible CSD border on the left/top. It is a
         // property of the window's decorations, so it only ever changes when the
@@ -1008,6 +1184,9 @@ export class ApplicationManager {
         // below is the window's LIVE on-screen geometry: the final rect taken
         // down by the animation's current scale. At scale 1 they are the plain
         // frame rect again.
+        // Snapshot the margin for this sync. Everything below derives from it,
+        // and it must not change mid-function.
+        const margin = this._glassMargin;
         const [sx, sy] = this._animationScale(actor);
         const visW = rect.width * sx;
         const visH = rect.height * sy;
@@ -1019,20 +1198,80 @@ export class ApplicationManager {
         // Base background (unblurred) expanded by expansion margin. The padding
         // is added in SCREEN pixels — the child paints at true 1:1 scale, so it
         // must not be scaled with the window.
-        const baseActorW = visW + (SHADER_PADDING * 2);
-        const baseActorH = visH + (SHADER_PADDING * 2);
-        this._applyCounterScale(state.baseActor, actor, frameDX - SHADER_PADDING, frameDY - SHADER_PADDING, baseActorW, baseActorH);
+        // Kept computed even when the base layer is off: bgW/bgH below are the
+        // same numbers, and the containers' sizes are read from these.
+        const baseActorW = visW + (margin * 2);
+        const baseActorH = visH + (margin * 2);
+        // ── [PERF] Skip the geometry half when nothing feeding it moved ──────
+        //
+        // For a window that is simply sitting there, every write below re-sends
+        // values identical to last frame's: the same counter-scale, the same
+        // clipBox/container sizes, the same shader resolution and geometry, the
+        // same four constraint offsets. Clutter no-ops the property sets that
+        // land on an unchanged value, but the JS and GObject marshalling to get
+        // there is paid regardless, once per window per frame.
+        //
+        // Deliberately NOT skipped even when this matches:
+        //   * the clone sync loops below — a behind-window can move without any
+        //     of this window's own geometry changing, and a clone left at a
+        //     stale position is the single most-reported bug in this file;
+        //   * _checkContainerAnchor() — it is the detector for a subtree that
+        //     has stopped being allocated, which can happen with no geometry
+        //     change at all, so it has to keep running and its verdict gates
+        //     whether the fast path may be taken at all;
+        //   * ensureGlassAllocated() in _frameTick(), which is outside this
+        //     function entirely.
+        //
+        // The pivot/allocation reads used by the constraint offsets are hoisted
+        // above the check so they can be part of the comparison; they have no
+        // side effects and nothing between here and their old position touched
+        // them.
+        const [pivotFxEarly, pivotFyEarly] = actor.get_pivot_point();
+        const [actorWEarly, actorHEarly] = getAllocatedSize(actor);
+        const anchorOffByEarly = this._checkContainerAnchor(state);
+        const GEOM_SIG_LEN = 16;
+        let sig = state.geomSig;
+        if (!sig || sig.length !== GEOM_SIG_LEN) {
+            sig = new Float64Array(GEOM_SIG_LEN);
+            // Fill with NaN so the very first comparison always misses (NaN never
+            // equals itself), rather than matching a legitimate all-zero geometry.
+            sig.fill(NaN);
+            state.geomSig = sig;
+        }
+        let geomUnchanged = anchorOffByEarly <= MAX_ANCHOR_DISPLACEMENT;
+        const sigValues = [
+            rect.x, rect.y, rect.width, rect.height,
+            bufferRect.x, bufferRect.y, bufferRect.width, bufferRect.height,
+            frameLocalX, frameLocalY,
+            sx, sy,
+            actor.translation_x || 0, actor.translation_y || 0,
+            pivotFxEarly * (Number.isFinite(actorWEarly) ? actorWEarly : 0),
+            pivotFyEarly * (Number.isFinite(actorHEarly) ? actorHEarly : 0),
+        ];
+        for (let i = 0; i < GEOM_SIG_LEN; i++) {
+            if (sig[i] !== sigValues[i]) {
+                geomUnchanged = false;
+                sig[i] = sigValues[i];
+            }
+        }
+        if (geomUnchanged) {
+            this._syncClones(state);
+            return;
+        }
+        if (BASE_LAYER_ENABLED)
+            this._applyCounterScale(state.baseActor, actor, frameDX - margin, frameDY - margin, baseActorW, baseActorH);
         // Glass background (blurred) expanded by padding.
-        const bgW = visW + (SHADER_PADDING * 2);
-        const bgH = visH + (SHADER_PADDING * 2);
-        const localX = frameDX - SHADER_PADDING;
-        const localY = frameDY - SHADER_PADDING;
+        const bgW = visW + (margin * 2);
+        const bgH = visH + (margin * 2);
+        const localX = frameDX - margin;
+        const localY = frameDY - margin;
         this._applyCounterScale(state.bgActor, actor, localX, localY, bgW, bgH);
         state.clipBox.set_position(0, 0);
         state.clipBox.set_size(bgW, bgH);
         // Give containers a real, non-zero size matching their clipping bounds
         state.windowsContainer.set_size(bgW, bgH);
-        state.baseWindowsContainer.set_size(baseActorW, baseActorH);
+        if (BASE_LAYER_ENABLED)
+            state.baseWindowsContainer.set_size(baseActorW, baseActorH);
         // Update shader resolution/geometry. These get the LIVE size too —
         // handing them the final size is what kept the rounded corners and the
         // edge refraction laid out for the maximized window during the whole
@@ -1051,7 +1290,8 @@ export class ApplicationManager {
         // scene graph at the next relayout, which is the whole point — if the
         // subtree is stranded that relayout never comes, and this is how we find
         // out. See MAX_ANCHOR_DISPLACEMENT.
-        const anchorOffBy = this._checkContainerAnchor(state);
+        // [PERF] Sampled once, up where the geometry fast path needs it.
+        const anchorOffBy = anchorOffByEarly;
         // ▼ Constraintによる画面全体(0,0)への絶対座標固定 ▼
         // クローン群は絶対スクリーン座標で配置されるので、そのコンテナの原点が
         // 画面の (0,0) に乗るようオフセットを求める。
@@ -1081,10 +1321,10 @@ export class ApplicationManager {
         // 単なるプロパティで、レイアウトフェーズを待たない。
         // scale=1 かつ translation=0 なら 0 になり、offset は従来どおり
         // -frameLocalX + SHADER_PADDING に一致する。
-        const [pivotFx, pivotFy] = actor.get_pivot_point();
-        const [actorW, actorH] = getAllocatedSize(actor);
-        const pivotPxX = (Number.isFinite(pivotFx) ? pivotFx : 0) * (Number.isFinite(actorW) ? actorW : 0);
-        const pivotPxY = (Number.isFinite(pivotFy) ? pivotFy : 0) * (Number.isFinite(actorH) ? actorH : 0);
+        // [PERF] Hoisted above the geometry fast path so its comparison can
+        // include them; identical reads, just done earlier in the function.
+        const pivotPxX = (Number.isFinite(pivotFxEarly) ? pivotFxEarly : 0) * (Number.isFinite(actorWEarly) ? actorWEarly : 0);
+        const pivotPxY = (Number.isFinite(pivotFyEarly) ? pivotFyEarly : 0) * (Number.isFinite(actorHEarly) ? actorHEarly : 0);
         const anchorDX = (actor.translation_x || 0) + pivotPxX * (1 - sx);
         const anchorDY = (actor.translation_y || 0) + pivotPxY * (1 - sy);
         const offsetX = -anchorDX - localX;
@@ -1095,8 +1335,54 @@ export class ApplicationManager {
         // 取り残される。InvertedPositionConstraint.setOffset() 参照。
         state.constraints.bg.setOffset(offsetX, offsetY);
         state.constraints.windows.setOffset(offsetX, offsetY);
-        state.constraints.base.setOffset(offsetX, offsetY);
-        state.constraints.baseWindows.setOffset(offsetX, offsetY);
+        if (BASE_LAYER_ENABLED) {
+            state.constraints.base.setOffset(offsetX, offsetY);
+            state.constraints.baseWindows.setOffset(offsetX, offsetY);
+        }
+        this._syncClones(state);
+        // Sync corner overlays
+        // [PERF] Hidden and not laid out at all when the reveal is off — see
+        // CORNER_REVEAL_ENABLED. cornerOverlayClone is a Clone of baseActor, so
+        // painting it repaints the wallpaper clone and every behind-window clone
+        // a second time per frame per window.
+        setActorVisible(state.cornerOverlay, CORNER_REVEAL_ENABLED);
+        if (CORNER_REVEAL_ENABLED) {
+            const baseW = visW + (margin * 2);
+            const baseH = visH + (margin * 2);
+            this._applyCounterScale(state.cornerOverlay, actor, frameDX - margin, frameDY - margin, baseW, baseH);
+            state.cornerOverlayClone.set_position(0, 0);
+            state.cornerOverlayClone.set_size(baseW, baseH);
+        }
+        // [FIX] Last line of defence, applied after every setActorVisible(…, true)
+        // above so it wins. If the clone containers are anchored hundreds of
+        // pixels away from screen (0,0), this glass cannot draw anything but
+        // garbage this frame — the constraint offsets are computed correctly (the
+        // [anchor] log prints them) but are not reaching the allocation, which
+        // only happens when the subtree is stranded. Everything inside is then
+        // painting the wrong part of the screen, magnified by whatever
+        // counter-scale the current animation asked for. Hide it and let
+        // _frameTick()'s ensureGlassAllocated() calls do the repair.
+        if (anchorOffBy > MAX_ANCHOR_DISPLACEMENT) {
+            setActorVisible(state.bgActor, false);
+            setActorVisible(state.baseActor, false);
+            setActorVisible(state.cornerOverlay, false);
+            // [PERF] Drop the geometry signature: this frame HID the glass without
+            // running the write half, so a later frame that comes back with the
+            // exact same geometry would match the stale signature, take the fast
+            // path, and never show the actors again.
+            state.geomSig = undefined;
+        }
+    }
+    /**
+     * Places every "window behind" clone at its source's current geometry.
+     *
+     * [PERF] Split out of _syncStateInner() so the geometry fast path there can
+     * skip its own work and still run this: a behind-window can move, resize,
+     * fade or unmap without anything about THIS window's geometry changing, and
+     * a clone left at a stale position is the failure mode this file has
+     * regressed into most often. Body is unchanged from when it was inline.
+     */
+    _syncClones(state) {
         // ▼ 個別ウィンドウのクローン同期 (translation_x/yを使用) ▼
         // Sync blurred clones
         for (let [src, clone] of state.clones.entries()) {
@@ -1119,7 +1405,10 @@ export class ApplicationManager {
                 this._checkCloneAnomaly(clone, src, 'blurred');
             }
         }
-        // Sync base clones (unblurred)
+        // Sync base clones (unblurred). The map is empty while the base layer is
+        // off (they are never built), so this is just skipping the iteration.
+        if (!BASE_LAYER_ENABLED)
+            return;
         for (let [src, clone] of state.baseClones.entries()) {
             if (!isActorValid(src) || !src.visible || !src.mapped) {
                 if (isActorValid(clone))
@@ -1138,27 +1427,6 @@ export class ApplicationManager {
                 clone.opacity = src.opacity;
                 this._checkCloneAnomaly(clone, src, 'base');
             }
-        }
-        // Sync corner overlays
-        setActorVisible(state.cornerOverlay, true);
-        const baseW = visW + (SHADER_PADDING * 2);
-        const baseH = visH + (SHADER_PADDING * 2);
-        this._applyCounterScale(state.cornerOverlay, actor, frameDX - SHADER_PADDING, frameDY - SHADER_PADDING, baseW, baseH);
-        state.cornerOverlayClone.set_position(0, 0);
-        state.cornerOverlayClone.set_size(baseW, baseH);
-        // [FIX] Last line of defence, applied after every setActorVisible(…, true)
-        // above so it wins. If the clone containers are anchored hundreds of
-        // pixels away from screen (0,0), this glass cannot draw anything but
-        // garbage this frame — the constraint offsets are computed correctly (the
-        // [anchor] log prints them) but are not reaching the allocation, which
-        // only happens when the subtree is stranded. Everything inside is then
-        // painting the wrong part of the screen, magnified by whatever
-        // counter-scale the current animation asked for. Hide it and let
-        // _frameTick()'s ensureGlassAllocated() calls do the repair.
-        if (anchorOffBy > MAX_ANCHOR_DISPLACEMENT) {
-            setActorVisible(state.bgActor, false);
-            setActorVisible(state.baseActor, false);
-            setActorVisible(state.cornerOverlay, false);
         }
     }
     // [FIX] See the 3-2 investigation comment above _syncState()'s clone sync

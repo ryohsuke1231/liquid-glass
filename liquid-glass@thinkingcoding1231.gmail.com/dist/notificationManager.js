@@ -255,7 +255,7 @@ export class NotificationManager {
         let contrast = this._settings.get_double('notification-contrast');
         this._baseTint = tintStrength;
         // LiquidEffect on liquidBox (includes built-in dual-Kawase blur)
-        this.effect = new LiquidEffect({ extensionPath: this.extensionPath, settings: this._settings });
+        this.effect = new LiquidEffect({ extensionPath: this.extensionPath, settings: this._settings, owner: 'notification' });
         this.effect.setPadding(SHADER_PADDING);
         this.effect.setTintColor(...this._hexToColorArray(tintColorStr));
         this.effect.setTintStrength(this._baseTint);
@@ -268,7 +268,7 @@ export class NotificationManager {
         this.liquidBox.add_effect(this.effect);
         // ── 5. WindowCloneManager + UILayerSampler ────────────────────────────────
         this._windowCloneManager = new WindowCloneManager(this.liquidBox, this._cloneContainer, 'lg-notification');
-        this._uiSampler = new UILayerSampler(this.bgActor, this.liquidBox, [bannerRoot, global.windowGroup, global.window_group], this._cloneContainer);
+        this._uiSampler = new UILayerSampler(this.bgActor, this.liquidBox, [bannerRoot, global.windowGroup, global.window_group], this._cloneContainer, 'notification');
         this.bgActor.show();
         // Initial clone build (also applies liquid-glass mutual exclusions)
         this._buildClones();

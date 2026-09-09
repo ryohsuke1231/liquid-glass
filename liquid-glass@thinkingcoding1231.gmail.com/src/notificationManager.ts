@@ -310,7 +310,7 @@ export class NotificationManager {
     this._baseTint = tintStrength;
 
     // LiquidEffect on liquidBox (includes built-in dual-Kawase blur)
-    this.effect = new LiquidEffect({ extensionPath: this.extensionPath, settings: this._settings } as any);
+    this.effect = new LiquidEffect({ extensionPath: this.extensionPath, settings: this._settings, owner: 'notification' } as any);
     this.effect.setPadding(SHADER_PADDING);
     this.effect.setTintColor(...this._hexToColorArray(tintColorStr));
     this.effect.setTintStrength(this._baseTint);
@@ -328,7 +328,8 @@ export class NotificationManager {
       this.bgActor,
       this.liquidBox,
       [bannerRoot, global.windowGroup, global.window_group],
-      this._cloneContainer
+      this._cloneContainer,
+      'notification'
     );
 
     this.bgActor.show();

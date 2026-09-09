@@ -452,7 +452,7 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
     this._addSliderRow(physGroup, settings, 'glass-edge-smoothing', 'Edge Smoothing', 'Anti-aliasing feathering width', 0.0, 10.0, 0.1);
     this._addSliderRow(physGroup, settings, 'glass-profile-shape-n', 'Profile Shape N', 'Curvature shape of the surface', 1.0, 20.0, 0.1);
     this._addSliderRow(physGroup, settings, 'glass-ior', 'Index of Refraction', 'Optical density (1.5 - 2.4)', 1.0, 4.0, 0.01);
-    this._addSliderRow(physGroup, settings, 'glass-chroma-strength', 'Chroma Strength', 'RGB color separation', 0.0, 0.1, 0.001);
+    this._addSliderRow(physGroup, settings, 'glass-chroma-strength', 'Chroma Strength', 'RGB color separation at the refracted edge, in pixels', 0.0, 5.0, 0.1);
 
     const lightGroup = new Adw.PreferencesGroup({ title: 'Lighting &amp; Reflections' });
     shaderPage.add(lightGroup);
@@ -489,6 +489,7 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
     shaderPage.add(debugGroup);
 
     this._addSwitchRow(debugGroup, settings, 'output-logs', 'Output Logs', 'Output logs to the terminal');
+    this._addSwitchRow(debugGroup, settings, 'glass-debug-diagnostics', 'Render Diagnostics', 'Collect per-paint render state for global._lgGlass.dump(). This runs on every paint of every glass surface and costs performance even with logging off — leave it disabled unless you are debugging a rendering problem.');
 
     // Blur Methodの選択に応じて、各Blur Radiusの注釈（subtitle）を動的に切り替える処理
     const updateBlurSubtitles = () => {

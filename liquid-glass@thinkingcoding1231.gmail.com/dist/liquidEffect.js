@@ -131,16 +131,140 @@ import { computeCaptureLayout } from './utils.js';
 // without a rebuild: glass.frag samples ONLY layer 1, so `blurResult: NULL`
 // in the dump means the glass is showing the raw, unblurred capture.
 const _liveEffects = new Set();
+// ─── Frame serial ────────────────────────────────────────────────────────────
+//
+// [PERF] Counts painted frames, so an effect can tell "this is the first time
+// I have been asked to paint this frame" from "I am being painted again".
+//
+// The second case is not rare — it is the dominant cost of this extension.
+// A glass surface is a child of its window actor, and every OTHER glass
+// surface that shows this window renders it through a Clutter.Clone, which
+// repaints the whole source subtree including its effect. The dock clones
+// every window; each window clones every window below it. Measured with
+// dock + 3 windows, per frame:
+//
+//     dock              0.98 paints
+//     top window        1.97
+//     middle window     5.90
+//     bottom window    13.78
+//     ---------------------------
+//     total            22.63 blur+composite chains for 4 glass surfaces
+//
+// Each of those re-ran the full crop -> downsample -> H -> V chain to produce
+// a texture bit-identical to the one the frame's first paint had already
+// produced from the very same capture. Only the composite genuinely differs
+// (it draws into a different framebuffer).
+//
+// Incremented on the stage's 'after-paint'. Multi-monitor is handled by
+// construction rather than by special-casing: the signal fires once per stage
+// view, so each view's first paint re-runs the chain into that view's frame.
+let _frameSerial = 0;
+let _frameSerialStage = null;
+let _frameSerialHandler = 0;
+function _ensureFrameSerialHook() {
+    if (_frameSerialHandler)
+        return true;
+    try {
+        const stage = globalThis.global?.stage;
+        if (!stage)
+            return false;
+        _frameSerialStage = stage;
+        _frameSerialHandler = stage.connect('after-paint', () => { _frameSerial++; });
+    }
+    catch (e) {
+        _frameSerialStage = null;
+        _frameSerialHandler = 0;
+    }
+    return _frameSerialHandler !== 0;
+}
+// Whether the counter is actually advancing. Load-bearing: without the hook
+// _frameSerial is frozen at 0, every paint after the first would look like a
+// repeat, and the blur would be computed once and then reused forever — the
+// glass would freeze on whatever the first frame contained. The reuse is
+// therefore gated on this rather than assuming the connect() worked.
+function _frameSerialIsLive() {
+    return _frameSerialHandler !== 0;
+}
+function _releaseFrameSerialHook() {
+    if (!_frameSerialHandler)
+        return;
+    try {
+        _frameSerialStage?.disconnect(_frameSerialHandler);
+    }
+    catch (e) { }
+    _frameSerialStage = null;
+    _frameSerialHandler = 0;
+}
 function _registerGlassDebugHooks() {
     const g = globalThis;
     if (!g.global || g.global._lgGlass)
         return;
     g.global._lgGlass = {
         count: () => _liveEffects.size,
+        // A/B switch for the glass.frag early exits across every live instance.
+        // Diagnostic visualisation: 1 = red where the shader computes a drop
+        // shadow, green where it computes the glass shape itself, 0 = normal.
+        debugView: (mode) => {
+            let n = 0;
+            for (const fx of _liveEffects) {
+                try {
+                    fx.setDebugView(mode);
+                    n++;
+                }
+                catch (e) { }
+            }
+            const msg = `[Liquid Glass] debug_view = ${mode} on ${n} instance(s)`;
+            console.log(msg);
+            return msg;
+        },
+        // A/B switch for the crop pass across every live instance.
+        cropPass: (enabled) => {
+            let n = 0;
+            for (const fx of _liveEffects) {
+                try {
+                    fx.setCropPassEnabled(enabled);
+                    n++;
+                }
+                catch (e) { }
+            }
+            const msg = `[Liquid Glass] crop pass ${enabled ? 'ENABLED' : 'DISABLED'} on ${n} instance(s)`;
+            console.log(msg);
+            return msg;
+        },
+        earlyExit: (enabled) => {
+            let n = 0;
+            for (const fx of _liveEffects) {
+                try {
+                    fx.setEarlyExitEnabled(enabled);
+                    n++;
+                }
+                catch (e) { }
+            }
+            const msg = `[Liquid Glass] early exits ${enabled ? 'ENABLED' : 'DISABLED'} on ${n} instance(s)`;
+            console.log(msg);
+            return msg;
+        },
         dump: () => {
             const rows = [];
+            const now = GLib.get_monotonic_time();
             for (const fx of _liveEffects) {
-                rows.push(fx._diagLast ? JSON.stringify(fx._diagLast) : '(never painted)');
+                if (!fx._diagLast) {
+                    rows.push(`(never painted) owner=${fx._owner ?? '?'}`);
+                    continue;
+                }
+                // `paints` and the snapshot's age are read live rather than taken
+                // from the snapshot: with glass-debug-diagnostics off the rest of
+                // _diagLast is only refreshed about once a second, and a stale paint
+                // counter would break the main use of this dump — sampling it twice
+                // to work out how many paints each surface costs per frame.
+                rows.push(JSON.stringify({
+                    ...fx._diagLast,
+                    paints: fx._diagPaintCount,
+                    composited: fx._diagCompositedPaintCount,
+                    blurRuns: fx._blurRuns,
+                    blurSkips: fx._blurSkips,
+                    snapshotAgeMs: Math.round((now - fx._diagLastSnapshotAt) / 1000),
+                }));
             }
             const out = rows.length ? rows.join('\n') : '(no live LiquidEffect)';
             console.log(`[Liquid Glass][dump]\n${out}`);
@@ -159,10 +283,13 @@ export const LiquidEffect = GObject.registerClass({
         const extensionPath = params.extensionPath;
         const settings = params.settings;
         const logger = params.logger;
+        const owner = params.owner;
         delete params.extensionPath;
         delete params.settings;
         delete params.logger;
+        delete params.owner;
         super._init(params);
+        this._owner = owner ?? '?';
         this._blurTextures = [];
         this._blurFbos = [];
         this._gaussianTempTextures = [];
@@ -175,16 +302,17 @@ export const LiquidEffect = GObject.registerClass({
         this._gaussianHPipeline = null;
         this._gaussianVPipeline = null;
         this._compositePipeline = null;
+        this._passthroughPipeline = null;
         this._compUniforms = new Map();
         this._pendingUniforms = new Map();
         this._compUniformArrays = new Map();
         this._pendingUniformArrays = new Map();
+        this._appliedUniforms = new Map();
+        this._appliedUniformArrays = new Map();
+        this._uniformScratch = [0];
+        this._uniformsDirty = false;
         this._poolWidth = 0;
         this._poolHeight = 0;
-        this._cropTexture = null;
-        this._cropFbo = null;
-        this._cropPoolW = 0;
-        this._cropPoolH = 0;
         this.PASS_COUNT = 4;
         this._blurRadiusDown = 0.5;
         this._blurRadiusUp = 1.0;
@@ -206,6 +334,17 @@ export const LiquidEffect = GObject.registerClass({
         _registerGlassDebugHooks();
         this._diagCompositedPaintCount = 0;
         this._diagLastPaintLogAt = 0;
+        this._diagEnabled = false;
+        this._diagLastSnapshotAt = 0;
+        this._blurFrameSerial = -1;
+        this._cropTexture = null;
+        this._cropFbo = null;
+        this._cropPoolW = 0;
+        this._cropPoolH = 0;
+        this._cropPassEnabled = LiquidEffect.USE_CROP_PASS;
+        this._blurRuns = 0;
+        this._blurSkips = 0;
+        _ensureFrameSerialHook();
         this._uvMismatchWarned = false;
         this._passPipelines = new Map();
         this._diagFirstPaintLogged = false;
@@ -258,7 +397,11 @@ export const LiquidEffect = GObject.registerClass({
         // completely unaffected. See setMultiRegionMode()/setGlassRegions().
         this._setFloat('multi_region_mode', 0.0);
         this._setFloat('region_count', 0.0);
-        this._setFloat('fast_mode', LiquidEffect.DRAG_PERF_MODE_ENABLED ? 1.0 : 0.0);
+        // [PERF/DEBUG] An unset Cogl uniform reads 0.0, which would turn the two
+        // early exits in glass.frag OFF. Seed it explicitly; global._lgGlass
+        // .earlyExit(false) is the A/B switch.
+        this._setFloat('early_exit_enabled', 1.0);
+        this._setFloat('debug_view', 0.0);
         this._settingsIds = [];
         if (this._settings) {
             this._bindSettings();
@@ -370,6 +513,13 @@ export const LiquidEffect = GObject.registerClass({
             s.set_replace(upSnippet.body);
             this._upsamplePipeline.add_snippet(s);
         }
+        // ── Passthrough pipeline ─────────────────────────────────────────────────
+        // Deliberately has NO fragment snippet: Cogl's default processing for a
+        // pipeline with one layer is a single texture fetch modulated by the
+        // pipeline color (opaque white by default), i.e. exactly a 1-tap copy.
+        // Used by the crop pass and the Gaussian pre-pass; see the field comment.
+        this._passthroughPipeline = Cogl.Pipeline.new(ctx);
+        this._configureSamplerLayer(this._passthroughPipeline, 0);
         // ── Gaussian H/V pipelines ───────────────────────────────────────────────
         // Not precompiled here: the separable Gaussian blur builds its shader
         // source dynamically from the kernel computed in setBlurRadius(), and
@@ -383,6 +533,11 @@ export const LiquidEffect = GObject.registerClass({
         this._compositePipeline.set_blend('RGBA = ADD(SRC_COLOR, DST_COLOR * (1 - SRC_COLOR[A]))');
         this._loadCompositeShader();
         // Apply any uniforms that were buffered before the pipeline existed.
+        // The pipeline is brand new, so nothing has been written to it yet — drop
+        // the "already applied" bookkeeping so _applyUniform() cannot skip a
+        // value on the belief that it is still in there.
+        this._appliedUniforms.clear();
+        this._appliedUniformArrays.clear();
         this._applyPendingUniforms();
     }
     /**
@@ -547,6 +702,7 @@ export const LiquidEffect = GObject.registerClass({
      */
     _buildTexturePool(ctx, w, h) {
         this._destroyTexturePool();
+        this._destroyCropTarget();
         let pw = Math.max(w >> 1, 1);
         let ph = Math.max(h >> 1, 1);
         for (let i = 0; i < this.PASS_COUNT; i++) {
@@ -659,16 +815,15 @@ export const LiquidEffect = GObject.registerClass({
         const destTex = this._blurTextures[0];
         const destW = destTex.get_width();
         const destH = destTex.get_height();
-        const srcW = srcTex.get_width();
-        const srcH = srcTex.get_height();
         // ── 0. Pre-pass: srcTex (full res) → destTex (half res) ─────────────────
         // A plain bilinear downsample so the H/V passes can operate entirely in
-        // half-resolution space. (Reuses the Dual Kawase downsample pipeline with
-        // radius 0.)
-        const prePipeline = this._passPipeline('gauss-pre', this._downsamplePipeline);
+        // half-resolution space.
+        // [PERF] Uses the snippet-less passthrough pipeline rather than
+        // downsample.frag with blur_radius = 0. Identical output (the collapsed
+        // kernel averaged four fetches of the same texel), one fetch instead of
+        // five. No inv_size / blur_radius to set — the pipeline has no uniforms.
+        const prePipeline = this._passPipeline('gauss-pre', this._passthroughPipeline);
         prePipeline.set_layer_texture(0, srcTex);
-        this._setPipelineVec2(prePipeline, 'inv_size', 1.0 / srcW, 1.0 / srcH);
-        this._setPipelineFloat(prePipeline, 'blur_radius', 0.0);
         // [FIX] Sample only the valid sub-rect of the raw capture (see the
         // matching comment in _runDualKawaseBlur). The H/V passes below read
         // our own pool textures and keep the full 0..1 range.
@@ -712,109 +867,6 @@ export const LiquidEffect = GObject.registerClass({
         this._poolWidth = 0;
         this._poolHeight = 0;
     }
-    // ─── Crop pass (works around OffscreenEffect FBO padding) ───────────────────
-    //
-    // Background: on some Cogl/Clutter versions, the texture returned by
-    // get_texture() can be a few pixels larger than the actor's logical size
-    // (e.g. alloc=1920x1080 but tex=1923x1083). This appears to be fixed
-    // internal padding added by OffscreenEffect's FBO allocation, unrelated to
-    // any user setting.
-    //
-    // If vfunc_paint_target treated that padded size as the "true" resolution,
-    // the extra pixels would leak into both the final composite draw rect and
-    // the blur texture pool's resolution chain, producing undefined-content
-    // artifacts and small misalignments between sharp and blurred layers.
-    //
-    // Fix: never trust get_texture()'s size — actor.get_size() is always the
-    // source of truth. When they differ, crop out just the valid region into
-    // a dedicated texture (_cropTexture) once per frame, and use that as the
-    // input for every later pass. No extra shader is needed: downsample.frag
-    // run with blur_radius = 0 collapses its 5-tap Kawase kernel onto the
-    // center sample, so it doubles as a plain UV-remapping passthrough.
-    /**
-     * (Re)allocates the crop FBO/texture at size (w, h), reusing the existing
-     * one if the size hasn't changed.
-     */
-    _ensureCropTarget(ctx, w, h) {
-        if (this._cropTexture && this._cropFbo &&
-            this._cropPoolW === w && this._cropPoolH === h) {
-            return true;
-        }
-        // Just clear the old references and let the GC handle them (same
-        // reasoning as _destroyTexturePool).
-        this._cropTexture = null;
-        this._cropFbo = null;
-        this._cropPoolW = 0;
-        this._cropPoolH = 0;
-        try {
-            const tex = Cogl.Texture2D.new_with_size(ctx, w, h);
-            const fbo = Cogl.Offscreen.new_with_texture(tex);
-            this._cropTexture = tex;
-            this._cropFbo = fbo;
-            this._cropPoolW = w;
-            this._cropPoolH = h;
-            return true;
-        }
-        catch (e) {
-            this._logger?.error(`[Liquid Glass] Failed to create crop texture (${w}x${h}): ${e}`);
-            return false;
-        }
-    }
-    /**
-     * [FIX round 11] Node-based crop pass.
-     *
-     * Round 10 removed the crop entirely and expressed the capture's padding as
-     * a UV sub-rect instead, which meant layer 0 (the raw capture) and layer 1
-     * (a padding-free pool texture) needed different coordinate ranges in the
-     * composite. That required Clutter.PaintNode.add_multitexture_rectangle(),
-     * which is NOT safely callable from GJS on this build: its introspection
-     * annotation types text_coords as a plain number rather than an array, so
-     * passing an array makes the native side read a JS object as a float
-     * pointer. That is what crashed the shell with SIGSEGV.
-     *
-     * (Note Cogl.Framebuffer.draw_multitextured_rectangle IS annotated
-     * correctly — only the Clutter PaintNode variant is broken, so the fix
-     * cannot simply mirror the old immediate-mode call.)
-     *
-     * So the crop comes back, but as a paint node like every other pass. The
-     * original reason for removing it — that its intermediate FBO served
-     * last frame's content — no longer applies: that was never about the crop
-     * itself, it was about immediate-mode drawing running before the capture
-     * had been rendered. As a node it executes after the capture, so it reads
-     * current content.
-     *
-     * With a padding-free full-resolution texture available again, every
-     * downstream consumer (blur input and both composite layers) uses the plain
-     * 0..1 range, and no multitexture coordinates are needed anywhere.
-     *
-     * Costs one full-resolution pass per frame per window. If that ever matters,
-     * the way to avoid it is a per-layer texture matrix
-     * (Cogl.Pipeline.set_layer_matrix) on layer 0, which would let the padding
-     * be expressed without either an extra pass or multitexture coordinates —
-     * worth trying only once the current path is confirmed correct.
-     */
-    _addCropPassNode(parentNode, ctx, srcTex, srcW, srcH, allocW, allocH, uv) {
-        if (allocW === srcW && allocH === srcH)
-            return srcTex;
-        if (!this._downsamplePipeline)
-            return srcTex;
-        if (!this._ensureCropTarget(ctx, allocW, allocH))
-            return srcTex;
-        const pipeline = this._passPipeline('crop', this._downsamplePipeline);
-        pipeline.set_layer_texture(0, srcTex);
-        this._setPipelineVec2(pipeline, 'inv_size', 1.0 / srcW, 1.0 / srcH);
-        // blur_radius = 0 collapses every tap in the 5-tap kernel onto the center
-        // sample, turning this into a plain UV resample (i.e. a crop).
-        this._setPipelineFloat(pipeline, 'blur_radius', 0.0);
-        this._addPassNode(parentNode, this._cropFbo, pipeline, allocW, allocH, uv);
-        return this._cropTexture;
-    }
-    _destroyCropTarget() {
-        this._cropTexture = null;
-        this._cropFbo = null;
-        this._cropPoolW = 0;
-        this._cropPoolH = 0;
-    }
     /**
      * Overrides the Clutter.OffscreenEffect hook.
      *
@@ -836,8 +888,15 @@ export const LiquidEffect = GObject.registerClass({
         // function never runs at all -- which would show up here as a call count
         // that never advances past whatever it was when the window opened, even
         // though _frameTick keeps calling set_size()/queue_redraw() at 60fps.
+        //
+        // [PERF] The counter itself is one increment and stays unconditional so
+        // dump()'s "paints" figure remains exact. Everything below it — a
+        // monotonic-time read and a closure that resolves the window title — is
+        // gated: the title is only ever used inside a log line that the logger
+        // discards unless output-logs is on, yet it was being built on every
+        // paint of every glass surface regardless.
         this._diagPaintCount++;
-        {
+        if (this._diagEnabled) {
             const now = GLib.get_monotonic_time();
             const actorTitle = (() => {
                 try {
@@ -906,6 +965,34 @@ export const LiquidEffect = GObject.registerClass({
                 this._logger?.error(`[Liquid Glass] Failed to build Gaussian pipelines: ${e}`);
             }
         }
+        // ── [PERF] Is this a repeat paint of the same frame? ───────────────────
+        // See _frameSerial. The frame's FIRST paint of this instance runs the
+        // whole chain; the repeats reuse what it produced.
+        //
+        // Correctness rests on two facts:
+        //
+        //   1. The input is identical. Every paint of this instance in this frame
+        //      renders the same actor subtree into the same capture texture, so
+        //      the blur of it cannot differ.
+        //   2. The first paint's nodes execute first. Paint nodes run in tree
+        //      order, and a Clutter.Clone is always painted after its source (the
+        //      dock sits above the windows it clones; a window sits above the
+        //      windows below it). So the pool is written before any repeat reads
+        //      it — the reuse is same-frame, not last-frame, and a change in what
+        //      is behind the glass shows up with zero frames of delay.
+        // Retried here rather than only in _init(): an effect can be constructed
+        // before global.stage is reachable, and one failed attempt must not
+        // disable the optimization for the rest of the session.
+        if (!_frameSerialIsLive())
+            _ensureFrameSerialHook();
+        // Without a live counter every paint is treated as a first paint, which is
+        // exactly the behavior from before this optimization existed. _blurFrame
+        // Serial is deliberately left untouched in that case, so it cannot later
+        // collide with a real serial once the hook does come up.
+        const serialIsLive = _frameSerialIsLive();
+        const firstPaintThisFrame = !serialIsLive || this._blurFrameSerial !== _frameSerial;
+        if (serialIsLive)
+            this._blurFrameSerial = _frameSerial;
         // Grab the FBO texture OffscreenEffect captured from the actor.
         const srcTex = this.get_texture();
         if (!srcTex) {
@@ -937,25 +1024,57 @@ export const LiquidEffect = GObject.registerClass({
         // to be drawn so it lands back on the actor. See that function (utils.ts)
         // for why the padding is NOT centred and why the draw rect is not
         // (0, 0, w, h).
-        let effectiveTex = srcTex;
+        // The capture itself, padding and all. Nothing copies it any more; every
+        // consumer works on it directly and sampling is confined to the valid
+        // sub-rect by srcUV below.
         const effectiveW = allocW;
         const effectiveH = allocH;
         const layout = computeCaptureLayout(actor, srcW, srcH, effectiveW, effectiveH);
         const srcUV = layout.uv;
-        // [FIX round 11] Queue the crop as a node pass. Everything downstream
-        // then works on a padding-free, full-resolution texture and uses the
-        // plain 0..1 range — no multitexture coordinates anywhere.
-        if (srcW !== effectiveW || srcH !== effectiveH) {
+        // [PERF] A repeat paint can reuse the blur only if the pool it was written
+        // into is still the right one — a resize between paints destroys it.
+        const reuseBlur = !firstPaintThisFrame &&
+            this.PASS_COUNT > 0 &&
+            this._blurResultTex !== null &&
+            this._poolWidth === effectiveW &&
+            this._poolHeight === effectiveH;
+        // [PERF] The crop runs only for a paint that is going to blur — the blur
+        // is its only consumer now that both composite layers share one texture.
+        let effectiveTexOut = srcTex;
+        if (this._cropPassEnabled && !reuseBlur && (srcW !== effectiveW || srcH !== effectiveH)) {
             try {
                 const cropCtx = this._getCoglContext();
                 if (cropCtx) {
-                    effectiveTex = this._addCropPassNode(_paintNode, cropCtx, srcTex, srcW, srcH, effectiveW, effectiveH, srcUV);
+                    effectiveTexOut = this._addCropPassNode(_paintNode, cropCtx, srcTex, srcW, srcH, effectiveW, effectiveH, layout.uv);
                 }
             }
             catch (e) {
                 this._logger?.error(`[Liquid Glass] Crop pass node failed; continuing with the padded texture: ${e}`);
             }
         }
+        // [PERF] When the crop is off. It used to copy the capture into a
+        // padding-free texture of its own, at FULL resolution, once per paint per
+        // glass surface — 1920x1080 for every full-screen surface.
+        //
+        // Its only purpose was to make the composite's two layers agree on a
+        // texture-coordinate range. Layer 1 (a pool texture) is padding-free and
+        // wants 0..1; layer 0 (the raw capture) carries the padding
+        // ClutterOffscreenEffect adds and wants the sub-rect. One
+        // add_texture_rectangle() carries a single range, and the per-layer
+        // variant (add_multitexture_rectangle) is not safely callable from GJS —
+        // its annotation types the coordinate array as a bare number, and passing
+        // an array through it segfaults the shell (memo.md 6.1). So the crop
+        // existed to erase the difference.
+        //
+        // The difference can be erased for free instead: glass.frag samples ONLY
+        // cogl_sampler1, so layer 0's contents are irrelevant, and binding the
+        // blur result to BOTH layers makes one range correct for both. The blur
+        // chain never needed the crop either — its first pass already samples the
+        // capture over srcUV (see _runGaussianBlur / _runDualKawaseBlur).
+        //
+        // This is not a new code path: it is the one A1's reuse case has been
+        // taking for the majority of paints, verified on hardware.
+        const effectiveTex = effectiveTexOut;
         // Whether the crop actually ran decides the range every later pass uses:
         // the cropped texture is padding-free (0..1), the raw capture is not.
         const inputUV = (effectiveTex === srcTex) ? srcUV : [0, 0, 1, 1];
@@ -963,7 +1082,7 @@ export const LiquidEffect = GObject.registerClass({
         // Based on the cropped ("true") resolution — using the padded size here
         // would cause rounding error from bit-shifting (w >> 1) an odd value to
         // accumulate across passes, misaligning the sharp and blurred layers.
-        if (effectiveW !== this._poolWidth || effectiveH !== this._poolHeight) {
+        if (!reuseBlur && (effectiveW !== this._poolWidth || effectiveH !== this._poolHeight)) {
             try {
                 const ctx = this._getCoglContext();
                 if (!ctx)
@@ -984,17 +1103,24 @@ export const LiquidEffect = GObject.registerClass({
         // Blur pass: which blur method runs depends on _blurMethod
         //   0: Separable Gaussian blur
         //   1: Dual Kawase blur (original implementation)
-        // Always takes effectiveTex (cropped, padding-free) as input.
+        // Always takes the raw capture as input, sampled over srcUV.
         // ─────────────────────────────────────────────────────────────────────
-        this._blurResultTex = null;
-        if (this.PASS_COUNT > 0) {
-            if (this._blurMethod === 0) {
-                if (this._gaussianHPipeline && this._gaussianVPipeline) {
-                    this._runGaussianBlur(_paintNode, effectiveTex, inputUV);
+        if (reuseBlur) {
+            // _blurResultTex is left exactly as the frame's first paint set it.
+            this._blurSkips++;
+        }
+        else {
+            this._blurResultTex = null;
+            if (this.PASS_COUNT > 0) {
+                this._blurRuns++;
+                if (this._blurMethod === 0) {
+                    if (this._gaussianHPipeline && this._gaussianVPipeline) {
+                        this._runGaussianBlur(_paintNode, effectiveTex, inputUV);
+                    }
                 }
-            }
-            else {
-                this._runDualKawaseBlur(_paintNode, effectiveTex, inputUV);
+                else {
+                    this._runDualKawaseBlur(_paintNode, effectiveTex, inputUV);
+                }
             }
         }
         // ─────────────────────────────────────────────────────────────────────
@@ -1011,31 +1137,30 @@ export const LiquidEffect = GObject.registerClass({
         // ─────────────────────────────────────────────────────────────────────
         const compFb = paintContext.get_framebuffer();
         const compPipeline = this._compositePipeline;
-        // Layer 0: the sharp, unblurred capture (used as the basis for refraction).
-        // Using the cropped texture means UV (0,0)-(1,1) lines up exactly with
-        // the actor's logical size.
-        compPipeline.set_layer_texture(0, effectiveTex);
+        // [PERF] Both layers are bound to the SAME texture so that one
+        // texture-coordinate range is correct for both — see the note where the
+        // crop pass used to be. Whenever a blur exists that is the blur result
+        // (0..1); with blur disabled it is the raw capture (srcUV).
+        //
+        // Sound only because glass.frag samples cogl_sampler1 and never
+        // cogl_sampler0. If a future revision starts reading layer 0 as "the
+        // sharp capture", it needs its own coordinate range again, and that means
+        // either bringing the crop back or finding a working per-layer
+        // coordinate call.
+        const haveBlur = this.PASS_COUNT > 0 && this._blurResultTex !== null;
+        // Layer 0 is never sampled by glass.frag, so it exists only to not
+        // contradict layer 1's coordinate range. Bind whichever texture already
+        // uses the range layer 1 needs.
+        const layer0Tex = haveBlur ? this._blurResultTex : effectiveTex;
+        compPipeline.set_layer_texture(0, layer0Tex);
         this._configureSamplerLayer(compPipeline, 0);
-        // [FIX] Layer 0 is now the RAW capture rather than a cropped copy, so it
-        // must be sampled over srcUV. Layer 1 (below) is one of our own pool
-        // textures, which is already padding-free and uses the full 0..1 range —
-        // hence the per-layer coordinates at the draw call.
-        const layer0UV = inputUV;
-        // Layer 1: the heavily blurred texture (used for the background blur).
-        // Falls back to effectiveTex when no blur pass ran.
-        let layer1UV;
+        const layer0UV = haveBlur ? [0, 0, 1, 1] : inputUV;
+        // Layer 1 is the one glass.frag actually samples: the blurred background,
+        // or the raw capture when blur is disabled.
         // [FIX round 12] The finished blur no longer always lands in
         // _blurTextures[0]; whichever runner executed records its output here.
-        if (this.PASS_COUNT > 0 && this._blurResultTex) {
-            compPipeline.set_layer_texture(1, this._blurResultTex);
-            layer1UV = [0, 0, 1, 1];
-        }
-        else {
-            // No blur ran, so layer 1 falls back to the same raw capture as
-            // layer 0 and therefore needs the same sub-rect.
-            compPipeline.set_layer_texture(1, effectiveTex);
-            layer1UV = inputUV;
-        }
+        const layer1UV = layer0UV;
+        compPipeline.set_layer_texture(1, layer0Tex);
         this._configureSamplerLayer(compPipeline, 1);
         // Manually sync pending uniforms into the composite pipeline.
         // Without this, values like dock_x would stay at 0 and the whole screen
@@ -1093,34 +1218,171 @@ export const LiquidEffect = GObject.registerClass({
         // when _blurResultTex is null and the fallback below binds the raw
         // capture. This records the state that decides it, per instance, for
         // global._lgGlass.dump().
-        this._diagLast = {
-            actor: (() => { try {
-                return this.get_actor()?.get_name?.() ?? '?';
-            }
-            catch (e) {
-                return '?';
-            } })(),
-            src: `${srcW}x${srcH}`,
-            alloc: `${allocW}x${allocH}`,
-            uv: layout.uv.map(v => +v.toFixed(5)),
-            dest: layout.dest.map(v => +v.toFixed(2)),
-            cropRan: effectiveTex !== srcTex,
-            blurMethod: this._blurMethod,
-            passCount: this.PASS_COUNT,
-            pool: `${this._poolWidth}x${this._poolHeight}`,
-            poolLevels: this._blurFbos.length,
-            blurResult: (() => {
-                const t = this._blurResultTex;
-                return t ? `${t.get_width()}x${t.get_height()}`
-                    : 'NULL (layer 1 falls back to the SHARP capture)';
-            })(),
-            radiusDown: this._blurRadiusDown,
-            radiusUp: this._blurRadiusUp,
-            targetRadius: this._targetRadius,
-            gaussianPipelines: !!(this._gaussianHPipeline && this._gaussianVPipeline),
-            paintOpacity,
-            paints: this._diagPaintCount,
-        };
+        //
+        // [PERF] Two allocations for the arrays, one for the object, four
+        // toFixed() strings, two get_width()/get_height() round trips and a
+        // closure — per paint, per glass surface. With diagnostics off this is
+        // throttled to roughly once a second instead of being dropped entirely,
+        // so dump() still answers (very slightly stale) without anyone having to
+        // enable a setting first and reproduce the problem again.
+        const diagNow = GLib.get_monotonic_time();
+        if (this._diagEnabled || diagNow - this._diagLastSnapshotAt > 1000 * 1000) {
+            this._diagLastSnapshotAt = diagNow;
+            this._diagLast = {
+                owner: this._owner,
+                actor: (() => { try {
+                    return this.get_actor()?.get_name?.() ?? '?';
+                }
+                catch (e) {
+                    return '?';
+                } })(),
+                src: `${srcW}x${srcH}`,
+                alloc: `${allocW}x${allocH}`,
+                uv: layout.uv.map(v => +v.toFixed(5)),
+                dest: layout.dest.map(v => +v.toFixed(2)),
+                blurMethod: this._blurMethod,
+                passCount: this.PASS_COUNT,
+                pool: `${this._poolWidth}x${this._poolHeight}`,
+                poolLevels: this._blurFbos.length,
+                blurResult: (() => {
+                    const t = this._blurResultTex;
+                    return t ? `${t.get_width()}x${t.get_height()}`
+                        : 'NULL (layer 1 falls back to the SHARP capture)';
+                })(),
+                radiusDown: this._blurRadiusDown,
+                radiusUp: this._blurRadiusUp,
+                targetRadius: this._targetRadius,
+                gaussianPipelines: !!(this._gaussianHPipeline && this._gaussianVPipeline),
+                paintOpacity,
+                paints: this._diagPaintCount,
+                // [PERF] How the paints split: blurRuns is the chains actually
+                // executed, blurSkips the repeat paints that reused one. With nested
+                // glass, blurSkips is where the saving is.
+                cropRan: effectiveTex !== srcTex,
+                blurRuns: this._blurRuns,
+                blurSkips: this._blurSkips,
+                // The uniforms that decide whether a drop shadow can appear at all.
+                // Read straight out of the buffered state, which is by definition
+                // what was last handed to the pipeline — so a value that looks wrong
+                // here is a JS-side problem, and a value that looks right here with
+                // no shadow on screen puts the fault in the shader or in what is
+                // drawn over it.
+                u: {
+                    shadowRadius: this._pendingUniforms.get('shadow_radius'),
+                    shadowIntensity: this._pendingUniforms.get('shadow_intensity'),
+                    shadowMaxRadius: this._pendingUniforms.get('shadow_max_radius'),
+                    edgeSmoothing: this._pendingUniforms.get('edge_smoothing'),
+                    cornerRadius: this._pendingUniforms.get('corner_radius'),
+                    padding: this._pendingUniforms.get('padding'),
+                    isDock: this._pendingUniforms.get('isDock'),
+                    multiRegion: this._pendingUniforms.get('multi_region_mode'),
+                    earlyExit: this._pendingUniforms.get('early_exit_enabled'),
+                    dockRect: [
+                        this._pendingUniforms.get('dock_x'),
+                        this._pendingUniforms.get('dock_y'),
+                        this._pendingUniforms.get('dock_w'),
+                        this._pendingUniforms.get('dock_h'),
+                    ],
+                },
+            };
+        }
+    }
+    // ─── Crop pass ───────────────────────────────────────────────────────────
+    //
+    // get_texture() is sized to the actor's PAINT BOX, not its allocation, so it
+    // carries a few pixels of padding. This pass copies out just the valid
+    // region, which lets every later pass work in the plain 0..1 range.
+    //
+    // [PERF] It was removed outright, and put back behind this flag after the
+    // one-frame texture lag from memo.md returned — with A1's blur reuse active,
+    // which is the combination the removal had never been tested in. The two
+    // interact: without the crop the blur chain samples the effect's own live
+    // capture texture, and with the reuse in play that texture is read by passes
+    // that no longer sit in a simple chain behind it.
+    //
+    // Kept switchable rather than simply reverted so the attribution can be
+    // settled in one session: global._lgGlass.cropPass(false) turns it off.
+    static USE_CROP_PASS = true;
+    /**
+     * (Re)allocates the crop FBO/texture at size (w, h), reusing the existing
+     * one if the size hasn't changed.
+     */
+    _ensureCropTarget(ctx, w, h) {
+        if (this._cropTexture && this._cropFbo &&
+            this._cropPoolW === w && this._cropPoolH === h) {
+            return true;
+        }
+        // Just clear the old references and let the GC handle them (same
+        // reasoning as _destroyTexturePool).
+        this._cropTexture = null;
+        this._cropFbo = null;
+        this._cropPoolW = 0;
+        this._cropPoolH = 0;
+        try {
+            const tex = Cogl.Texture2D.new_with_size(ctx, w, h);
+            const fbo = Cogl.Offscreen.new_with_texture(tex);
+            this._cropTexture = tex;
+            this._cropFbo = fbo;
+            this._cropPoolW = w;
+            this._cropPoolH = h;
+            return true;
+        }
+        catch (e) {
+            this._logger?.error(`[Liquid Glass] Failed to create crop texture (${w}x${h}): ${e}`);
+            return false;
+        }
+    }
+    /**
+     * [FIX round 11] Node-based crop pass.
+     *
+     * Round 10 removed the crop entirely and expressed the capture's padding as
+     * a UV sub-rect instead, which meant layer 0 (the raw capture) and layer 1
+     * (a padding-free pool texture) needed different coordinate ranges in the
+     * composite. That required Clutter.PaintNode.add_multitexture_rectangle(),
+     * which is NOT safely callable from GJS on this build: its introspection
+     * annotation types text_coords as a plain number rather than an array, so
+     * passing an array makes the native side read a JS object as a float
+     * pointer. That is what crashed the shell with SIGSEGV.
+     *
+     * (Note Cogl.Framebuffer.draw_multitextured_rectangle IS annotated
+     * correctly — only the Clutter PaintNode variant is broken, so the fix
+     * cannot simply mirror the old immediate-mode call.)
+     *
+     * So the crop comes back, but as a paint node like every other pass. The
+     * original reason for removing it — that its intermediate FBO served
+     * last frame's content — no longer applies: that was never about the crop
+     * itself, it was about immediate-mode drawing running before the capture
+     * had been rendered. As a node it executes after the capture, so it reads
+     * current content.
+     *
+     * With a padding-free full-resolution texture available again, every
+     * downstream consumer (blur input and both composite layers) uses the plain
+     * 0..1 range, and no multitexture coordinates are needed anywhere.
+     *
+     * Costs one full-resolution pass per frame per window. If that ever matters,
+     * the way to avoid it is a per-layer texture matrix
+     * (Cogl.Pipeline.set_layer_matrix) on layer 0, which would let the padding
+     * be expressed without either an extra pass or multitexture coordinates —
+     * worth trying only once the current path is confirmed correct.
+     */
+    _addCropPassNode(parentNode, ctx, srcTex, srcW, srcH, allocW, allocH, uv) {
+        if (allocW === srcW && allocH === srcH)
+            return srcTex;
+        if (!this._passthroughPipeline)
+            return srcTex;
+        if (!this._ensureCropTarget(ctx, allocW, allocH))
+            return srcTex;
+        // Snippet-less 1-tap copy; see _passthroughPipeline.
+        const pipeline = this._passPipeline('crop', this._passthroughPipeline);
+        pipeline.set_layer_texture(0, srcTex);
+        this._addPassNode(parentNode, this._cropFbo, pipeline, allocW, allocH, uv);
+        return this._cropTexture;
+    }
+    _destroyCropTarget() {
+        this._cropTexture = null;
+        this._cropFbo = null;
+        this._cropPoolW = 0;
+        this._cropPoolH = 0;
     }
     /**
      * [FIX round 10] Returns a private copy of `base` dedicated to one pass.
@@ -1193,8 +1455,8 @@ export const LiquidEffect = GObject.registerClass({
      * Both layers share one coordinate range by construction: the crop pass
      * guarantees layer 0 is padding-free whenever layer 1 is, so
      * add_texture_rectangle is sufficient. This deliberately does NOT use
-     * add_multitexture_rectangle — see _addCropPassNode() for why that call
-     * segfaults the shell on this build.
+     * add_multitexture_rectangle — that call segfaults the shell on this build
+     * (memo.md 6.1), which is why both layers share one coordinate range.
      */
     _addCompositeNode(parentNode, dest, layer0UV, layer1UV) {
         if (layer0UV[0] !== layer1UV[0] || layer0UV[1] !== layer1UV[1] ||
@@ -1236,13 +1498,34 @@ export const LiquidEffect = GObject.registerClass({
      * later in _applyPendingUniforms().
      */
     _setFloat(name, value) {
+        // [PERF] _pendingUniforms is the authoritative buffered state, so an
+        // unchanged value needs no work at all: it is already in the map, and
+        // (if the pipeline exists) already in the pipeline.
+        if (this._pendingUniforms.get(name) === value)
+            return;
         this._pendingUniforms.set(name, value);
+        this._uniformsDirty = true;
         if (this._compositePipeline) {
             this._applyUniform(name, value);
         }
     }
+    /**
+     * [PERF] Requests a repaint only if something actually changed since the
+     * last one. See _uniformsDirty for why this is safe.
+     */
+    _queueRepaintIfDirty() {
+        if (!this._uniformsDirty)
+            return;
+        this._uniformsDirty = false;
+        this.queue_repaint();
+    }
     _applyUniform(name, value) {
         if (!this._compositePipeline)
+            return;
+        // [PERF] Skip the write when the pipeline already holds this exact value.
+        // See _appliedUniforms. NaN can never satisfy === so it would be written
+        // every time, but no uniform here is ever legitimately NaN.
+        if (this._appliedUniforms.get(name) === value)
             return;
         // Cache the uniform location to avoid a get_uniform_location() call every frame.
         let loc = this._compUniforms.get(name);
@@ -1251,7 +1534,9 @@ export const LiquidEffect = GObject.registerClass({
             this._compUniforms.set(name, loc);
         }
         // set_uniform_float(loc, 1 component, 1 element, [value])
-        this._compositePipeline.set_uniform_float(loc, 1, 1, [value]);
+        this._uniformScratch[0] = value;
+        this._compositePipeline.set_uniform_float(loc, 1, 1, this._uniformScratch);
+        this._appliedUniforms.set(name, value);
     }
     _applyPendingUniforms() {
         for (const [name, value] of this._pendingUniforms) {
@@ -1268,7 +1553,23 @@ export const LiquidEffect = GObject.registerClass({
      * buffered and applied later in _applyPendingUniforms().
      */
     _setFloatArray(name, values) {
-        this._pendingUniformArrays.set(name, values);
+        const prev = this._pendingUniformArrays.get(name);
+        if (prev && prev.length === values.length) {
+            let same = true;
+            for (let i = 0; i < values.length; i++) {
+                if (prev[i] !== values[i]) {
+                    same = false;
+                    break;
+                }
+            }
+            if (same)
+                return;
+        }
+        // Store a copy: callers reuse and mutate their arrays between frames, so
+        // keeping the caller's object would make the comparison above compare a
+        // value against itself and never see a change.
+        this._pendingUniformArrays.set(name, values.slice());
+        this._uniformsDirty = true;
         if (this._compositePipeline) {
             this._applyUniformArray(name, values);
         }
@@ -1276,6 +1577,21 @@ export const LiquidEffect = GObject.registerClass({
     _applyUniformArray(name, values) {
         if (!this._compositePipeline)
             return;
+        // [PERF] Same dedup as _applyUniform, elementwise. The copy kept here is
+        // deliberately ours: callers hand us arrays they may mutate in place, so
+        // comparing against the array object itself would miss changes.
+        const applied = this._appliedUniformArrays.get(name);
+        if (applied && applied.length === values.length) {
+            let same = true;
+            for (let i = 0; i < values.length; i++) {
+                if (applied[i] !== values[i]) {
+                    same = false;
+                    break;
+                }
+            }
+            if (same)
+                return;
+        }
         let loc = this._compUniformArrays.get(name);
         if (loc === undefined) {
             loc = this._compositePipeline.get_uniform_location(name);
@@ -1283,6 +1599,7 @@ export const LiquidEffect = GObject.registerClass({
         }
         // set_uniform_float(loc, 1 component, count elements, values[])
         this._compositePipeline.set_uniform_float(loc, 1, values.length, values);
+        this._appliedUniformArrays.set(name, values.slice());
     }
     // ─── Cogl context lookup ─────────────────────────────────────────────────────
     _getCoglContext() {
@@ -1343,10 +1660,25 @@ export const LiquidEffect = GObject.registerClass({
         applyBlurMethod();
         const blurMethodId = settings.connect('changed::blur-method', applyBlurMethod);
         this._settingsIds.push(blurMethodId);
+        // ── glass-debug-diagnostics (bool) ────────────────────────────────────
+        // Read into a plain field rather than calling get_boolean() from the
+        // paint path: that call is a GSettings lookup, which is exactly the kind
+        // of per-paint cost this flag exists to remove.
+        const applyDiagFlag = () => {
+            this._diagEnabled = settings.get_boolean('glass-debug-diagnostics');
+        };
+        applyDiagFlag();
+        const diagId = settings.connect('changed::glass-debug-diagnostics', applyDiagFlag);
+        this._settingsIds.push(diagId);
     }
     // ─── Public API (compatible with the previous ShaderEffect-based interface) ──
     cleanup() {
         _liveEffects.delete(this);
+        // The frame-serial hook is one signal shared by every instance; drop it
+        // once nothing is left to use it, so disabling the extension leaves
+        // nothing connected to the stage.
+        if (_liveEffects.size === 0)
+            _releaseFrameSerialHook();
         // Disconnect GSettings signal handlers.
         if (this._settings && this._settingsIds) {
             this._settingsIds.forEach(id => this._settings?.disconnect(id));
@@ -1354,11 +1686,11 @@ export const LiquidEffect = GObject.registerClass({
         }
         // Free the texture pool (reference clear only — run_dispose() would double-free).
         this._destroyTexturePool();
-        this._destroyCropTarget();
         // Clear pipeline references (GJS's GC reclaims the VRAM).
         // Never call run_dispose() here — it would double-unref a GJS-managed object.
         this._downsamplePipeline = null;
         this._upsamplePipeline = null;
+        this._passthroughPipeline = null;
         this._gaussianHPipeline = null;
         this._gaussianVPipeline = null;
         this._compositePipeline = null;
@@ -1366,6 +1698,8 @@ export const LiquidEffect = GObject.registerClass({
         this._pendingUniforms.clear();
         this._compUniformArrays.clear();
         this._pendingUniformArrays.clear();
+        this._appliedUniforms.clear();
+        this._appliedUniformArrays.clear();
         // Reset the dynamic Gaussian shader generation state too.
         this._gaussianKernel = null;
         this._pendingGaussianKernel = null;
@@ -1373,6 +1707,36 @@ export const LiquidEffect = GObject.registerClass({
         this._gaussianBaseSigma = 0;
         this._gaussianScale = 1.0;
         this._gaussianFetchPairs = 0;
+    }
+    /**
+     * [PERF/DEBUG] Turns glass.frag's two early exits on/off at runtime.
+     *
+     * They are meant to be exactly equivalent to the full per-pixel path, so
+     * anything that looks different with them on is a bug in the thresholds.
+     * Being able to flip this inside a running session — rather than
+     * rebuilding and reproducing the state again — is what makes such a
+     * report cheap to settle. Reachable as global._lgGlass.earlyExit(bool).
+     */
+    /**
+     * [PERF/DEBUG] Turns the crop pass on/off at runtime; see USE_CROP_PASS.
+     * Reachable as global._lgGlass.cropPass(bool).
+     */
+    setCropPassEnabled(enabled) {
+        this._cropPassEnabled = enabled;
+        this.queue_repaint();
+    }
+    setEarlyExitEnabled(enabled) {
+        this._setFloat('early_exit_enabled', enabled ? 1.0 : 0.0);
+        this._queueRepaintIfDirty();
+    }
+    /**
+     * [DEBUG] Diagnostic visualisation mode; see glass.frag's debug_view.
+     * 0 = normal, 1 = shadow/shape mask view. Reachable as
+     * global._lgGlass.debugView(n).
+     */
+    setDebugView(mode) {
+        this._setFloat('debug_view', mode);
+        this._queueRepaintIfDirty();
     }
     setIsDock(isDock) {
         this._setFloat('isDock', isDock ? 1.0 : 0.0);
@@ -1389,7 +1753,7 @@ export const LiquidEffect = GObject.registerClass({
      */
     setSurfaceLightEnabled(enabled) {
         this._setFloat('surface_light_enabled', enabled ? 1.0 : 0.0);
-        this.queue_repaint();
+        this._queueRepaintIfDirty();
     }
     setPadding(pad) {
         this._setFloat('padding', pad);
@@ -1426,12 +1790,15 @@ export const LiquidEffect = GObject.registerClass({
         this._compositePipeline = null;
         this._downsamplePipeline = null;
         this._upsamplePipeline = null;
+        this._passthroughPipeline = null;
         this._gaussianHPipeline = null;
         this._gaussianVPipeline = null;
         this._gaussianKernel = null;
         this._gaussianFetchPairs = 0;
         this._compUniforms.clear();
         this._compUniformArrays.clear();
+        this._appliedUniforms.clear();
+        this._appliedUniformArrays.clear();
         // _pendingUniforms/_pendingUniformArrays are intentionally left intact:
         // they hold every uniform value currently in effect, and
         // _initPipelines() re-applies all of them to the freshly-compiled
@@ -1446,7 +1813,7 @@ export const LiquidEffect = GObject.registerClass({
         this._setFloat('tint_r', r);
         this._setFloat('tint_g', g);
         this._setFloat('tint_b', b);
-        this.queue_repaint();
+        this._queueRepaintIfDirty();
     }
     // Sets the flat fallback fill composited underneath the glass/shadow
     // result, for areas outside every glass region — see glass.frag's
@@ -1457,7 +1824,7 @@ export const LiquidEffect = GObject.registerClass({
         this._setFloat('panel_bg_g', g);
         this._setFloat('panel_bg_b', b);
         this._setFloat('panel_bg_a', a);
-        this.queue_repaint();
+        this._queueRepaintIfDirty();
     }
     // [FIX] The panel's REAL widget bounds (monitor-relative px, no
     // SHADER_PADDING/CLIP_PADDING/glassExpand) — masks
@@ -1470,15 +1837,15 @@ export const LiquidEffect = GObject.registerClass({
         this._setFloat('panel_rect_y', y);
         this._setFloat('panel_rect_w', w);
         this._setFloat('panel_rect_h', h);
-        this.queue_repaint();
+        this._queueRepaintIfDirty();
     }
     setTintStrength(strength) {
         this._setFloat('tint_strength', strength);
-        this.queue_repaint();
+        this._queueRepaintIfDirty();
     }
     setCornerRadius(radius) {
         this._setFloat('corner_radius', radius);
-        this.queue_repaint();
+        this._queueRepaintIfDirty();
     }
     setAnimationScale(scale) {
         const settings = this._settings;
@@ -1487,7 +1854,7 @@ export const LiquidEffect = GObject.registerClass({
         this._setFloat('displacement_scale', settings.get_double('glass-displacement-scale') * scale);
         this._setFloat('max_z', settings.get_double('glass-max-z') * scale);
         this._setFloat('chroma_strength', settings.get_double('glass-chroma-strength') * scale);
-        this.queue_repaint();
+        this._queueRepaintIfDirty();
     }
     setPointerPosition(x, y, intensity) {
         this._setFloat('pointer_x', x);
@@ -1504,7 +1871,7 @@ export const LiquidEffect = GObject.registerClass({
     setResolution(width, height) {
         this._setFloat('resolution_x', width);
         this._setFloat('resolution_y', height);
-        this.queue_repaint();
+        this._queueRepaintIfDirty();
     }
     /**
      * Full-screen FBO mode: passes the dock's monitor-relative geometry to the
@@ -1515,7 +1882,7 @@ export const LiquidEffect = GObject.registerClass({
         this._setFloat('dock_y', y);
         this._setFloat('dock_w', w);
         this._setFloat('dock_h', h);
-        this.queue_repaint();
+        this._queueRepaintIfDirty();
     }
     /**
      * Enables/disables multi-region compositing mode (see glass.frag's
@@ -1527,7 +1894,7 @@ export const LiquidEffect = GObject.registerClass({
      */
     setMultiRegionMode(enabled) {
         this._setFloat('multi_region_mode', enabled ? 1.0 : 0.0);
-        this.queue_repaint();
+        this._queueRepaintIfDirty();
     }
     // [PERF] "Window background rendering gets noticeably more expensive
     // (CLUTTER_SHOW_FPS: per-frame paint time roughly triples, ~1.8ms ->
@@ -1567,18 +1934,6 @@ export const LiquidEffect = GObject.registerClass({
         }
         // @ts-ignore
         super.queue_repaint();
-    }
-    /**
-     * [PERF] See DRAG_PERF_MODE_ENABLED above and glass.frag's fast_mode
-     * uniform: swaps the 4-tap numerical height-gradient estimate for a
-     * 2-tap one using an analytically-known SDF gradient direction, and
-     * skips the outer drop-shadow result. No-op (uniform stays 0) unless the
-     * master flag is also on — callers (applicationManager.ts) can call this
-     * unconditionally every frame regardless of the flag's state.
-     */
-    setFastMode(enabled) {
-        const value = (LiquidEffect.DRAG_PERF_MODE_ENABLED && enabled) ? 1.0 : 0.0;
-        this._setFloat('fast_mode', value);
     }
     /**
      * Supplies the list of glass regions to draw when multi-region mode is
@@ -1626,19 +1981,19 @@ export const LiquidEffect = GObject.registerClass({
         this._setFloatArray('region_tint_g', rTintG);
         this._setFloatArray('region_tint_b', rTintB);
         this._setFloatArray('region_base_strength', rBaseStrength);
-        this.queue_repaint();
+        this._queueRepaintIfDirty();
     }
     setBrightness(brightness) {
         this._setFloat('brightness', brightness);
-        this.queue_repaint();
+        this._queueRepaintIfDirty();
     }
     setContrast(contrast) {
         this._setFloat('contrast', contrast);
-        this.queue_repaint();
+        this._queueRepaintIfDirty();
     }
     setSaturation(saturation) {
         this._setFloat('saturation', saturation);
-        this.queue_repaint();
+        this._queueRepaintIfDirty();
     }
     /**
      * Dynamically switches the blur method.

@@ -386,7 +386,7 @@ export class OsdManager {
     let contrast = this._settings.get_double('osd-contrast');
 
     // LiquidEffect on liquidBox (includes built-in dual-Kawase blur)
-    let effect = new LiquidEffect({ extensionPath: this.extensionPath, settings: this._settings } as any);
+    let effect = new LiquidEffect({ extensionPath: this.extensionPath, settings: this._settings, owner: 'osd' } as any);
     effect.setPadding(SHADER_PADDING);
     effect.setTintColor(...this._hexToColorArray(tintColorStr));
     effect.setTintStrength(this._baseTint);
@@ -407,7 +407,8 @@ export class OsdManager {
       bgActor,
       liquidBox,
       [osdRoot, global.windowGroup, global.window_group],
-      cloneContainer
+      cloneContainer,
+      'osd'
     );
 
     // ── 7. Build initial clones ───────────────────────────────────────────────

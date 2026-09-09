@@ -444,7 +444,8 @@ export class UIManager {
       this.bgActor,
       this.liquidBox,
       [menuRoot, global.windowGroup, global.window_group],
-      this._cloneContainer
+      this._cloneContainer,
+      'menu'
     );
 
     let blurRadius = this._settings.get_int('menu-blur-radius');
@@ -456,7 +457,7 @@ export class UIManager {
     this._cornerRadius = this._settings.get_double('menu-corner-radius');
 
     // Apply our custom GLSL liquid shader to liquidBox (includes built-in dual-Kawase blur)
-    this.effect = new LiquidEffect({ extensionPath: this.extensionPath, settings: this._settings } as any);
+    this.effect = new LiquidEffect({ extensionPath: this.extensionPath, settings: this._settings, owner: 'menu' } as any);
     this.effect.setPadding(SHADER_PADDING);
     this.effect.setTintColor(...this._hexToColorArray(tintColorStr));
     this.effect.setTintStrength(tintStrength);

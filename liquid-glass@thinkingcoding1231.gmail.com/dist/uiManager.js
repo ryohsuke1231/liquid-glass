@@ -364,7 +364,7 @@ export class UIManager {
         this._windowCloneManager = new WindowCloneManager(this.liquidBox, this._cloneContainer, 'lg-menu');
         // 5. UILayerSampler: handles uiGroup child clones (panels, notifications, overview, etc.)
         //    Exclude menuRoot and window groups to prevent recursive cloning and BMS loops.
-        this._uiSampler = new UILayerSampler(this.bgActor, this.liquidBox, [menuRoot, global.windowGroup, global.window_group], this._cloneContainer);
+        this._uiSampler = new UILayerSampler(this.bgActor, this.liquidBox, [menuRoot, global.windowGroup, global.window_group], this._cloneContainer, 'menu');
         let blurRadius = this._settings.get_int('menu-blur-radius');
         let tintColorStr = this._settings.get_string('menu-tint-color');
         let tintStrength = this._settings.get_double('menu-tint-strength');
@@ -373,7 +373,7 @@ export class UIManager {
         let saturation = this._settings.get_double('menu-saturation');
         this._cornerRadius = this._settings.get_double('menu-corner-radius');
         // Apply our custom GLSL liquid shader to liquidBox (includes built-in dual-Kawase blur)
-        this.effect = new LiquidEffect({ extensionPath: this.extensionPath, settings: this._settings });
+        this.effect = new LiquidEffect({ extensionPath: this.extensionPath, settings: this._settings, owner: 'menu' });
         this.effect.setPadding(SHADER_PADDING);
         this.effect.setTintColor(...this._hexToColorArray(tintColorStr));
         this.effect.setTintStrength(tintStrength);
