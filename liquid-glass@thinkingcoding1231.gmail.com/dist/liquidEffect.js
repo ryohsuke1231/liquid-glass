@@ -118,7 +118,7 @@ import Clutter from 'gi://Clutter';
 import Cogl from 'gi://Cogl';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
-import { computeCaptureLayout } from './utils.js';
+import { setBmsMode, BMS_MODE, computeCaptureLayout } from './utils.js';
 // ─── Looking Glass diagnostics ───────────────────────────────────────────────
 //
 // Every live LiquidEffect registers itself here so its last resolved frame
@@ -217,6 +217,10 @@ function _registerGlassDebugHooks() {
             console.log(msg);
             return msg;
         },
+        // A/B switch for how a Blur My Shell target is supplied to the glass:
+        // 0 = SNAPSHOT (default), 1 = CLONE, 2 = SKIP. See BMS_MODE in utils.ts.
+        bmsMode: (mode) => setBmsMode(mode),
+        BMS_MODE,
         // A/B switch for the crop pass across every live instance.
         cropPass: (enabled) => {
             let n = 0;

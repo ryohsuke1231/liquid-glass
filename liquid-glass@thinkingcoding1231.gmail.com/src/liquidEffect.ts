@@ -121,7 +121,7 @@ import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 
 import { Logger } from './logger.js';
-import { computeCaptureLayout } from './utils.js';
+import { setBmsMode, BMS_MODE, computeCaptureLayout } from './utils.js';
 
 // ─── Looking Glass diagnostics ───────────────────────────────────────────────
 //
@@ -214,6 +214,11 @@ function _registerGlassDebugHooks(): void {
       console.log(msg);
       return msg;
     },
+    // A/B switch for how a Blur My Shell target is supplied to the glass:
+    // 0 = SNAPSHOT (default), 1 = CLONE, 2 = SKIP. See BMS_MODE in utils.ts.
+    bmsMode: (mode: number) => setBmsMode(mode),
+    BMS_MODE,
+
     // A/B switch for the crop pass across every live instance.
     cropPass: (enabled: boolean) => {
       let n = 0;

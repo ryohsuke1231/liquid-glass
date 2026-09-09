@@ -865,6 +865,79 @@ export type TextureBlitActor = InstanceType<typeof TextureBlitActor>;
  * behind it" (panel, windows, other extensions' UI). One instance per glass
  * (permanent dock glass, popup-menu glass, etc).
  */
+/**
+ * How UILayerSampler supplies a uiGroup child that has a Blur My Shell target
+ * under it.
+ *
+ * Neither of the first two is right, and which one is in use decides which
+ * symptom appears — measured in a native session by toggling the two
+ * extensions on in either order:
+ *
+ *   SNAPSHOT — Liquid Glass sees BMS at clone time and takes a self-excluding
+ *     stage snapshot of the child's rect. BMS itself keeps working, but the
+ *     snapshot is of the WHOLE stage cropped to that rect, so anything else
+ *     overlapping it is captured too: with the dock moved to the top edge it
+ *     overlaps the panel and its icons show up as ghosts inside the dock's own
+ *     glass. The window texture lag was reported in this configuration as well.
+ *
+ *   CLONE — Liquid Glass was enabled first, found no BMS target, and made an
+ *     ordinary Clutter.Clone. No ghosts and no lag, but BMS's own panel
+ *     rendering drifts by about 10px wherever the dock overlaps the panel:
+ *     Shell.BlurEffect in background mode samples the framebuffer under the
+ *     actor, and painting that actor a second time inside our offscreen gives
+ *     it a second, differently-positioned consumer.
+ *
+ *   SKIP — leave the child out of the glass entirely. No ghosts, no lag, BMS
+ *     untouched; the cost is that the panel simply does not appear in the
+ *     blurred backdrop.
+ *
+ * Switchable at runtime (global._lgGlass.bmsMode(n)) so the attribution can be
+ * settled inside one session instead of by rebuilding between orders.
+ */
+export const BMS_MODE = { SNAPSHOT: 0, CLONE: 1, SKIP: 2 };
+
+// [FIX] SKIP is the default, confirmed by switching all three modes in one
+// native session with BMS's dynamic panel blur on:
+//
+//   0 SNAPSHOT -> window texture lag + the dock's own icons ghosted into its
+//                 glass (the snapshot is the whole stage cropped to the
+//                 child's rect, and it runs a full stage paint with our root
+//                 hidden on every after-paint — the very "toggle live UI
+//                 visibility every frame" that memo.md's addendum 3 records
+//                 as breaking Clutter's damage bookkeeping)
+//   1 CLONE    -> lag and ghosts gone, but BMS's own panel drifts ~10px
+//                 wherever the dock overlaps it
+//   2 SKIP     -> all three gone; the panel simply is not in the glass
+//
+// SKIP is the only one that breaks nothing, and what it gives up is small in
+// this exact configuration: BMS's dynamic panel blur means the panel already
+// LOOKS like a blurred wallpaper, and the wallpaper is in the glass anyway.
+// What is actually lost is the panel's CONTENTS — which memo.md's addendum 3
+// argues do not belong behind glass in the first place ("what should be seen
+// through the glass is the panel's material, not its contents").
+let _bmsMode: number = BMS_MODE.SKIP;
+
+// Every live sampler, so a mode change can rebuild the affected clones.
+const _liveSamplers: Set<UILayerSampler> = new Set();
+
+export function setBmsMode(mode: number): string {
+  _bmsMode = mode;
+  let n = 0;
+  for (const sampler of _liveSamplers) {
+    try { sampler.rebuildBmsClones(); n++; } catch (_) { }
+  }
+  const name = mode === BMS_MODE.SNAPSHOT ? 'SNAPSHOT'
+    : mode === BMS_MODE.CLONE ? 'CLONE'
+      : mode === BMS_MODE.SKIP ? 'SKIP' : `? (${mode})`;
+  const msg = `[Liquid Glass] BMS mode = ${name} on ${n} sampler(s)`;
+  console.log(msg);
+  return msg;
+}
+
+export function getBmsMode(): number {
+  return _bmsMode;
+}
+
 export class UILayerSampler {
   private readonly _selfActor: Clutter.Actor;
   private readonly _container: Clutter.Actor;
@@ -934,6 +1007,7 @@ export class UILayerSampler {
     this._ancestorExclusionSources = ancestorExclusions.slice();
     this._label = label;
     this._selfRoot = this._findUiGroupAncestor(selfActor);
+    _liveSamplers.add(this);
 
     this._uiClonesContainer = new UnpickableActor();
     this._uiClonesContainer.set_name("ui-clones-container");
@@ -1286,8 +1360,16 @@ export class UILayerSampler {
 
           const bmsTarget = this._findBmsDescendant(child);
 
+          // SKIP: leave the BMS target out of the glass altogether. Done here
+          // rather than in the exclusion block above so the child is still
+          // tracked (and rebuilt) when the mode or the BMS state changes.
+          if (bmsTarget && _bmsMode === BMS_MODE.SKIP) {
+            seen.delete(child);
+            continue;
+          }
+
           let sourceClone: Clutter.Actor | null = null;
-          if (bmsTarget) {
+          if (bmsTarget && _bmsMode === BMS_MODE.SNAPSHOT) {
             // 1st: the real fix — a snapshot that structurally cannot
             // include ourselves (see SelfExcludingSnapshotCapture).
             sourceClone = this._createSelfExcludingSnapshotActor(child);
@@ -1571,6 +1653,29 @@ export class UILayerSampler {
   }
 
   /**
+   * Drops every clone built for a child that currently has a BMS target under
+   * it, so the next refresh() rebuilds it down whatever path the mode now
+   * selects. Called when the mode is switched at runtime.
+   */
+  rebuildBmsClones(): void {
+    this._existingEffectCache.clear();
+    for (const [child] of [...this._bmsStateAtClone]) {
+      try {
+        if (isActorValid(child) && !this._findBmsDescendant(child)) continue;
+        const clone = this._clones.get(child);
+        if (clone) {
+          this._clones.delete(child);
+          try { clone.destroy(); } catch (_) { }
+        }
+        this._bmsStateAtClone.delete(child);
+      } catch (e) {
+        reportFrameLoopError('UILayerSampler.rebuildBmsClones', e);
+      }
+    }
+    this._clonedNamesLogged = '';
+  }
+
+  /**
    * Logs which uiGroup children this sampler is cloning, whenever that set
    * changes.
    *
@@ -1592,6 +1697,7 @@ export class UILayerSampler {
   }
 
   destroy() {
+    _liveSamplers.delete(this);
     this._bmsStateAtClone.clear();
     if (this._uiClonesContainer) {
       try { this._uiClonesContainer.destroy(); } catch (_) { }
