@@ -54,6 +54,25 @@ uniform float shadow_intensity;
 uniform float shadow_max_radius;
 uniform float padding;
 uniform float isDock;
+
+// [PERF] Blurred sub-rect (actor-local px, same space as `pixel_coord` and
+// dock_x/y/w/h). Layer 1 no longer holds a blurred copy of the WHOLE actor;
+// it holds only this rectangle, blurred. Everything the shader actually
+// draws — the glass body plus its refraction/AA reach — lives inside it, so
+// the pixels that used to be blurred and then thrown away are never produced
+// in the first place. The FBO, the actor and every stage coordinate are
+// unchanged: only the area handed to the blur chain shrank. That distinction
+// matters — a background-mode blur inside our subtree (Blur My Shell's panel)
+// resolves its source in STAGE coordinates and blits from the CURRENT
+// framebuffer, so shrinking the FBO itself would misalign it. See
+// dockManager.ts's "Full-screen FBO geometry" note.
+//
+// blur_rect_w/h < 1 means "the whole actor", which is what an unset uniform
+// (0.0) reads as — so the fallback is also the safe default.
+uniform float blur_rect_x;
+uniform float blur_rect_y;
+uniform float blur_rect_w;
+uniform float blur_rect_h;
 // [PERF/DEBUG] Master switch for the two early exits at the top of main().
 // 1.0 = on (normal). 0.0 = take the full per-pixel path everywhere, which is
 // what the shader did before those exits existed. Flipped at runtime from
@@ -361,6 +380,21 @@ vec2 stabilizedUV(vec2 candidate, vec2 fallback) {
     return mix(fallback, clamped, keep);
 }
 
+// [PERF] Maps a full-actor UV (0..1 across `resolution`) into the blurred
+// sub-rect's own UV, clamped 1.2 texels inside it — the same margin the old
+// SAFE() macro kept from the capture's edge, just measured against the rect.
+// When the rect covers the whole actor this is exactly the old expression.
+vec2 blurUV(vec2 fullUV, vec2 resolution) {
+    if (blur_rect_w < 1.0 || blur_rect_h < 1.0) {
+        vec2 mFull = vec2(1.2) / max(resolution, vec2(1.0));
+        return clamp(fullUV, mFull, vec2(1.0) - mFull);
+    }
+    vec2 size = vec2(blur_rect_w, blur_rect_h);
+    vec2 m = vec2(1.2) / size;
+    return clamp((fullUV * resolution - vec2(blur_rect_x, blur_rect_y)) / size,
+                 m, vec2(1.0) - m);
+}
+
 // [NEW] Adjust color saturation, contrast, brightness
 vec3 applySCB(vec3 color, float b, float c, float s) {
     // 1. 輝度 (Brightness): 単純な乗算
@@ -563,12 +597,11 @@ void main() {
         // Same 4-tap RGSS pattern, with the same aa_spread the full path
         // would compute (edgeProximity == 0 => mix(0.75, 2.5, 0) == 0.75).
         vec2 texelFlat = vec2(0.75) / resolution;
-        vec2 marginFlat = vec2(1.2) / resolution;
         vec3 flatRgb = (
-            texture2D(cogl_sampler1, clamp(uvFlat + vec2( 0.375, -0.125) * texelFlat, marginFlat, 1.0 - marginFlat)).rgb +
-            texture2D(cogl_sampler1, clamp(uvFlat + vec2( 0.125,  0.375) * texelFlat, marginFlat, 1.0 - marginFlat)).rgb +
-            texture2D(cogl_sampler1, clamp(uvFlat + vec2(-0.375,  0.125) * texelFlat, marginFlat, 1.0 - marginFlat)).rgb +
-            texture2D(cogl_sampler1, clamp(uvFlat + vec2(-0.125, -0.375) * texelFlat, marginFlat, 1.0 - marginFlat)).rgb
+            texture2D(cogl_sampler1, blurUV(uvFlat + vec2( 0.375, -0.125) * texelFlat, resolution)).rgb +
+            texture2D(cogl_sampler1, blurUV(uvFlat + vec2( 0.125,  0.375) * texelFlat, resolution)).rgb +
+            texture2D(cogl_sampler1, blurUV(uvFlat + vec2(-0.375,  0.125) * texelFlat, resolution)).rgb +
+            texture2D(cogl_sampler1, blurUV(uvFlat + vec2(-0.125, -0.375) * texelFlat, resolution)).rgb
         ) * 0.25;
 
         flatRgb = applySCB(flatRgb, brightness, contrast, saturation);
@@ -842,8 +875,9 @@ void main() {
     // Hard limit sampling coordinates to 1.2px inside the texture bounds.
     // This prevents bilinear filtering from accidentally pulling in black/transparent 
     // pixels from the void outside the texture space.
-    vec2 margin = vec2(1.2) / resolution;
-    #define SAFE(u) clamp(u, margin, 1.0 - margin)
+    // [PERF] SAFE() used to clamp against the capture's own edge; blurUV()
+    // does the same job against the blurred sub-rect (see its definition).
+    #define SAFE(u) blurUV(u, resolution)
 
     // Step 2: Multi-tap Sampling (Averaging 4 sub-pixels to smooth out the image)
     vec3 refractedRgb;
@@ -880,8 +914,8 @@ void main() {
         // already inside [.001, .999] — i.e. everywhere except within one
         // thousandth of the texture border. In that last sliver the two
         // differ by at most 0.001 in UV, and SAFE() then clamps both to the
-        // same margin of 1.2/resolution, which is the larger bound. So the
-        // sampled texels match on both sides of the branch.
+        // same 1.2-texel margin inside the blurred rect. So the sampled
+        // texels match on both sides of the branch.
         refractedRgb = (texture2D(cogl_sampler1, SAFE(uvG + off1)).rgb +
                         texture2D(cogl_sampler1, SAFE(uvG + off2)).rgb +
                         texture2D(cogl_sampler1, SAFE(uvG + off3)).rgb +

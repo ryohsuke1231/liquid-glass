@@ -447,6 +447,30 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
     this._addRowToContainer(physGroup, blurMethodRow);
     settings.bind('blur-method', blurMethodRow, 'selected', Gio.SettingsBindFlags.DEFAULT);
 
+    // Blur Resolution。値が 2 / 4 なので selected を直接バインドできず、
+    // インデックス <-> 値 を手動で対応させている。
+    const BLUR_DOWNSCALE_VALUES = [2, 4];
+    const blurDownscaleRow = new Adw.ComboRow({
+      title: 'Blur Resolution',
+      subtitle: 'Quarter resolution makes every blur pass a quarter as expensive, but the blur gets visibly coarser and fine detail behind the glass is lost.',
+      model: Gtk.StringList.new([
+        'Half (Recommended)',
+        'Quarter (Performance)'
+      ])
+    });
+    this._addRowToContainer(physGroup, blurDownscaleRow);
+    const syncBlurDownscaleRow = () => {
+      const idx = BLUR_DOWNSCALE_VALUES.indexOf(settings.get_int('glass-blur-downscale'));
+      blurDownscaleRow.selected = idx < 0 ? 0 : idx;
+    };
+    syncBlurDownscaleRow();
+    settings.connect('changed::glass-blur-downscale', syncBlurDownscaleRow);
+    blurDownscaleRow.connect('notify::selected', () => {
+      const value = BLUR_DOWNSCALE_VALUES[blurDownscaleRow.selected] ?? 2;
+      if (settings.get_int('glass-blur-downscale') !== value)
+        settings.set_int('glass-blur-downscale', value);
+    });
+
     this._addSliderRow(physGroup, settings, 'glass-max-z', 'Maximum Z Depth', 'Physical thickness of the glass', 0.0, 100.0, 1.0);
     this._addSliderRow(physGroup, settings, 'glass-displacement-scale', 'Displacement Scale', 'Strength of light refraction', 0.0, 200.0, 1.0);
     this._addSliderRow(physGroup, settings, 'glass-edge-smoothing', 'Edge Smoothing', 'Anti-aliasing feathering width', 0.0, 10.0, 0.1);
