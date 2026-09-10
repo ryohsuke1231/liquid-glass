@@ -1600,16 +1600,178 @@ BMS が使うエフェクトクラスは
 **構築に失敗した場合は素のクローンに落とさない**（それは BMS を壊す経路）。
 その子をガラスから外し、理由をログに出す。
 
-### 検証で見るべき点
+### 実測（2026-09-10）と、そこで見つかった取り違え
 
-- パネルがガラス内に、BMS のぼかしが効いた状態で見えるか
-- 実パネルがズレないか
-- ウィンドウのテクスチャ遅延が出ないか
-- dock を上端に置いてもゴーストが出ないか
-- `Shell.BlurEffect` の BACKGROUND モードが**入れ子のオフスクリーン内で機能するか**
-  ← ここだけは実機でしか確かめられない。効かない場合、
-  ブラーウィジェットは何も描かず、パネルは我々のガラスのブラーだけを背景に見える
-  （＝ 破綻はせず、ぼかしの見た目だけが変わる）
+REPLICATE 投入後の結果:
+
+| 項目 | 結果 |
+|---|---|
+| 実パネルのズレ | ✅ なし |
+| ウィンドウのテクスチャ遅延 | ✅ なし |
+| dock のゴースト | ✅ なし |
+| replica の幾何 | ✅ `blur=(0,0) 1920x46` / `blurAbs=(0,0)` / `r=22/22` — 完全一致 |
+| 大 sigma でのぼかし劣化 | ❌ sigma 約 24 以上で徐々にシャープ化、80 でぼかし消失 |
+
+**実パネルは同じ sigma でも正しくぼけている。** つまり「gnome-shell の制約だから
+どちらも同じように壊れる」という当初の結論は**誤り**だった。
+
+#### 原因: エフェクトのクラスが違った
+
+```js
+// blur-my-shell/effects/native_dynamic_gaussian_blur.js
+let BlurOrShell = await utils.import_in_shell_only('gi://Blur');
+let IS_BLUR_MODULE = true;
+if (BlurOrShell === null) {
+    BlurOrShell = await utils.import_in_shell_only('gi://Shell');
+    IS_BLUR_MODULE = false;
+}
+```
+
+**BMS は `gi://Blur` を優先する。** この環境には
+`/usr/lib/x86_64-linux-gnu/girepository-1.0/Blur-1.0.typelib` が存在するので、
+実パネルは **`Blur.BlurEffect`** で動いていた。
+一方 replica は `Shell.BlurEffect` を直接 new していた —— **別実装**。
+
+`Shell.BlurEffect` 側が大 sigma で壊れる理由も辿れる:
+
+```c
+// gnome-shell/src/shell-blur-effect.c
+#define MIN_DOWNSCALE_SIZE 256.f
+#define MAX_RADIUS 12.f
+while (scaled_radius > MAX_RADIUS &&
+       scaled_width > MIN_DOWNSCALE_SIZE &&
+       scaled_height > MIN_DOWNSCALE_SIZE) { downscale_factor *= 2.f; ... }
+```
+
+パネルは **1920x46**。高さが 256 を超えないのでこのループは一度も回らず、
+`downscale_factor = 1` のまま**フル解像度で**ガウシアンに渡る
+（mutter の `clutter-blur.c` にも同じ 256 の条件があり、そちらも縮小しない）。
+シェーダーは
+
+```glsl
+int n_steps = int (ceil (1.5 * sigma)) * 2;
+```
+
+なので sigma 6 で 18 タップ、sigma 80 で **240 タップ**。
+そこまで行くと結果は無ぼかしへ向かって崩れる —— 報告された挙動そのもの。
+
+#### 修正
+
+**BMS の生きているエフェクトからクラスを取って構築する。**
+
+```ts
+const Ctor = Object.getPrototypeOf(theirs).constructor;
+const ours = new Ctor({ unscaled_radius, brightness, corner_radius? });
+```
+
+どのモジュールを import すべきかを自前で再判定するのではなく、
+**BMS が選んだクラスそのもの**（サブクラスと、Blur モジュール側にしかない
+corner_radius の扱いを含めて）を使う。
+取得に失敗したときだけ `Shell.BlurEffect` にフォールバックする。
+
+#### 追試: クラスの取得に失敗していた（2026-09-10）
+
+修正投入後も挙動は変わらず。追加した診断が即座に理由を出した:
+
+```
+[ui-sampler:dock] could not mirror BMS's blur effect
+  (Error: Invalid value 'undefined' for property corner-radius in object initializer.);
+  falling back to Shell.BlurEffect
+[ui-sampler:dock] replica geom ... cls=Shell_BlurEffect/NativeDynamicBlurEffect
+```
+
+`new Ctor(params)` が例外を投げ、フォールバックの `Shell.BlurEffect` が
+使われ続けていた。原因は `corner_radius` を渡していなかったこと。
+
+```js
+// BMS: NativeDynamicBlurEffect
+const { unscaled_radius, brightness, corner_radius, ...parent_params } = params;
+if (IS_BLUR_MODULE)
+    super({ ...parent_params, mode: BACKGROUND, ...{ 'corner_radius': corner_radius } });
+```
+
+`IS_BLUR_MODULE` が true なので **常に** `corner_radius` が super へ渡る。
+こちらは `theirs.unscaled_corner_radius` が undefined のとき省略していたため、
+`undefined` が GObject のプロパティ初期化に届いて弾かれていた。
+
+`unscaled_corner_radius` の getter は setter が書くフィールドを読むだけで、
+`DummyPipeline` は `corner_radius` の方を設定する ——
+だから実際には常に undefined。
+
+修正: `theirs.unscaled_corner_radius ?? theirs.corner_radius ?? 0` を
+**必ず数値で**渡す。`unscaled_radius` / `brightness` にも同じ防御を入れた。
+
+**あわせて自己修復を追加**: 毎フレームの同期で
+自分と BMS のエフェクトのクラスが食い違っていたら作り直す。
+replica は 1 回しか組み立てられないので、
+BMS のエフェクトがまだアクターに載っていない時点で組み立てられた場合、
+フォールバックがクローンの一生ぶん固定されてしまう。
+比較 1 回ぶんのコストで塞げる。
+
+診断ログには構築時のパラメータも出すようにした
+（`unscaled_radius=... brightness=... corner_radius=...`）。
+
+#### 追試2: クラスは原因ではなかった（2026-09-10）
+
+`corner_radius` を必ず数値で渡すよう直したところ、クラスの一致は達成された。
+
+```
+[ui-sampler:dock] replica blur uses NativeDynamicBlurEffect (matching BMS's own effect),
+  unscaled_radius=200 brightness=1 corner_radius=2
+... cls=NativeDynamicBlurEffect/NativeDynamicBlurEffect   （212 行すべて一致）
+```
+
+**それでも症状は変わらなかった。クラスの取り違えは原因ではない。**
+
+（`corner_radius` の件自体は実バグだったので修正は残す。
+BMS のコンストラクタは `IS_BLUR_MODULE` が true のとき常に `corner_radius` を
+super へ渡し、`undefined` は GObject に弾かれる。
+`unscaled_corner_radius` の getter は setter が書くフィールドを読むだけで、
+`DummyPipeline` は `corner_radius` の方を設定するため実際には常に undefined。
+あわせて、毎フレームの同期でクラスの食い違いを検出したら作り直す自己修復も入れた。）
+
+#### 確定: オフスクリーンのキャプチャパディング
+
+ユーザーの追加観察が決定的だった:
+
+> sigma 19（dock では減衰が確認されていない正常な範囲）で menu を開くと、
+> BMS パネルと重なる部分について、**sigma の大きさと連動して上からぼかしが剥がれる**
+
+背景ブラーは**ステージ座標**でソース矩形を要求し、それを**その時点の
+フレームバッファ**から blit する（`shell-blur-effect.c` の
+`update_actor_box` / `paint_background`、`Blur` モジュール側も同様）。
+実パネルではこの 2 つの座標系が一致するが、**我々のオフスクリーンの中では一致しない**。
+
+`ClutterOffscreenEffect` はペイントボックスを 3px 拡大する
+（左/上 2px、右/下 1px —— `computeCaptureLayout` と memo.md 追記1）。
+つまり**アクターローカルの (0,0) はテクセル (2,2)** であり、
+ステージ (0,0) を要求した blit は**クリア済みのパディング 2 行 2 列**を読む。
+
+ガウシアンはその透明な行を**半径いっぱいに滲ませる**。
+透明になったところは背後のシャープなクローンが透けて見える ——
+これが「上からぼかしが剥がれ、その幅が sigma に連動する」の正体。
+sigma 100（半径 200）ではパネルの高さ 46px を丸ごと超えるので、
+**ぼかしが消えたように見える**。大 sigma の劣化も同じ 1 つの原因で説明できる。
+
+実パネルに出ないのは、そもそもオフスクリーンに描かれていないから。
+
+**1 つの機構で 3 つの症状（上部の帯・帯の消失・大 sigma の劣化）が説明できる。**
+
+#### 修正
+
+`LiquidEffect` が毎ペイント、キャプチャ内でのアクター原点
+（`layout.dest[0..1]`）をアクターに公開する:
+
+```ts
+(actor as any)._lgCaptureOffset = [layout.dest[0], layout.dest[1]];
+```
+
+`UILayerSampler` はそれを読み、**ブラーウィジェットだけ**をその分ずらす。
+blit がアクター自身の画素に当たるようになる。
+見えるぼかしも同じ 2px ずれるが、ぼけた画像で 2px は知覚できない。
+
+定数で 2 を埋め込まず実効果から取るのは、HiDPI や
+奇数サイズでパディングが変わり得るため。幾何ログに `capOff=(x,y)` を追加した。
 
 ---
 

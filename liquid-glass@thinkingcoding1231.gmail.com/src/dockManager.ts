@@ -74,6 +74,8 @@ export class DashManager {
   private _outputLogs: boolean = false;
 
   private _marginValue: number = 0;
+  // Tracks the hide/show transition so the reason is logged once, not per frame.
+  private _lastHidden: boolean | undefined;
 
   private _uiSampler: UILayerSampler | null = null;
   private _windowCloneManager: WindowCloneManager | null = null;
@@ -659,9 +661,28 @@ export class DashManager {
       if (absY + baseH > monitor.y + monitor.height) visibleH -= ((absY + baseH) - (monitor.y + monitor.height));
     }
 
-    if (visibleW <= 5 || visibleH <= 5) {
+    // [FIX] Was `<= 5`. The guard exists to avoid drawing a glass for a dock
+    // that has been reduced to nothing, but 5px is wide enough to catch a dock
+    // that is merely sitting flush against a screen edge — which is exactly
+    // what a small dock-margin-bottom produces, and it made the glass vanish
+    // while the margin was being tuned. Only a genuinely degenerate box is
+    // rejected now, and the decision is logged on transition so a dock that
+    // still disappears says why.
+    if (visibleW <= 1 || visibleH <= 1) {
+      if (this._lastHidden !== true) {
+        this._lastHidden = true;
+        this._logger.log(
+          `[Liquid Glass][dock] hiding the glass: visible=(${visibleW.toFixed(1)}x${visibleH.toFixed(1)}) ` +
+          `base=(${baseW.toFixed(1)}x${baseH.toFixed(1)}) abs=(${absX.toFixed(1)},${absY.toFixed(1)}) ` +
+          `monitor=(${monitor?.x},${monitor?.y},${monitor?.width}x${monitor?.height}) ` +
+          `margin=${this._marginValue}`);
+      }
       this.bgActor.opacity = 0;
     } else {
+      if (this._lastHidden === true) {
+        this._lastHidden = false;
+        this._logger.log('[Liquid Glass][dock] glass visible again');
+      }
       this.bgActor.opacity = this.targetActor.opacity;
     }
 

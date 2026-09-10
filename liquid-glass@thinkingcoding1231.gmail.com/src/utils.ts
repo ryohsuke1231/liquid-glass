@@ -1145,17 +1145,7 @@ export class UILayerSampler {
       container.set_name(`${(child as any).name ?? 'bms'}-replica`);
 
       const blurWidget = new St.Widget({ name: 'lg-bms-replica-blur' });
-      try {
-        const effect = new Shell.BlurEffect({
-          mode: Shell.BlurMode.BACKGROUND,
-          radius: 0,
-          brightness: 1.0,
-        });
-        blurWidget.add_effect(effect);
-      } catch (e) {
-        utilsLog(`[Liquid Glass][ui-sampler:${this._label}] could not build the ` +
-          `replica blur effect (${e}); the panel will show unblurred in the glass`);
-      }
+      blurWidget.add_effect(this._buildReplicaBlurEffect(target));
       container.add_child(blurWidget);
 
       const parts: { src: Clutter.Actor, clone: Clutter.Actor }[] = [];
@@ -1179,6 +1169,91 @@ export class UILayerSampler {
       reportFrameLoopError('UILayerSampler._createBmsReplicaActor', e);
       return null;
     }
+  }
+
+  /**
+   * Where the actor's own pixels start inside the offscreen this sampler's
+   * clones are drawn into, in pixels. Published by LiquidEffect each paint;
+   * (0, 0) until then, and for any container that carries no such effect.
+   */
+  private _captureOffset(): [number, number] {
+    try {
+      const off = (this._container as any)?._lgCaptureOffset;
+      if (Array.isArray(off) && Number.isFinite(off[0]) && Number.isFinite(off[1]))
+        return [off[0], off[1]];
+    } catch (_) { /* noop */ }
+    return [0, 0];
+  }
+
+  /**
+   * Builds the blur effect for a replica, as the SAME CLASS Blur My Shell is
+   * using on the real panel.
+   *
+   * [FIX] This used to hardcode Shell.BlurEffect, and that was a different
+   * implementation from the one BMS had picked. BMS chooses at load time:
+   *
+   *   // blur-my-shell/effects/native_dynamic_gaussian_blur.js
+   *   let BlurOrShell = await utils.import_in_shell_only('gi://Blur');
+   *   if (BlurOrShell === null)
+   *       BlurOrShell = await utils.import_in_shell_only('gi://Shell');
+   *
+   * Blur-1.0 is present on this system, so the real panel runs the Blur
+   * module's effect while the replica ran gnome-shell's — which visibly
+   * diverges as the radius grows. gnome-shell's blur only downscales while
+   * BOTH dimensions exceed 256px (shell-blur-effect.c's
+   * calculate_downscale_factor, and again in mutter's clutter-blur.c), and the
+   * panel is 46px tall, so nothing is ever downscaled and the gaussian is asked
+   * for ceil(1.5 * sigma) * 2 taps at full size: 18 at sigma 6, but 240 at
+   * sigma 80. The result degrades toward unblurred exactly as reported, while
+   * the real panel — a different implementation — stayed sharp-free.
+   *
+   * Rather than re-derive which module to import, take the class off BMS's own
+   * live effect. That matches whatever it chose, including its subclass and
+   * the corner-radius handling that only exists on the Blur module's branch.
+   */
+  private _buildReplicaBlurEffect(bmsTarget: Clutter.Actor): Clutter.Effect {
+    try {
+      const theirs: any = (bmsTarget.get_effects() ?? [])
+        .find((e: any) => typeof e?.radius === 'number');
+      if (theirs) {
+        const Ctor: any = Object.getPrototypeOf(theirs)?.constructor;
+        if (typeof Ctor === 'function') {
+          // corner_radius must ALWAYS be a number. BMS's constructor
+          // destructures it and, on the Blur-module branch, hands it straight
+          // to super() — `undefined` there is rejected by GObject with
+          // "Invalid value 'undefined' for property corner-radius", which is
+          // exactly what sent this down the fallback path on the first
+          // attempt. Its own unscaled_corner_radius getter reads a field that
+          // only its setter writes, and DummyPipeline sets `corner_radius`
+          // instead, so the unscaled one is undefined in practice.
+          const cornerRadius =
+            theirs.unscaled_corner_radius ?? theirs.corner_radius ?? 0;
+
+          const params: any = {
+            unscaled_radius: theirs.unscaled_radius ?? theirs.radius ?? 0,
+            brightness: theirs.brightness ?? 1.0,
+            corner_radius: cornerRadius,
+          };
+
+          const ours = new Ctor(params);
+          utilsLog(`[Liquid Glass][ui-sampler:${this._label}] replica blur uses ` +
+            `${Ctor.name ?? '?'} (matching BMS's own effect), ` +
+            `unscaled_radius=${params.unscaled_radius} brightness=${params.brightness} ` +
+            `corner_radius=${params.corner_radius}`);
+          return ours as Clutter.Effect;
+        }
+      }
+    } catch (e) {
+      utilsLog(`[Liquid Glass][ui-sampler:${this._label}] could not mirror BMS's ` +
+        `blur effect (${e}); falling back to Shell.BlurEffect`);
+    }
+
+    // Fallback only: BMS not reachable, or its effect could not be copied.
+    return new Shell.BlurEffect({
+      mode: Shell.BlurMode.BACKGROUND,
+      radius: 0,
+      brightness: 1.0,
+    }) as unknown as Clutter.Effect;
   }
 
   /**
@@ -1209,18 +1284,55 @@ export class UILayerSampler {
       const blurWidget: Clutter.Actor = replica.blurWidget;
       if (isActorValid(blurWidget) && panelRect) {
         replica.panelRect = panelRect;
-        blurWidget.set_position(panelRect[0], panelRect[1]);
+
+        // [FIX] Compensate for the offscreen's capture padding.
+        //
+        // A background-mode blur asks for its source by STAGE coordinates and
+        // then blits that rectangle out of whatever framebuffer is current.
+        // On the real panel those two spaces are the same. Inside our
+        // offscreen they are not: ClutterOffscreenEffect enlarges the paint
+        // box by 3px, so actor-local (0, 0) sits at texel (2, 2) and a blit
+        // asking for stage (0, 0) reads two rows and columns of cleared
+        // padding instead.
+        //
+        // That is what "the blur peels away from the top, by more the larger
+        // the sigma" is: the gaussian smears those transparent rows down over
+        // its whole radius, and where the blurred result is transparent the
+        // sharp clone behind it shows through. At sigma 100 the smear is wider
+        // than the 46px panel, which is why the blur looked like it had
+        // vanished entirely. The real panel never shows it because it is not
+        // being drawn into an offscreen at all.
+        //
+        // Shifting the widget by the padding makes the blit land on the actor's
+        // own pixels. The visible backdrop moves by those same 2px, which on a
+        // blurred image is not detectable.
+        const [offX, offY] = this._captureOffset();
+        blurWidget.set_position(panelRect[0] + offX, panelRect[1] + offY);
         blurWidget.set_size(panelRect[2], panelRect[3]);
         setActorVisible(blurWidget, true);
 
         // Track BMS's live values rather than re-reading its settings: the
         // effect already holds them scaled by the theme's scale factor.
         const src = replica.bmsTarget as Clutter.Actor;
-        const ours = blurWidget.get_effects()[0] as any;
+        let ours = blurWidget.get_effects()[0] as any;
         if (ours && isActorValid(src)) {
           const theirs = (src.get_effects() ?? []).find(
             (e: any) => typeof e?.radius === 'number') as any;
           if (theirs) {
+            // [FIX] Self-heal a class mismatch. The replica is built once, and
+            // if BMS's effect was not on its actor yet — or constructing its
+            // class failed — the fallback would otherwise stay for the life of
+            // the clone, silently blurring by a different implementation than
+            // the real panel. Rebuilding it here costs one comparison a frame.
+            if (Object.getPrototypeOf(ours)?.constructor !==
+              Object.getPrototypeOf(theirs)?.constructor) {
+              try {
+                blurWidget.remove_effect(ours);
+                blurWidget.add_effect(this._buildReplicaBlurEffect(src));
+                ours = blurWidget.get_effects()[0] as any;
+              } catch (_) { /* keep the one we have */ }
+            }
+
             if (ours.radius !== theirs.radius) ours.radius = theirs.radius;
             if (ours.brightness !== theirs.brightness) ours.brightness = theirs.brightness;
           }
@@ -1261,7 +1373,10 @@ export class UILayerSampler {
         `parts=[${parts}] ` +
         `blur=(${blurWidget.x},${blurWidget.y}) ${bwW}x${bwH} ` +
         `blurAbs=(${Math.round(bwAbsX)},${Math.round(bwAbsY)}) ` +
-        `r=${ours?.radius}/${theirs?.radius} b=${ours?.brightness}/${theirs?.brightness}`;
+        `r=${ours?.radius}/${theirs?.radius} b=${ours?.brightness}/${theirs?.brightness} ` +
+        `capOff=(${this._captureOffset()[0]},${this._captureOffset()[1]}) ` +
+        `cls=${Object.getPrototypeOf(ours ?? {})?.constructor?.name ?? '?'}/` +
+        `${Object.getPrototypeOf(theirs ?? {})?.constructor?.name ?? '?'}`;
 
       if (line === replica.lastGeomLine) return;
       replica.lastGeomLine = line;

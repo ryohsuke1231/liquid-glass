@@ -1035,6 +1035,24 @@ export const LiquidEffect = GObject.registerClass({
         const effectiveH = allocH;
         const layout = computeCaptureLayout(actor, srcW, srcH, effectiveW, effectiveH);
         const srcUV = layout.uv;
+        // [FIX] Publish where the actor's own pixels start inside the capture.
+        //
+        // ClutterOffscreenEffect sizes its offscreen to the actor's PAINT BOX,
+        // which mutter enlarges by a fixed 3px (2 on the left/top, 1 on the
+        // right/bottom — see computeCaptureLayout and memo.md's first addendum).
+        // So actor-local (0, 0) is NOT texel (0, 0) of the framebuffer everything
+        // inside this effect draws into; it is texel (dest[0], dest[1]).
+        //
+        // That matters to anything inside our subtree that samples the
+        // FRAMEBUFFER by stage coordinates rather than by its own — which is
+        // exactly what a background-mode blur does. Without this correction such
+        // an effect reads a region shifted up and to the left, whose first rows
+        // are the cleared padding, and a blur then smears that transparency down
+        // over its whole radius. See UILayerSampler._syncBmsReplica().
+        try {
+            actor._lgCaptureOffset = [layout.dest[0], layout.dest[1]];
+        }
+        catch (e) { /* diagnostic only */ }
         // [PERF] A repeat paint can reuse the blur only if the pool it was written
         // into is still the right one — a resize between paints destroys it.
         const reuseBlur = !firstPaintThisFrame &&
