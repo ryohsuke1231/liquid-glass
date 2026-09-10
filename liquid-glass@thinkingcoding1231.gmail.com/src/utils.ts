@@ -10,6 +10,7 @@ import Clutter from 'gi://Clutter';
 import Cogl from 'gi://Cogl';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import St from 'gi://St';
+import Shell from 'gi://Shell';
 import Mtk from 'gi://Mtk';
 
 /**
@@ -894,7 +895,7 @@ export type TextureBlitActor = InstanceType<typeof TextureBlitActor>;
  * Switchable at runtime (global._lgGlass.bmsMode(n)) so the attribution can be
  * settled inside one session instead of by rebuilding between orders.
  */
-export const BMS_MODE = { SNAPSHOT: 0, CLONE: 1, SKIP: 2 };
+export const BMS_MODE = { SNAPSHOT: 0, CLONE: 1, SKIP: 2, REPLICATE: 3 };
 
 // [FIX] SKIP is the default, confirmed by switching all three modes in one
 // native session with BMS's dynamic panel blur on:
@@ -909,13 +910,30 @@ export const BMS_MODE = { SNAPSHOT: 0, CLONE: 1, SKIP: 2 };
 //                 wherever the dock overlaps it
 //   2 SKIP     -> all three gone; the panel simply is not in the glass
 //
-// SKIP is the only one that breaks nothing, and what it gives up is small in
-// this exact configuration: BMS's dynamic panel blur means the panel already
-// LOOKS like a blurred wallpaper, and the wallpaper is in the glass anyway.
-// What is actually lost is the panel's CONTENTS — which memo.md's addendum 3
-// argues do not belong behind glass in the first place ("what should be seen
-// through the glass is the panel's material, not its contents").
-let _bmsMode: number = BMS_MODE.SKIP;
+// SKIP breaks nothing, but it gives up the panel: with the dock at the top
+// edge the dock's glass is drawn ABOVE panelBox, so a panel that is not in the
+// glass is a panel that is not on screen there at all.
+//
+//   3 REPLICATE -> the default. None of the three costs above.
+//
+// REPLICATE works because of one structural detail of BMS: it inserts its
+// blur widget into panel_box as a SIBLING of the panel
+// (components/panel.js — `panel_box.insert_child_at_index(background_group, 0)`),
+// not as a child of it. So "the panel without BMS's blur widget" is not
+// something that has to be filtered out of a clone — it is simply a different
+// actor to clone. BMS is then never painted a second time, which is the whole
+// of the CLONE problem, and nothing is snapshotted, which is the whole of the
+// SNAPSHOT problem.
+//
+// What that leaves missing is the blurred backdrop BMS draws behind the panel,
+// so we draw our own in its place: the same effect class BMS uses
+// (Shell.BlurEffect in BACKGROUND mode — see BMS's
+// effects/native_dynamic_gaussian_blur.js) with the same live radius and
+// brightness, sitting under the panel clone inside our own offscreen, where
+// what is "behind" it is our own cloned wallpaper and windows. Same effect,
+// same parameters, same input relationship — so it reproduces what BMS draws
+// rather than approximating it.
+let _bmsMode: number = BMS_MODE.REPLICATE;
 
 // Every live sampler, so a mode change can rebuild the affected clones.
 const _liveSamplers: Set<UILayerSampler> = new Set();
@@ -928,7 +946,8 @@ export function setBmsMode(mode: number): string {
   }
   const name = mode === BMS_MODE.SNAPSHOT ? 'SNAPSHOT'
     : mode === BMS_MODE.CLONE ? 'CLONE'
-      : mode === BMS_MODE.SKIP ? 'SKIP' : `? (${mode})`;
+      : mode === BMS_MODE.SKIP ? 'SKIP'
+        : mode === BMS_MODE.REPLICATE ? 'REPLICATE' : `? (${mode})`;
   const msg = `[Liquid Glass] BMS mode = ${name} on ${n} sampler(s)`;
   console.log(msg);
   return msg;
@@ -1084,6 +1103,171 @@ export class UILayerSampler {
   setDebugDisableBmsClone(_disabled: boolean): void { /* no-op */ }
   /** @deprecated no-op, see setDebugDisableBmsClone. */
   setDebugBmsProbeEnabled(_enabled: boolean): void { /* no-op */ }
+
+  /**
+   * Builds the stand-in for a uiGroup child that holds a Blur My Shell target
+   * (in practice: panelBox).
+   *
+   * Two actors, in this order:
+   *
+   *   1. an St.Widget carrying our own Shell.BlurEffect in BACKGROUND mode,
+   *      standing exactly where BMS puts its own blurred widget, with BMS's
+   *      current radius and brightness copied off its live effect;
+   *   2. a clone of every OTHER child of panel_box — the panel itself.
+   *
+   * BMS's blur widget is deliberately not among them. It is a sibling of the
+   * panel rather than a child (components/panel.js inserts background_group
+   * into panel_box), so leaving it out costs nothing but choosing a different
+   * actor to clone — and it is what keeps BMS's own effect from being painted
+   * a second time, from a second framebuffer, which is what made the real
+   * panel drift.
+   *
+   * Our blur samples what is behind it in OUR offscreen, which is the cloned
+   * wallpaper and windows — the same relationship BMS's has to the real
+   * framebuffer. So the panel appears inside the glass blurred the way BMS
+   * blurs it, and our own glass blur then applies on top as it does to
+   * everything else.
+   */
+  private _createBmsReplicaActor(child: Clutter.Actor): Clutter.Actor | null {
+    try {
+      const target = this._findBmsDescendant(child);
+      if (!target) return null;
+
+      // BMS's blur widget lives inside its own background group; that group is
+      // the child of panel_box we must not clone.
+      let bmsGroup: Clutter.Actor | null = target;
+      while (bmsGroup && bmsGroup.get_parent() !== child) {
+        bmsGroup = bmsGroup.get_parent();
+      }
+      if (!bmsGroup) return null;
+
+      const container = new UnpickableActor();
+      container.set_name(`${(child as any).name ?? 'bms'}-replica`);
+
+      const blurWidget = new St.Widget({ name: 'lg-bms-replica-blur' });
+      try {
+        const effect = new Shell.BlurEffect({
+          mode: Shell.BlurMode.BACKGROUND,
+          radius: 0,
+          brightness: 1.0,
+        });
+        blurWidget.add_effect(effect);
+      } catch (e) {
+        utilsLog(`[Liquid Glass][ui-sampler:${this._label}] could not build the ` +
+          `replica blur effect (${e}); the panel will show unblurred in the glass`);
+      }
+      container.add_child(blurWidget);
+
+      const parts: { src: Clutter.Actor, clone: Clutter.Actor }[] = [];
+      for (const c of child.get_children()) {
+        if (c === bmsGroup) continue;
+        const clone = new UnpickableClone({ source: c });
+        clone.set_name(`${(c as any).name ?? 'part'}-replicaClone`);
+        container.add_child(clone);
+        parts.push({ src: c, clone });
+      }
+      if (parts.length === 0) {
+        container.destroy();
+        return null;
+      }
+
+      (container as any)._lgBmsReplica = { blurWidget, parts, bmsTarget: target };
+      utilsLog(`[Liquid Glass][ui-sampler:${this._label}] BMS replica built for ` +
+        `name="${(child as any).name ?? '(unnamed)'}" with ${parts.length} part(s)`);
+      return container;
+    } catch (e) {
+      reportFrameLoopError('UILayerSampler._createBmsReplicaActor', e);
+      return null;
+    }
+  }
+
+  /**
+   * Per-frame geometry for a replica built above. `source` is panel_box, so
+   * every part is placed at its own position inside it, and the blur widget
+   * takes the panel's rect — the same rect BMS gives its own widget in
+   * update_size()'s dynamic branch (`background.x = panel.x`, etc).
+   */
+  private _syncBmsReplica(source: Clutter.Actor, replica: any): void {
+    try {
+      const parts: { src: Clutter.Actor, clone: Clutter.Actor }[] = replica.parts;
+      let panelRect: [number, number, number, number] | null = null;
+
+      for (const { src, clone } of parts) {
+        if (!isActorValid(src) || !isActorValid(clone)) continue;
+        const [w, h] = getAllocatedSize(src);
+        if (!(w > 0) || !(h > 0)) {
+          setActorVisible(clone, false);
+          continue;
+        }
+        clone.set_position(src.x, src.y);
+        clone.set_size(w, h);
+        clone.opacity = src.opacity;
+        setActorVisible(clone, src.visible && src.mapped);
+        if (!panelRect) panelRect = [src.x, src.y, w, h];
+      }
+
+      const blurWidget: Clutter.Actor = replica.blurWidget;
+      if (isActorValid(blurWidget) && panelRect) {
+        replica.panelRect = panelRect;
+        blurWidget.set_position(panelRect[0], panelRect[1]);
+        blurWidget.set_size(panelRect[2], panelRect[3]);
+        setActorVisible(blurWidget, true);
+
+        // Track BMS's live values rather than re-reading its settings: the
+        // effect already holds them scaled by the theme's scale factor.
+        const src = replica.bmsTarget as Clutter.Actor;
+        const ours = blurWidget.get_effects()[0] as any;
+        if (ours && isActorValid(src)) {
+          const theirs = (src.get_effects() ?? []).find(
+            (e: any) => typeof e?.radius === 'number') as any;
+          if (theirs) {
+            if (ours.radius !== theirs.radius) ours.radius = theirs.radius;
+            if (ours.brightness !== theirs.brightness) ours.brightness = theirs.brightness;
+          }
+        }
+      }
+      this._reportReplicaGeometry(source, replica);
+    } catch (e) {
+      reportFrameLoopError('UILayerSampler._syncBmsReplica', e);
+    }
+  }
+
+  /**
+   * [DIAG] Logs the replica's real geometry whenever it changes.
+   *
+   * The blurred band inside the glass not lining up with the panel is a
+   * question about coordinates — where the blur widget ended up, and which
+   * space Shell.BlurEffect resolved it in — and none of that is visible from
+   * the outside. Reported on change only, so a stable panel costs one line.
+   */
+  private _reportReplicaGeometry(source: Clutter.Actor, replica: any): void {
+    if (!_utilsLogger) return;
+    try {
+      const blurWidget: Clutter.Actor = replica.blurWidget;
+      const [srcAbsX, srcAbsY] = source.get_transformed_position();
+      const [bwAbsX, bwAbsY] = blurWidget.get_transformed_position();
+      const [bwW, bwH] = blurWidget.get_size();
+      const ours: any = blurWidget.get_effects()[0];
+      const theirs: any = (replica.bmsTarget?.get_effects?.() ?? [])
+        .find((e: any) => typeof e?.radius === 'number');
+
+      const parts = replica.parts
+        .map((p: any) => `${(p.src as any).name ?? '?'}@(${p.src.x},${p.src.y})` +
+          `${getAllocatedSize(p.src)[0]}x${getAllocatedSize(p.src)[1]}`)
+        .join(' ');
+
+      const line =
+        `src=${(source as any).name ?? '?'}@(${Math.round(srcAbsX)},${Math.round(srcAbsY)}) ` +
+        `parts=[${parts}] ` +
+        `blur=(${blurWidget.x},${blurWidget.y}) ${bwW}x${bwH} ` +
+        `blurAbs=(${Math.round(bwAbsX)},${Math.round(bwAbsY)}) ` +
+        `r=${ours?.radius}/${theirs?.radius} b=${ours?.brightness}/${theirs?.brightness}`;
+
+      if (line === replica.lastGeomLine) return;
+      replica.lastGeomLine = line;
+      utilsLog(`[Liquid Glass][ui-sampler:${this._label}] replica geom ${line}`);
+    } catch (_) { /* noop */ }
+  }
 
   /**
    * Primary path for rendering the BMS-blurred panel inside the glass. See
@@ -1369,7 +1553,20 @@ export class UILayerSampler {
           }
 
           let sourceClone: Clutter.Actor | null = null;
-          if (bmsTarget && _bmsMode === BMS_MODE.SNAPSHOT) {
+          if (bmsTarget && _bmsMode === BMS_MODE.REPLICATE) {
+            sourceClone = this._createBmsReplicaActor(child);
+            if (!sourceClone) {
+              // Do NOT quietly fall through to the ordinary clone here: that
+              // is the path that makes BMS's own panel drift. Leaving the
+              // child out is the lesser failure, and it is logged.
+              utilsLog(`[Liquid Glass][ui-sampler:${this._label}] BMS replica ` +
+                `could not be built for name="${(child as any).name ?? '(unnamed)'}"; ` +
+                `leaving it out of the glass rather than cloning BMS's target`);
+              seen.delete(child);
+              continue;
+            }
+          }
+          if (!sourceClone && bmsTarget && _bmsMode === BMS_MODE.SNAPSHOT) {
             // 1st: the real fix — a snapshot that structurally cannot
             // include ourselves (see SelfExcludingSnapshotCapture).
             sourceClone = this._createSelfExcludingSnapshotActor(child);
@@ -1486,6 +1683,9 @@ export class UILayerSampler {
       sourceClone.set_pivot_point(0, 0);
 
       sourceClone.opacity = source.opacity;
+
+      const replica = (sourceClone as any)._lgBmsReplica;
+      if (replica) this._syncBmsReplica(source, replica);
 
       this._checkCloneDrift(source, sourceClone, absX, absY);
 
