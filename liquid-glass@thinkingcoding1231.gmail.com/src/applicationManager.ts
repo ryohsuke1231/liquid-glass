@@ -7,7 +7,9 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { LiquidEffect } from './liquidEffect.js';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
-import { UnpickableClone, UnpickableActor, InverseCornerEffect, getWindowActors, isActorValid, InvertedPositionConstraint, getAllocatedSize, setActorVisible, ensureGlassAllocated } from './utils.js';
+import { UnpickableClone, UnpickableActor, InverseCornerEffect, getWindowActors, isActorValid, InvertedPositionConstraint, getAllocatedSize, setActorVisible, ensureGlassAllocated, isFrameSyncFrozen,
+  setTranslationIfChanged, setSizeIfChanged, setScaleIfChanged, setOpacityIfChanged,
+  isCullSiteEnabled, rectsIntersect, setCloneCulled } from './utils.js';
 
 import { Logger } from './logger.js';
 
@@ -144,6 +146,12 @@ const WINDOW_ACTOR_STRANDED_FRAMES = 10;
 const MAX_ANCHOR_DISPLACEMENT = 256;
 
 interface WindowState {
+  // [PERF ①b] Screen rect of this window's glass box, recorded by
+  // _syncStateInner() so _syncClones() can cull behind-window clones that
+  // cannot contribute a single pixel to the capture. undefined until the
+  // first full geometry sync, which means "do not cull yet".
+  glassScreenRect?: [number, number, number, number];
+
   windowActor: Meta.WindowActor;
   // The window's own content/surface actor (the actual client texture). Cached here
   // because windowActor.get_first_child() stops pointing at it once baseActor is
@@ -201,6 +209,10 @@ export class ApplicationManager {
   private _logger: Logger;
   private _settingsSignals: number[];
   private _frameSyncId: number;
+  // [FIX] Set by cleanup() before anything that can throw. Read by the
+  // per-frame BEFORE_REDRAW tick so an orphaned chain stops itself even if
+  // cleanup() never reached its laterRemove(). See the note in frameTick().
+  private _torndown: boolean = false;
   private _windowCreatedId: number;
   private _restackedId: number = 0;
   private _rebuildQueued: boolean = false;
@@ -215,6 +227,13 @@ export class ApplicationManager {
   // see exactly which value diverges at the moment a focus-driven restack
   // happens, without spamming the log every frame during normal operation.
   private _debugFocusLogFrames: number = 0;
+  // [PERF ①b] Slack around the glass box when deciding whether a
+  // behind-window clone is worth painting. Generous on purpose: the thing
+  // being skipped is an entire window (and, when it has glass, that glass's
+  // whole render), so a few dozen pixels of over-inclusion cost nothing,
+  // while being a pixel too tight would pop a window in and out at the edge.
+  static readonly CLONE_CULL_MARGIN = 48;
+
   private static readonly DEBUG_FOCUS_LOG_FRAME_COUNT = 8;
   private _debugArmSignals: { obj: any, id: number }[] = [];
   // Windows whose clone container is currently NOT anchored at screen (0,0).
@@ -308,27 +327,56 @@ export class ApplicationManager {
       this._applyEffects();
   }
 
+  // [FIX] Teardown must not be all-or-nothing.
+  //
+  // These steps used to run bare, one after another, so the first one that
+  // threw skipped every step after it — signal handlers, actors, effects and
+  // (worst of all) the per-frame later chain stayed alive, and the next
+  // enable() built a second set on top. Disabling is exactly when a throw is
+  // most likely: the shell is destroying the same actors we are.
+  private _teardownStep(name: string, fn: () => void): void {
+    try {
+      fn();
+    } catch (e) {
+      try {
+        this._logger?.error(`[Liquid Glass] ${this.constructor.name}.${name} failed during cleanup: ${e}`);
+      } catch (_) {
+        console.error(`[Liquid Glass] ${name} failed during cleanup: ${e}`);
+      }
+    }
+  }
+
   cleanup() {
-    if (this._windowCreatedId) {
-      global.display.disconnect(this._windowCreatedId);
-      this._windowCreatedId = 0;
-    }
+    this._torndown = true;
 
-    if (this._restackedId) {
-      global.display.disconnect(this._restackedId);
-      this._restackedId = 0;
-    }
+    this._teardownStep('displaySignals', () => {
+      if (this._windowCreatedId) {
+        global.display.disconnect(this._windowCreatedId);
+        this._windowCreatedId = 0;
+      }
 
-    for (const sig of this._debugArmSignals) {
-      try { sig.obj.disconnect(sig.id); } catch (e) { }
-    }
-    this._debugArmSignals = [];
-    this._displacedContainers.clear();
+      if (this._restackedId) {
+        global.display.disconnect(this._restackedId);
+        this._restackedId = 0;
+      }
+    });
 
-    this._settingsSignals.forEach(id => this._settings.disconnect(id));
-    this._settingsSignals = [];
+    this._teardownStep('debugArmSignals', () => {
+      for (const sig of this._debugArmSignals) {
+        try { sig.obj.disconnect(sig.id); } catch (e) { }
+      }
+      this._debugArmSignals = [];
+      this._displacedContainers.clear();
+    });
 
-    this._removeAllEffects();
+    this._teardownStep('settingsSignals', () => {
+      this._settingsSignals.forEach(id => {
+        try { this._settings.disconnect(id); } catch (e) { }
+      });
+      this._settingsSignals = [];
+    });
+
+    this._teardownStep('removeAllEffects', () => this._removeAllEffects());
   }
 
   _bindSettings() {
@@ -492,8 +540,18 @@ export class ApplicationManager {
       this._rebuildFollowupLaterId = 0;
     }
 
-    for (let state of this._states.values())
-      this._cleanupState(state);
+    // [FIX] One window's teardown must not abort the others'. During
+    // disable() the shell is destroying the same actors we are, so a state
+    // whose subtree is already gone is normal — and it used to take every
+    // state after it in the iteration order down with it, leaving glass
+    // behind on the remaining windows.
+    for (let state of this._states.values()) {
+      try {
+        this._cleanupState(state);
+      } catch (e) {
+        this._logger?.error(`[Liquid Glass] per-window cleanup failed: ${e}`);
+      }
+    }
 
     this._states.clear();
     this._rebuildQueued = false;
@@ -988,10 +1046,27 @@ export class ApplicationManager {
       return false;
     });
 
-    windowActor.connect('destroy', () => {
-      this._cleanupState(state);
-      this._states.delete(windowActor);
-      this._rebuildAllClones();
+    // [FIX] Recorded in state.signals so cleanup() disconnects it. Left
+    // connected, this handler outlives disable(): it keeps a reference to
+    // this manager (and through it the settings object and the logger), and
+    // when the window is eventually closed it runs _rebuildAllClones() on a
+    // torn-down manager — while a freshly enabled one is managing the same
+    // window.
+    //
+    // NOTE on the disposed-actor criticals this used to produce: by the time
+    // this fires, Clutter has already run clutter_actor_remove_all_children()
+    // on the window actor (that happens inside clutter_actor_dispose, BEFORE
+    // ::destroy is emitted), so bgActor/baseActor/cornerOverlay and every
+    // clone under them are already disposed. _cleanupState() handles that —
+    // but only now that isActorValid() actually detects it.
+    state.signals.push({
+      obj: windowActor,
+      id: windowActor.connect('destroy', () => {
+        if (this._torndown) return;
+        this._cleanupState(state);
+        this._states.delete(windowActor);
+        this._rebuildAllClones();
+      })
     });
   }
 
@@ -1449,6 +1524,25 @@ export class ApplicationManager {
 
     this._applyCounterScale(state.bgActor, actor, localX, localY, bgW, bgH);
 
+    // [PERF ①b] The rect this window's glass can actually show, in the SAME
+    // space the behind-window clones are positioned in (screen coordinates —
+    // windowsContainer's InvertedPositionConstraint puts its origin on screen
+    // (0,0), which is the load-bearing invariant of this file).
+    //
+    // clipBox below has clip_to_allocation and is exactly this box, so a
+    // behind-window that does not intersect it already contributes zero
+    // pixels to the capture. Recording it here rather than reading it back
+    // off the actor keeps it exact and free: _applyCounterScale() places the
+    // glass at windowActor-screen + (localX, localY) at an unscaled
+    // (bgW, bgH) by construction, whatever the window actor's own animation
+    // scale is doing.
+    state.glassScreenRect = [
+      actor.x + (actor.translation_x || 0) + localX,
+      actor.y + (actor.translation_y || 0) + localY,
+      bgW,
+      bgH,
+    ];
+
     state.clipBox.set_position(0, 0);
     state.clipBox.set_size(bgW, bgH);
 
@@ -1580,6 +1674,27 @@ export class ApplicationManager {
    * regressed into most often. Body is unchanged from when it was inline.
    */
   _syncClones(state: WindowState): void {
+    // [PERF ①b] Cull behind-window clones that fall outside this glass's own
+    // box. See state.glassScreenRect.
+    //
+    // Why this is the interesting half of ①: clipBox already SCISSORS those
+    // clones away, but a scissored clone still paints — and painting a clone
+    // paints its source, which for a window that has glass of its own means
+    // that window's capture/blur/composite runs again, into its own FBO,
+    // where our scissor cannot reach. That is the 2^N-1 nesting of memo.md ⑤.
+    // An invisible clone is skipped by clutter_actor_paint() outright, so the
+    // nested glass never runs. Nothing changes on screen: those pixels were
+    // being thrown away by clipBox anyway.
+    //
+    // Skipped while the window actor is mid animation-scale: the glass is
+    // counter-scaled to stay unscaled on screen, but the window actor's own
+    // pivot-based transform makes the screen rect above approximate for those
+    // few frames, and a clone flickering during a close animation would be
+    // far more visible than the frames are worth.
+    const [animSx, animSy] = this._animationScale(state.windowActor);
+    const cullRect = (isCullSiteEnabled('app') && animSx === 1 && animSy === 1)
+      ? state.glassScreenRect
+      : undefined;
     // ▼ 個別ウィンドウのクローン同期 (translation_x/yを使用) ▼
     // Sync blurred clones
     for (let [src, clone] of state.clones.entries()) {
@@ -1589,16 +1704,25 @@ export class ApplicationManager {
         continue;
       }
       if (isActorValid(clone)) {
+        if (this._shouldCullClone(src, cullRect)) {
+          setCloneCulled(clone, true, this._cullWhy(src, cullRect!, 'blurred'));
+          this._clearCloneAnomaly(clone);
+          continue;
+        }
+        setCloneCulled(clone, false, 'app/blurred');
         setActorVisible(clone, true);
 
         // 実際のプロパティ(x,y)は0,0に固定し、描画オフセットのみで配置する
+        // [PERF] 値が変わったときだけ書く。Clutter の translation/scale の
+        // setter は比較せずに queue_redraw() まで走るので、静止中でも毎フレーム
+        // クローンを damage し、それを含むガラス全段を再描画させていた。
+        // 詳細は utils.ts の setTranslationIfChanged()。
         if (clone.x !== 0 || clone.y !== 0) clone.set_position(0, 0);
-        clone.translation_x = src.x;
-        clone.translation_y = src.y;
+        setTranslationIfChanged(clone, src.x, src.y);
 
-        clone.set_size(src.width, src.height);
-        clone.set_scale(src.scale_x, src.scale_y);
-        clone.opacity = src.opacity;
+        setSizeIfChanged(clone, src.width, src.height);
+        setScaleIfChanged(clone, src.scale_x, src.scale_y);
+        setOpacityIfChanged(clone, src.opacity);
 
         this._checkCloneAnomaly(clone, src, 'blurred');
       }
@@ -1615,15 +1739,20 @@ export class ApplicationManager {
         continue;
       }
       if (isActorValid(clone)) {
+        if (this._shouldCullClone(src, cullRect)) {
+          setCloneCulled(clone, true, this._cullWhy(src, cullRect!, 'base'));
+          this._clearCloneAnomaly(clone);
+          continue;
+        }
+        setCloneCulled(clone, false, 'app/base');
         setActorVisible(clone, true);
 
         if (clone.x !== 0 || clone.y !== 0) clone.set_position(0, 0);
-        clone.translation_x = src.x;
-        clone.translation_y = src.y;
+        setTranslationIfChanged(clone, src.x, src.y);
 
-        clone.set_size(src.width, src.height);
-        clone.set_scale(src.scale_x, src.scale_y);
-        clone.opacity = src.opacity;
+        setSizeIfChanged(clone, src.width, src.height);
+        setScaleIfChanged(clone, src.scale_x, src.scale_y);
+        setOpacityIfChanged(clone, src.opacity);
 
         this._checkCloneAnomaly(clone, src, 'base');
       }
@@ -1668,7 +1797,64 @@ export class ApplicationManager {
     this._anomalousClones.delete(clone);
   }
 
+  /**
+   * [PERF ①b] True when `src` cannot contribute a pixel to a glass whose box
+   * is `cullRect` (screen coordinates), so its clone need not be painted.
+   *
+   * **Fails open.** The size comes from the allocation rather than from
+   * src.width/src.height: those fall back to the PREFERRED size whenever a
+   * relayout is pending, and this runs from a BEFORE_REDRAW later, i.e.
+   * before clutter_stage_maybe_relayout() — the exact situation
+   * getAllocatedSize() exists for (see its comment, and the same trap in
+   * _rebuildWindowClones()). A source that reports a degenerate rect there
+   * would intersect nothing and be culled from every glass that is not at
+   * the top-left of the screen, which on screen reads as the glass losing
+   * its background. So anything not clearly outside is kept.
+   */
+  /** [DIAG] The one-line "why" handed to setCloneCulled() on a transition. */
+  _cullWhy(
+    src: Meta.WindowActor,
+    cullRect: [number, number, number, number],
+    kind: string
+  ): string {
+    const [w, h] = getAllocatedSize(src);
+    return `src=(${Math.round(src.x)},${Math.round(src.y)},${Math.round(w)}x${Math.round(h)}) ` +
+      `glassRect=[${cullRect.map(Math.round)}] app/${kind}`;
+  }
+
+  _shouldCullClone(
+    src: Meta.WindowActor,
+    cullRect: [number, number, number, number] | undefined
+  ): boolean {
+    if (!cullRect) return false;
+
+    const [w, h] = getAllocatedSize(src);
+    if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return false;
+
+    const x = src.x, y = src.y;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
+
+    const m = ApplicationManager.CLONE_CULL_MARGIN;
+    return !rectsIntersect(x - m, y - m, w + m * 2, h + m * 2, cullRect);
+  }
+
   _frameTick() {
+    // [FIX] Hard stop after teardown — see the note on _torndown. This tick
+    // re-adds itself as a BEFORE_REDRAW later at the end, so without this a
+    // cleanup() that threw before its laters().remove() would leave the
+    // chain running forever against destroyed window actors.
+    if (this._torndown) return;
+
+    // [DIAG] See setFrameSyncFrozen() in utils.ts. Reschedules but does
+    // nothing, so the cost of this poll can be measured directly.
+    if (isFrameSyncFrozen()) {
+      this._frameSyncId = global.compositor.get_laters().add(
+        Meta.LaterType.BEFORE_REDRAW,
+        () => { this._frameTick(); return false; }
+      );
+      return;
+    }
+
     for (let state of this._states.values()) {
       try {
         const metaWin = state.windowActor?.get_meta_window?.();

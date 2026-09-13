@@ -7,7 +7,8 @@ import Meta from 'gi://Meta';
 import Gio from 'gi://Gio';
 import { LiquidEffect } from './liquidEffect.js';
 import { StageContrastSampler, AdaptiveContrastConfig } from './contrastSampler.js';
-import { UnpickableActor, UILayerSampler, UnpickableWidget, WindowCloneManager, reportFrameLoopError, ensureGlassAllocated } from './utils.js';
+import { UnpickableActor, UILayerSampler, UnpickableWidget, WindowCloneManager, reportFrameLoopError, ensureGlassAllocated, isFrameSyncFrozen,
+  setClipIfChanged, syncGlassCaptureClip } from './utils.js';
 
 import { Logger } from './logger.js';
 
@@ -44,6 +45,10 @@ export class UIManager {
   private _signals: { target: any, id: number }[];
   private _animSignalId: number = 0;
   private _frameSyncId: number;
+  // [FIX] Set by cleanup() before anything that can throw. Read by the
+  // per-frame BEFORE_REDRAW tick so an orphaned chain stops itself even if
+  // cleanup() never reached its laterRemove(). See the note in frameTick().
+  private _torndown: boolean = false;
   private _glassExpand: number;
   private _menuXoffset: number;
   private _menuYoffset: number;
@@ -516,8 +521,25 @@ export class UIManager {
     // instance's clones until the menu is closed and reopened.
     let frameTick = () => {
       this._frameSyncId = 0;
+      // [FIX] Hard stop after teardown. Every one of these ticks ends by
+      // re-adding itself as a BEFORE_REDRAW later, so a cleanup() that does
+      // not reach its laterRemove() — because an earlier step threw — leaves
+      // a self-rescheduling chain running forever against destroyed actors,
+      // holding this whole manager (and its settings and logger) alive. The
+      // next enable() then builds a second set on top of a live first set,
+      // which is the "the extension can no longer be enabled" symptom.
+      // Removing the later is still done in cleanup(); this is the backstop
+      // that does not depend on cleanup() getting that far.
+      if (this._torndown) return GLib.SOURCE_REMOVE;
       if (!this.bgActor || !this.targetActor.mapped)
         return GLib.SOURCE_REMOVE;
+
+      // [DIAG] See setFrameSyncFrozen() in utils.ts. Reschedules but does
+      // nothing, so the cost of this poll can be measured directly.
+      if (isFrameSyncFrozen()) {
+        this._frameSyncId = laterAdd(frameLaterType, frameTick);
+        return GLib.SOURCE_REMOVE;
+      }
 
       // Repair the subtree if Clutter has stopped allocating it. Sampled
       // here, at the top of the tick, because the previous frame's relayout
@@ -704,7 +726,9 @@ export class UIManager {
         const CLIP_PADDING = 200;
         // this.liquidBox?.remove_clip();
 
-        this.bgActor.set_clip(
+        // [PERF] set_clip() queues a redraw unconditionally — see setClipIfChanged().
+        setClipIfChanged(
+          this.bgActor,
           localBgX - CLIP_PADDING, localBgY - CLIP_PADDING,
           bgW + CLIP_PADDING * 2, bgH + CLIP_PADDING * 2
         );
@@ -740,6 +764,21 @@ export class UIManager {
     // automatically, so no separate overview/isOverview branch is needed.
     this._windowCloneManager?.setOffset(-monitorX, -monitorY);
     this._uiSampler?.refresh();
+
+    // [PERF ①/①b] Clip the offscreen CAPTURE to the region this glass can
+    // actually show, and hide the clones that fall outside it. Must sit
+    // between setGlassGeometry() (which makes the effect's uniforms describe
+    // this frame) and the two sync() calls below (which consume the cull
+    // rect this sets). See syncGlassCaptureClip() in utils.ts.
+    syncGlassCaptureClip({
+      cloneContainer: this._cloneContainer,
+      effect: this.effect,
+      originX: monitorX,
+      originY: monitorY,
+      uiSampler: this._uiSampler,
+      windowCloneManager: this._windowCloneManager,
+    });
+
     this._uiSampler?.sync(monitorX, monitorY, screenW, screenH);
     this._windowCloneManager?.sync();
   }
@@ -1206,14 +1245,49 @@ export class UIManager {
     this._stableBaseH = undefined;
   }
 
-  cleanup() {
-    for (let sigId of this._settingsSignals) {
-      try { this._settings.disconnect(sigId); } catch (e) { }
+  // [FIX] Teardown must not be all-or-nothing.
+  //
+  // These steps used to run bare, one after another, so the first one that
+  // threw skipped every step after it — signal handlers, actors, effects and
+  // (worst of all) the per-frame later chain stayed alive, and the next
+  // enable() built a second set on top. Disabling is exactly when a throw is
+  // most likely: the shell is destroying the same actors we are.
+  private _teardownStep(name: string, fn: () => void): void {
+    try {
+      fn();
+    } catch (e) {
+      try {
+        this._logger?.error(`[Liquid Glass] ${this.constructor.name}.${name} failed during cleanup: ${e}`);
+      } catch (_) {
+        console.error(`[Liquid Glass] ${name} failed during cleanup: ${e}`);
+      }
     }
-    this._settingsSignals = [];
+  }
 
-    if (!this.targetActor) return;
-    this._removeEffect();
+  cleanup() {
+    this._torndown = true;
+
+    // The later chain goes first and unconditionally — see _teardownStep().
+    this._teardownStep('frameSync', () => {
+      if (this._frameSyncId !== 0) {
+        if (global.compositor?.get_laters)
+          global.compositor.get_laters().remove(this._frameSyncId);
+        this._frameSyncId = 0;
+      }
+    });
+
+    this._teardownStep('settingsSignals', () => {
+      for (let sigId of this._settingsSignals) {
+        try { this._settings.disconnect(sigId); } catch (e) { }
+      }
+      this._settingsSignals = [];
+    });
+
+    // [FIX] This used to be `if (!this.targetActor) return;`, which skipped
+    // _removeEffect() entirely whenever the date menu had gone away —
+    // leaving the signal handlers, the glass actors and the per-frame later
+    // chain in place across disable().
+    this._teardownStep('removeEffect', () => this._removeEffect());
   }
 }
 
