@@ -510,6 +510,53 @@
       <summary>Saturation</summary>
       <description>Adjusts the saturation of the glass effect behind application windows.</description>
     </key>
+    <!-- The menu the desktop itself puts up (right-click on the wallpaper).
+         On Wayland that is a real toplevel, not a shell widget, so it is
+         handled by applicationManager — but with its own namespace, because
+         it is not an application window and should not inherit their look.
+         A smaller corner radius and a less transparent body than an app
+         window, since a menu is small and has to stay readable. -->
+    <key name="enable-desktop-menu-glass" type="b">
+      <default>false</default>
+      <summary>Enable glass effect for the desktop menu</summary>
+      <description>Apply the liquid glass effect to the menu that opens when you right-click the desktop. Independent of the application window glass.</description>
+    </key>
+    <key name="desktop-menu-tint-color" type="s">
+      <default>"#ffffff"</default>
+      <summary>Tint color (Hex)</summary>
+    </key>
+    <key name="desktop-menu-tint-strength" type="d">
+      <default>0.20</default>
+      <summary>Tint strength</summary>
+    </key>
+    <key name="desktop-menu-blur-radius" type="i">
+      <default>8</default>
+      <summary>Blur radius</summary>
+    </key>
+    <key name="desktop-menu-corner-radius" type="d">
+      <default>12.0</default>
+      <summary>Corner radius</summary>
+    </key>
+    <key name="desktop-menu-content-opacity" type="d">
+      <default>0.90</default>
+      <summary>Menu content opacity</summary>
+      <description>Opacity of the menu's own content layer to let the glass effect show through (0.0 to 1.0).</description>
+    </key>
+    <key name="desktop-menu-brightness" type="d">
+      <default>1.0</default>
+      <summary>Brightness</summary>
+      <description>Adjusts the brightness of the glass effect behind the desktop menu.</description>
+    </key>
+    <key name="desktop-menu-contrast" type="d">
+      <default>1.0</default>
+      <summary>Contrast</summary>
+      <description>Adjusts the contrast of the glass effect behind the desktop menu.</description>
+    </key>
+    <key name="desktop-menu-saturation" type="d">
+      <default>1.0</default>
+      <summary>Saturation</summary>
+      <description>Adjusts the saturation of the glass effect behind the desktop menu.</description>
+    </key>
 
     <key name="glass-blur-downscale" type="i">
       <default>2</default>

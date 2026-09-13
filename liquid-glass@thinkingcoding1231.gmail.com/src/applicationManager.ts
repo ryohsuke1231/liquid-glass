@@ -145,12 +145,41 @@ const WINDOW_ACTOR_STRANDED_FRAMES = 10;
 // it; not hiding it costs the session.
 const MAX_ANCHOR_DISPLACEMENT = 256;
 
+/**
+ * Which settings namespace a window's glass reads from.
+ *
+ * `application` is an ordinary app window, selected by the whitelist or by
+ * "apply to all windows". `desktop-menu` is the menu the desktop itself puts
+ * up — on Wayland a real toplevel of its own (see _isDesktopMenuWindow), not
+ * a shell widget, which is why it lands in this manager and not in
+ * panelMenuManager. The two are configured independently.
+ */
+type GlassProfile = 'application' | 'desktop-menu';
+
+// Window types a desktop menu can plausibly use. GTK's Wayland backend maps
+// an xdg_popup with a menu role onto DROPDOWN_MENU; the other two are here
+// for X11 and for toolkits that pick a different hint for the same thing.
+const MENU_WINDOW_TYPES = [
+  Meta.WindowType.DROPDOWN_MENU,
+  Meta.WindowType.POPUP_MENU,
+  Meta.WindowType.MENU,
+];
+
+// Bound on the transient_for walk. A desktop menu is one hop from the desktop
+// window; its submenus are a few more. The bound is what stops a cycle in a
+// malformed chain from hanging the compositor's first-frame handler.
+const MAX_TRANSIENT_DEPTH = 8;
+
 interface WindowState {
   // [PERF ①b] Screen rect of this window's glass box, recorded by
   // _syncStateInner() so _syncClones() can cull behind-window clones that
   // cannot contribute a single pixel to the capture. undefined until the
   // first full geometry sync, which means "do not cull yet".
   glassScreenRect?: [number, number, number, number];
+
+  // Settings namespace this window's glass reads from. Fixed when the state
+  // is built: a window does not change role mid-life.
+  profile: GlassProfile;
 
   windowActor: Meta.WindowActor;
   // The window's own content/surface actor (the actual client texture). Cached here
@@ -385,28 +414,38 @@ export class ApplicationManager {
       this._settingsSignals.push(id);
     };
 
-    connectSetting('enable-application-glass', () => {
-      this._logger.log("[Liquid Glass] enable-application-glass setting changed to: " + this._isEffectEnabled());
-      if (this._isEffectEnabled())
-        this._applyEffects();
-      else
-        this._removeAllEffects();
-    });
+    // Either switch can bring the manager up or take it down, so both run the
+    // same re-scan rather than the old unconditional _removeAllEffects(): with
+    // two profiles, one being turned off is not the same thing as no profile
+    // being on. _syncWhitelist() drops the windows that no longer qualify and
+    // builds the ones that now do; it removes everything only when both
+    // switches are off.
+    for (const profile of ['application', 'desktop-menu'] as const) {
+      connectSetting(this._profileEnableKey(profile), () => {
+        this._logger.log(`[Liquid Glass] ${this._profileEnableKey(profile)} changed to: ` +
+          this._isProfileEnabled(profile));
+        // _syncWhitelist() both drops what no longer qualifies and builds
+        // what now does, and removes everything when both switches are off.
+        this._syncWhitelist();
+        if (this._isEffectEnabled())
+          this._startFrameSync();
+      });
+
+      // Appearance, one set per profile. Both call the same updater, which
+      // re-reads each live window through its own namespace.
+      for (const suffix of ['tint-color', 'tint-strength', 'blur-radius', 'corner-radius',
+        'brightness', 'contrast', 'saturation'])
+        connectSetting(this._profileKey(profile, suffix), () => this._updateEffectParams());
+
+      // Opacity of the window's own content layer, so the glass underneath is visible through it.
+      connectSetting(this._profileKey(profile, 'content-opacity'), () => this._updateWindowOpacities());
+    }
 
     // Apply to every normal/dialog window, bypassing the whitelist entirely.
     connectSetting('application-glass-all-windows', () => this._syncWhitelist());
-    // Opacity of the window's own content layer, so the glass underneath is visible through it.
-    connectSetting('application-content-opacity', () => this._updateWindowOpacities());
     connectSetting('application-window-whitelist', () => this._syncWhitelist());
     // Exclusion list, consulted only while "apply to all windows" is on.
     connectSetting('application-window-blacklist', () => this._syncWhitelist());
-    connectSetting('application-tint-color', () => this._updateEffectParams());
-    connectSetting('application-tint-strength', () => this._updateEffectParams());
-    connectSetting('application-blur-radius', () => this._updateEffectParams());
-    connectSetting('application-corner-radius', () => this._updateEffectParams());
-    connectSetting('application-brightness', () => this._updateEffectParams());
-    connectSetting('application-contrast', () => this._updateEffectParams());
-    connectSetting('application-saturation', () => this._updateEffectParams());
 
     // [FIX] The drop shadow needs actual room outside the window to render
     // into, and that room is the actor's margin — so these two shared keys
@@ -415,14 +454,13 @@ export class ApplicationManager {
     connectSetting('shadow-intensity', () => this._updateGlassMargin());
   }
 
-  _getContentOpacity(): number {
-    return this._settings.get_double('application-content-opacity');
+  _getContentOpacity(profile: GlassProfile = 'application'): number {
+    return this._settings.get_double(this._profileKey(profile, 'content-opacity'));
   }
 
   _updateWindowOpacities() {
-    const targetOpacity = Math.round(this._getContentOpacity() * 255);
-    this._logger.log("[Liquid Glass] Updating window content opacities to: " + targetOpacity);
     for (let state of this._states.values()) {
+      const targetOpacity = Math.round(this._getContentOpacity(state.profile) * 255);
       // Use the cached reference, NOT windowActor.get_first_child() — after
       // _setupWindow inserts baseActor below it, get_first_child() returns
       // baseActor instead of the real surface, so it stopped being live-updated.
@@ -432,9 +470,30 @@ export class ApplicationManager {
     }
   }
 
+  /** Appearance key in a profile's namespace, e.g. `desktop-menu-tint-color`. */
+  _profileKey(profile: GlassProfile, suffix: string): string {
+    return `${profile}-${suffix}`;
+  }
+
+  /** The switch that turns one profile on, e.g. `enable-desktop-menu-glass`. */
+  _profileEnableKey(profile: GlassProfile): string {
+    return `enable-${profile}-glass`;
+  }
+
+  _isProfileEnabled(profile: GlassProfile): boolean {
+    return this._settings.get_boolean(this._profileEnableKey(profile));
+  }
+
+  // [FIX] Whether ANY profile wants glass, not just the application one.
+  //
+  // This gates setup(), _syncWhitelist() and the per-frame loop, so while it
+  // read `enable-application-glass` alone, turning application glass off also
+  // silently took the desktop menu with it — and turning it on was a
+  // precondition for the desktop menu ever being built. The per-window
+  // decision lives in _profileForWindow(), which consults the switch that
+  // actually belongs to the window in front of it.
   _isEffectEnabled(): boolean {
-    const enabled = this._settings.get_boolean('enable-application-glass');
-    return enabled;
+    return this._isProfileEnabled('application') || this._isProfileEnabled('desktop-menu');
   }
 
   _getWhitelist(): string[] {
@@ -487,15 +546,75 @@ export class ApplicationManager {
     return ret;
   }
 
-  _shouldApplyToWindow(windowActor: Meta.WindowActor): boolean {
-    if (!this._isEffectEnabled()) {
+  /**
+   * Is this the menu the desktop itself puts up (right-click on the wallpaper)?
+   *
+   * On Wayland that menu is not a shell widget: it is a genuine toplevel of
+   * its own, which is why it reaches this manager at all. Measured on GNOME
+   * Shell 50 / Wayland with Desktop Icons NG, the popup reports
+   *
+   *   type=DROPDOWN_MENU or=false client=WAYLAND class=null inst=null
+   *   gtkapp=null transient_for=DESKTOP/gjs/<same pid>
+   *
+   * so neither the WM_CLASS matching the whitelist uses nor the GTK
+   * application id can identify it — every field a menu would normally be
+   * recognised by is null. What IS reliable is the pair (menu window type,
+   * transitively transient for a DESKTOP-type window), and that pair is also
+   * what keeps in-app popups out: a Chrome menu measures as
+   * `type=OVERRIDE_OTHER or=true` with no transient parent at all, so it
+   * fails both halves.
+   *
+   * Override-redirect windows are rejected outright. Those are the ones a
+   * client positions and manages entirely by itself (X11 menus, Chrome's own
+   * popups); they are not ours to decorate, and the user asked for them to
+   * stay out.
+   */
+  _isDesktopMenuWindow(metaWindow: Meta.Window): boolean {
+    if (metaWindow.is_override_redirect())
+      return false;
+    if (!MENU_WINDOW_TYPES.includes(metaWindow.get_window_type()))
+      return false;
+
+    let parent: Meta.Window | null = null;
+    try {
+      parent = metaWindow.get_transient_for();
+    } catch (e) {
       return false;
     }
 
-    const metaWindow = windowActor.get_meta_window();
-    if (!metaWindow) {
-      return false;
+    for (let depth = 0; parent && depth < MAX_TRANSIENT_DEPTH; depth++) {
+      if (parent.get_window_type() === Meta.WindowType.DESKTOP)
+        return true;
+      // A submenu is transient for the menu above it, so keep walking — but
+      // only through menus, never up out of an ordinary app window.
+      if (!MENU_WINDOW_TYPES.includes(parent.get_window_type()))
+        return false;
+      try {
+        parent = parent.get_transient_for();
+      } catch (e) {
+        return false;
+      }
     }
+    return false;
+  }
+
+  /**
+   * Which settings namespace should dress this window, or null to leave it
+   * alone. The single place that decides; _shouldApplyToWindow() and
+   * _setupWindow() both go through it so they can never disagree.
+   */
+  _profileForWindow(windowActor: Meta.WindowActor): GlassProfile | null {
+    const metaWindow = windowActor?.get_meta_window?.();
+    if (!metaWindow)
+      return null;
+
+    // Checked before the application rules: a desktop menu must not be able
+    // to fall through to "apply to all windows" and pick up app settings.
+    if (this._isDesktopMenuWindow(metaWindow))
+      return this._isProfileEnabled('desktop-menu') ? 'desktop-menu' : null;
+
+    if (!this._isProfileEnabled('application'))
+      return null;
 
     // "Apply to all windows" bypasses the whitelist, but is still restricted to
     // normal/dialog windows so we never touch desktop backgrounds, panels, etc.,
@@ -508,15 +627,19 @@ export class ApplicationManager {
         windowType === Meta.WindowType.MODAL_DIALOG;
       if (!isNormal) {
         this._logger.log(`[Liquid Glass] window "${metaWindow.get_title()}" has special type ${windowType}, skipping...`);
-        return false;
+        return null;
       }
       if (this._windowMatchesBlacklist(metaWindow)) {
-        return false;
+        return null;
       }
-      return true;
+      return 'application';
     }
 
-    return this._windowMatchesWhitelist(metaWindow);
+    return this._windowMatchesWhitelist(metaWindow) ? 'application' : null;
+  }
+
+  _shouldApplyToWindow(windowActor: Meta.WindowActor): boolean {
+    return this._profileForWindow(windowActor) !== null;
   }
 
   _applyEffects() {
@@ -564,7 +687,10 @@ export class ApplicationManager {
     }
 
     for (let [actor, state] of [...this._states.entries()]) {
-      if (!this._shouldApplyToWindow(actor)) {
+      // Dropped when it no longer qualifies at all, and also when it would
+      // now be dressed by the OTHER profile: the namespace is baked into the
+      // state when it is built, so the only way to change it is to rebuild.
+      if (this._profileForWindow(actor) !== state.profile) {
         this._cleanupState(state);
         this._states.delete(actor);
       }
@@ -634,15 +760,16 @@ export class ApplicationManager {
   }
 
   _updateEffectParams() {
-    let tintColorStr = this._settings.get_string('application-tint-color');
-    let tintStrength = this._settings.get_double('application-tint-strength');
-    let blurRadius = this._settings.get_int('application-blur-radius');
-    let cornerRadius = this._settings.get_double('application-corner-radius');
-    let brightness = this._settings.get_double('application-brightness');
-    let contrast = this._settings.get_double('application-contrast');
-    let saturation = this._settings.get_double('application-saturation');
-
     for (let state of this._states.values()) {
+      const k = (suffix: string) => this._profileKey(state.profile, suffix);
+      let tintColorStr = this._settings.get_string(k('tint-color'));
+      let tintStrength = this._settings.get_double(k('tint-strength'));
+      let blurRadius = this._settings.get_int(k('blur-radius'));
+      let cornerRadius = this._settings.get_double(k('corner-radius'));
+      let brightness = this._settings.get_double(k('brightness'));
+      let contrast = this._settings.get_double(k('contrast'));
+      let saturation = this._settings.get_double(k('saturation'));
+
       state.effect.setTintColor(...this._hexToColorArray(tintColorStr));
       state.effect.setTintStrength(tintStrength);
       state.effect.setCornerRadius(cornerRadius);
@@ -763,7 +890,8 @@ export class ApplicationManager {
     if (!windowActor || !(windowActor instanceof Meta.WindowActor) || this._states.has(windowActor))
       return;
 
-    if (!this._shouldApplyToWindow(windowActor))
+    const profile = this._profileForWindow(windowActor);
+    if (!profile)
       return;
 
     let surfaceActor = windowActor.get_first_child();
@@ -809,7 +937,7 @@ export class ApplicationManager {
     // Store the surface's original opacity and dial it down so the glass behind
     // it is actually visible; restored in _cleanupState when the effect is removed.
     let originalOpacity = surfaceActor.opacity;
-    surfaceActor.opacity = Math.round(this._getContentOpacity() * 255);
+    surfaceActor.opacity = Math.round(this._getContentOpacity(profile) * 255);
 
     // Every actor this window's glass owns carries a name. Clutter's own
     // "Can't update stage views actor <name> ... because it needs an
@@ -907,16 +1035,17 @@ export class ApplicationManager {
       extensionPath: this.extensionPath,
       settings: this._settings,
       logger: this._logger,
-      owner: 'application',
+      owner: profile,
     } as any);
 
-    let tintColorStr = this._settings.get_string('application-tint-color');
-    let tintStrength = this._settings.get_double('application-tint-strength');
-    let cornerRadius = this._settings.get_double('application-corner-radius');
-    let blurRadius = this._settings.get_int('application-blur-radius');
-    let brightness = this._settings.get_double('application-brightness');
-    let contrast = this._settings.get_double('application-contrast');
-    let saturation = this._settings.get_double('application-saturation');
+    const k = (suffix: string) => this._profileKey(profile, suffix);
+    let tintColorStr = this._settings.get_string(k('tint-color'));
+    let tintStrength = this._settings.get_double(k('tint-strength'));
+    let cornerRadius = this._settings.get_double(k('corner-radius'));
+    let blurRadius = this._settings.get_int(k('blur-radius'));
+    let brightness = this._settings.get_double(k('brightness'));
+    let contrast = this._settings.get_double(k('contrast'));
+    let saturation = this._settings.get_double(k('saturation'));
 
     effect.setPadding(this._glassMargin);
     effect.setTintColor(...this._hexToColorArray(tintColorStr));
@@ -1002,6 +1131,7 @@ export class ApplicationManager {
       cornerOverlayClone,
       signals: [],
       originalOpacity,
+      profile,
       isDirty: true,
       constraints,
     };
@@ -1319,7 +1449,7 @@ export class ApplicationManager {
     if (state.radiusScaleApplied === s) return;
     state.radiusScaleApplied = s;
 
-    const cornerRadius = this._settings.get_double('application-corner-radius');
+    const cornerRadius = this._settings.get_double(this._profileKey(state.profile, 'corner-radius'));
     state.effect.setCornerRadius(cornerRadius * s);
     state.roundingEffect.setRadius((cornerRadius + CORNER_PADDING) * s);
     state.roundingEffect.setGlassRadius(cornerRadius * s);

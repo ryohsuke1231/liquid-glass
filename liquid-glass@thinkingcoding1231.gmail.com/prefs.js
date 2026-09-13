@@ -548,6 +548,34 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
       activeWhen: true,
     });
 
+    // The desktop's own right-click menu. Handled by the same manager as
+    // application windows — on Wayland it is a real toplevel, not a shell
+    // widget — but it is not an application, so it gets its own switch and
+    // its own appearance keys rather than inheriting the window look.
+    const desktopMenuGroup = new Adw.PreferencesGroup({
+      title: 'Desktop Menu',
+      description: 'The menu that opens when you right-click the desktop. Separate from the application window settings above; in-app popups are not affected.',
+    });
+    appPage.add(desktopMenuGroup);
+
+    this._addSwitchRow(desktopMenuGroup, settings, 'enable-desktop-menu-glass', 'Enable Glass Effect', 'Apply to the desktop right-click menu');
+    this._addColorRow(desktopMenuGroup, settings, 'desktop-menu-tint-color', 'Tint Color', 'Color of the glass tint');
+    this._addSliderRow(desktopMenuGroup, settings, 'desktop-menu-tint-strength', 'Tint Strength', 'Intensity of the color tint', 0.0, 1.0, 0.01);
+    const desktopMenuBlurRow = this._addSliderRow(desktopMenuGroup, settings, 'desktop-menu-blur-radius', 'Blur Radius', '', 0, 30, 1);
+    blurRadiusRows.push(desktopMenuBlurRow);
+    this._addSliderRow(desktopMenuGroup, settings, 'desktop-menu-corner-radius', 'Corner Radius', 'Roundness of the corners', 0, 200, 1);
+    this._addSliderRow(desktopMenuGroup, settings, 'desktop-menu-content-opacity', 'Menu Content Opacity', 'Opacity of the menu content layer, so the glass shows through it', 0.0, 1.0, 0.01);
+
+    const desktopMenuAdvanced = new Adw.ExpanderRow({
+      title: 'Advanced',
+      subtitle: 'Color adjustments (Brightness, Contrast, Saturation)'
+    });
+    desktopMenuGroup.add(desktopMenuAdvanced);
+
+    this._addSliderRow(desktopMenuAdvanced, settings, 'desktop-menu-brightness', 'Brightness', 'Adjusts brightness', 0.5, 1.5, 0.01);
+    this._addSliderRow(desktopMenuAdvanced, settings, 'desktop-menu-contrast', 'Contrast', 'Adjusts contrast', 0.5, 1.5, 0.01);
+    this._addSliderRow(desktopMenuAdvanced, settings, 'desktop-menu-saturation', 'Saturation', 'Adjusts saturation', 0.0, 2.0, 0.01);
+
 
     // --- Glass Properties タブ ---
     const shaderPage = new Adw.PreferencesPage({
