@@ -159,6 +159,10 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
     const menuBlurRow = this._addSliderRow(menuGroup, settings, 'menu-blur-radius', 'Blur Radius', '', 0, 30, 1);
     blurRadiusRows.push(menuBlurRow);
     this._addSliderRow(menuGroup, settings, 'menu-corner-radius', 'Corner Radius', 'Roundness of the corners', 0, 200, 1);
+    this._addSwitchRow(menuGroup, settings, 'menu-match-quick-settings-height', 'Match Quick Settings Height', 'Scale the menu so both panel dropdowns open to the same height');
+
+    const menuScaleRow = this._addSliderRow(menuGroup, settings, 'menu-scale', 'Menu Scale', 'Shrink or grow the whole menu, glass included', 0.5, 1.0, 0.01);
+    settings.bind('menu-match-quick-settings-height', menuScaleRow, 'sensitive', Gio.SettingsBindFlags.GET | Gio.SettingsBindFlags.INVERT_BOOLEAN);
 
     // Advancedグループ (開閉可能) - Spring関連とカラー調整をここに集約
     const menuAdvanced = new Adw.ExpanderRow({
@@ -185,7 +189,126 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
     this._addSliderRow(menuAdvanced, settings, 'menu-saturation', 'Saturation', 'Adjusts saturation', 0.0, 2.0, 0.01);
 
 
-    // --- Notifications タブ ---
+    // --- Additional top panel menus ---
+    const panelPage = new Adw.PreferencesPage({
+      title: 'Panel Extensions',
+      icon_name: 'application-x-addon-symbolic',
+    });
+    window.add(panelPage);
+    const panelGroup = new Adw.PreferencesGroup({
+      title: 'Top Bar Dropdowns',
+      description: 'Automatically detect menus added to the top bar. These menus have their own appearance settings below; Calendar and Quick Settings keep theirs.',
+    });
+    panelPage.add(panelGroup);
+    this._addSwitchRow(panelGroup, settings, 'enable-extra-menu-glass', 'Enable Glass for Panel Menus', 'Include newly detected menus automatically');
+    const detectedGroup = new Adw.PreferencesGroup({ title: 'Detected Menus' });
+    panelPage.add(detectedGroup);
+    settings.bind('enable-extra-menu-glass', detectedGroup, 'sensitive', Gio.SettingsBindFlags.GET);
+    const emptyRow = new Adw.ActionRow({
+      title: 'No additional menus detected',
+      subtitle: 'Enable a top bar extension to show its menu here.',
+    });
+    detectedGroup.add(emptyRow);
+    const menuRows = new Map();
+    const legacyMenus = {
+      keyboard: { key: 'enable-keyboard-menu-glass', title: 'Keyboard Layout' },
+      vitalsMenu: { key: 'enable-vitals-menu-glass', title: 'Vitals' },
+    };
+    let syncingMenus = false;
+    const refreshMenus = () => {
+      syncingMenus = true;
+      try {
+        const names = settings.get_strv('detected-extra-menus');
+        const disabled = new Set(settings.get_strv('disabled-extra-menus'));
+        for (const [name, row] of menuRows) {
+          if (names.includes(name)) continue;
+          detectedGroup.remove(row);
+          menuRows.delete(name);
+        }
+        for (const name of names) {
+          let row = menuRows.get(name);
+          if (!row) {
+            const legacy = legacyMenus[name];
+            const title = legacy?.title ?? name.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[-_]+/g, ' ');
+            row = new Adw.SwitchRow({ title, use_markup: false });
+            detectedGroup.add(row);
+            menuRows.set(name, row);
+            if (legacy) {
+              settings.bind(legacy.key, row, 'active', Gio.SettingsBindFlags.DEFAULT);
+            } else {
+              row.connect('notify::active', () => {
+                if (syncingMenus) return;
+                const excluded = new Set(settings.get_strv('disabled-extra-menus'));
+                if (row.active) excluded.delete(name);
+                else excluded.add(name);
+                settings.set_strv('disabled-extra-menus', [...excluded].sort());
+              });
+            }
+          }
+          if (!legacyMenus[name]) row.active = !disabled.has(name);
+        }
+        emptyRow.visible = names.length === 0;
+      } finally {
+        syncingMenus = false;
+      }
+    };
+    // Appearance for the detected dropdowns. Own keys, not the Menu tab's —
+    // see the panel-menu-* block in the schema.
+    const panelAppearance = new Adw.PreferencesGroup({
+      title: 'Appearance',
+      description: 'Applies to every detected panel menu. Independent of the Calendar menu.',
+    });
+    panelPage.add(panelAppearance);
+    settings.bind('enable-extra-menu-glass', panelAppearance, 'sensitive', Gio.SettingsBindFlags.GET);
+
+    this._addSwitchRow(panelAppearance, settings, 'enable-panel-menu-animation', 'Enable Menu Animation', 'Animate menu transitions using spring physics');
+
+    this._addSliderRow(panelAppearance, settings, 'panel-menu-glass-expand', 'Glass Expand', 'Extra area for the effect', 0, 50, 1);
+    this._addSliderRow(panelAppearance, settings, 'panel-menu-x-offset', 'X Offset', 'Horizontal offset adjustment', -200, 200, 1);
+    this._addSliderRow(panelAppearance, settings, 'panel-menu-y-offset', 'Y Offset', 'Vertical offset adjustment', -50, 100, 1);
+
+    this._addSwitchRow(panelAppearance, settings, 'panel-menu-enable-adaptive-text-color', 'Adaptive Text Color', 'Adjust text contrast automatically');
+    const panelSampleIntervalRow = this._addSliderRow(panelAppearance, settings, 'panel-menu-sample-interval-ms', 'Sample Interval (ms)', 'Contrast update frequency', 100, 2000, 50);
+    settings.bind('panel-menu-enable-adaptive-text-color', panelSampleIntervalRow, 'visible', Gio.SettingsBindFlags.GET);
+
+    this._addColorRow(panelAppearance, settings, 'panel-menu-tint-color', 'Tint Color', 'Color of the glass tint');
+    this._addSliderRow(panelAppearance, settings, 'panel-menu-tint-strength', 'Tint Strength', 'Intensity of the color tint', 0.0, 1.0, 0.01);
+    const panelBlurRow = this._addSliderRow(panelAppearance, settings, 'panel-menu-blur-radius', 'Blur Radius', '', 0, 30, 1);
+    blurRadiusRows.push(panelBlurRow);
+    this._addSliderRow(panelAppearance, settings, 'panel-menu-corner-radius', 'Corner Radius', 'Roundness of the corners', 0, 200, 1);
+    this._addSwitchRow(panelAppearance, settings, 'panel-menu-match-quick-settings-height', 'Match Quick Settings Height', 'Scale the menu so both panel dropdowns open to the same height');
+
+    const panelScaleRow = this._addSliderRow(panelAppearance, settings, 'panel-menu-scale', 'Menu Scale', 'Shrink or grow the whole menu, glass included', 0.5, 1.0, 0.01);
+    settings.bind('panel-menu-match-quick-settings-height', panelScaleRow, 'sensitive', Gio.SettingsBindFlags.GET | Gio.SettingsBindFlags.INVERT_BOOLEAN);
+
+    const panelAdvanced = new Adw.ExpanderRow({
+      title: 'Advanced',
+      subtitle: 'Spring physics, color adjustments (Brightness, Contrast, Saturation)'
+    });
+    panelAppearance.add(panelAdvanced);
+
+    const panelStiffnessRow = this._addSliderRow(panelAdvanced, settings, 'panel-menu-spring-stiffness', 'Spring Stiffness', 'Spring stiffness', 0.0, 1000.0, 0.1);
+    const panelDampingRow = this._addSliderRow(panelAdvanced, settings, 'panel-menu-spring-damping', 'Spring Damping', 'Spring damping', 0.0, 1000.0, 0.1);
+    const panelMassRow = this._addSliderRow(panelAdvanced, settings, 'panel-menu-spring-mass', 'Spring Mass', 'Spring mass', 0.0, 1.0, 0.1);
+    const panelIntervalRow = this._addSliderRow(panelAdvanced, settings, 'panel-menu-animation-interval-ms', 'Animation Interval (ms)', 'Animation interval', 0, 1000, 1);
+
+    settings.bind('enable-panel-menu-animation', panelStiffnessRow, 'visible', Gio.SettingsBindFlags.GET);
+    settings.bind('enable-panel-menu-animation', panelDampingRow, 'visible', Gio.SettingsBindFlags.GET);
+    settings.bind('enable-panel-menu-animation', panelMassRow, 'visible', Gio.SettingsBindFlags.GET);
+    settings.bind('enable-panel-menu-animation', panelIntervalRow, 'visible', Gio.SettingsBindFlags.GET);
+
+    this._addSliderRow(panelAdvanced, settings, 'panel-menu-brightness', 'Brightness', 'Adjusts brightness', 0.5, 1.5, 0.01);
+    this._addSliderRow(panelAdvanced, settings, 'panel-menu-contrast', 'Contrast', 'Adjusts contrast', 0.5, 1.5, 0.01);
+    this._addSliderRow(panelAdvanced, settings, 'panel-menu-saturation', 'Saturation', 'Adjusts saturation', 0.0, 2.0, 0.01);
+
+    const menuWatchIds = ['detected-extra-menus', 'disabled-extra-menus'].map(key =>
+      settings.connect(`changed::${key}`, refreshMenus));
+    window.connect('close-request', () => {
+      for (const id of menuWatchIds) settings.disconnect(id);
+      return false;
+    });
+    refreshMenus();
+
     const notifPage = new Adw.PreferencesPage({
       title: 'Notifications',
       icon_name: 'preferences-system-notifications-symbolic',
@@ -424,6 +547,34 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
       activeKey: 'application-glass-all-windows',
       activeWhen: true,
     });
+
+    // The desktop's own right-click menu. Handled by the same manager as
+    // application windows — on Wayland it is a real toplevel, not a shell
+    // widget — but it is not an application, so it gets its own switch and
+    // its own appearance keys rather than inheriting the window look.
+    const desktopMenuGroup = new Adw.PreferencesGroup({
+      title: 'Desktop Menu',
+      description: 'The menu that opens when you right-click the desktop. Separate from the application window settings above; in-app popups are not affected.',
+    });
+    appPage.add(desktopMenuGroup);
+
+    this._addSwitchRow(desktopMenuGroup, settings, 'enable-desktop-menu-glass', 'Enable Glass Effect', 'Apply to the desktop right-click menu');
+    this._addColorRow(desktopMenuGroup, settings, 'desktop-menu-tint-color', 'Tint Color', 'Color of the glass tint');
+    this._addSliderRow(desktopMenuGroup, settings, 'desktop-menu-tint-strength', 'Tint Strength', 'Intensity of the color tint', 0.0, 1.0, 0.01);
+    const desktopMenuBlurRow = this._addSliderRow(desktopMenuGroup, settings, 'desktop-menu-blur-radius', 'Blur Radius', '', 0, 30, 1);
+    blurRadiusRows.push(desktopMenuBlurRow);
+    this._addSliderRow(desktopMenuGroup, settings, 'desktop-menu-corner-radius', 'Corner Radius', 'Roundness of the corners', 0, 200, 1);
+    this._addSliderRow(desktopMenuGroup, settings, 'desktop-menu-content-opacity', 'Menu Content Opacity', 'Opacity of the menu content layer, so the glass shows through it', 0.0, 1.0, 0.01);
+
+    const desktopMenuAdvanced = new Adw.ExpanderRow({
+      title: 'Advanced',
+      subtitle: 'Color adjustments (Brightness, Contrast, Saturation)'
+    });
+    desktopMenuGroup.add(desktopMenuAdvanced);
+
+    this._addSliderRow(desktopMenuAdvanced, settings, 'desktop-menu-brightness', 'Brightness', 'Adjusts brightness', 0.5, 1.5, 0.01);
+    this._addSliderRow(desktopMenuAdvanced, settings, 'desktop-menu-contrast', 'Contrast', 'Adjusts contrast', 0.5, 1.5, 0.01);
+    this._addSliderRow(desktopMenuAdvanced, settings, 'desktop-menu-saturation', 'Saturation', 'Adjusts saturation', 0.0, 2.0, 0.01);
 
 
     // --- Glass Properties タブ ---

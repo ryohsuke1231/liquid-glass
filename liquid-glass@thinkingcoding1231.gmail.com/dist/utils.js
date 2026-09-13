@@ -2935,6 +2935,20 @@ export function isActorValid(actor) {
         return false;
     }
 }
+export function resolveMonitorGeometry(candidates) {
+    const layoutManager = Main.layoutManager;
+    for (const actor of candidates) {
+        if (!actor || !isActorValid(actor))
+            continue;
+        const [width, height] = actor.get_size();
+        if (!(width > 0 && height > 0))
+            continue;
+        const index = layoutManager.findIndexForActor(actor);
+        if (index >= 0)
+            return layoutManager.monitors[index] || layoutManager.primaryMonitor;
+    }
+    return layoutManager.monitors[layoutManager.primaryIndex] || layoutManager.primaryMonitor;
+}
 export const InvertedPositionConstraint = GObject.registerClass({
     GTypeName: 'InvertedPositionConstraint',
     Properties: {

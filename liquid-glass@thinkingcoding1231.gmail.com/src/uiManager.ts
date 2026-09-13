@@ -7,7 +7,8 @@ import Meta from 'gi://Meta';
 import Gio from 'gi://Gio';
 import { LiquidEffect } from './liquidEffect.js';
 import { StageContrastSampler, AdaptiveContrastConfig } from './contrastSampler.js';
-import { UnpickableActor, UILayerSampler, UnpickableWidget, WindowCloneManager, reportFrameLoopError, ensureGlassAllocated, isFrameSyncFrozen,
+import { UnpickableActor, UILayerSampler, UnpickableWidget, WindowCloneManager, reportFrameLoopError, ensureGlassAllocated,
+  resolveMonitorGeometry, isActorValid, getAllocatedSize, isFrameSyncFrozen,
   setClipIfChanged, syncGlassCaptureClip } from './utils.js';
 
 import { Logger } from './logger.js';
@@ -29,6 +30,8 @@ interface CustomBannerActor extends St.Widget {
 }
 // ==============================================
 
+const MIN_MENU_SCALE = 0.5;
+
 export class UIManager {
   private extensionPath: string;
   private _settings: Gio.Settings;
@@ -44,6 +47,8 @@ export class UIManager {
 
   private _signals: { target: any, id: number }[];
   private _animSignalId: number = 0;
+  private _destroySignalId = 0;
+  private _actorDestroyed = false;
   private _frameSyncId: number;
   // [FIX] Set by cleanup() before anything that can throw. Read by the
   // per-frame BEFORE_REDRAW tick so an orphaned chain stops itself even if
@@ -52,6 +57,9 @@ export class UIManager {
   private _glassExpand: number;
   private _menuXoffset: number;
   private _menuYoffset: number;
+  private _menuScale: number = 1.0;
+  private _ownsAccentCss: boolean = true;
+  private _matchQuickSettingsHeight: boolean = false;
   private _tickId: number;
   private _contrastSampler: StageContrastSampler;
   private _adaptiveTimerId: number;
@@ -99,18 +107,35 @@ export class UIManager {
   private _lastScreenW: number | undefined;
   private _lastScreenH: number | undefined;
 
-  constructor(extensionPath: string, settings: Gio.Settings, logger: Logger) {
+  // The uiGroup-direct ancestor of this menu. Kept so the glass can be put
+  // back directly beneath it whenever the menu opens — see _restackGlass().
+  private _menuRoot: Clutter.Actor | null = null;
+
+  constructor(extensionPath: string, settings: Gio.Settings, logger: Logger,
+              panelButton: any = Main.panel.statusArea.dateMenu, ownsAccentCss: boolean = true,
+              private _enableKey: string = 'enable-menu-glass',
+              /**
+               * GSettings namespace this instance reads its appearance from.
+               * The date menu keeps `menu-*`; PanelMenuManager passes
+               * `panel-menu` so detected top-bar dropdowns are tuned
+               * independently, the way every other surface already is.
+               */
+              private _keyPrefix: string = 'menu',
+              /**
+               * Diagnostic tag. Reaches LiquidEffect's owner, UILayerSampler's
+               * log prefix and every clone actor's name, so a journal from a
+               * session with several panel menus says which one it is talking
+               * about instead of five lines that all read "menu".
+               */
+              private _label: string = 'menu') {
     this.extensionPath = extensionPath;
     this._settings = settings;
     this._logger = logger;
+    this._ownsAccentCss = ownsAccentCss;
 
-    // Target the main container of the Date/Calendar menu
-    this.targetActor = Main.panel.statusArea.dateMenu.menu.actor as St.Widget;
-    this.menu = Main.panel.statusArea.dateMenu.menu;
-
-    // Target for animations and visual offsets (The inner content)
-    // @ts-expect-error
-    this.animActor = Main.panel.statusArea.dateMenu.menu.box as St.Widget;
+    this.targetActor = panelButton.menu.actor as St.Widget;
+    this.menu = panelButton.menu;
+    this.animActor = panelButton.menu.box as St.Widget;
 
     this.bgActor = null;
     this.effect = null;
@@ -145,11 +170,18 @@ export class UIManager {
 
     // Listen for the menu opening/closing to trigger our custom physics animation
     this._animSignalId = this.menu.connect('open-state-changed', (menu: any, isOpen: boolean) => {
+      if (!this._isEffectActive) return;
       if (isOpen) {
+        this._applyMenuScale();
         this._startAnimation(1); // Target scale: 1.0 (fully open)
       } else {
         this._startAnimation(0); // Target scale: 0.0 (closed)
       }
+    });
+    this._destroySignalId = this.targetActor.connect('destroy', () => {
+      this._actorDestroyed = true;
+      this._destroySignalId = 0;
+      this.cleanup();
     });
   }
 
@@ -157,10 +189,13 @@ export class UIManager {
     if (!this._settings) return;
     this._bindSettings();
 
-    this._enableAnimation = this._settings.get_boolean('enable-menu-animation');
-    this._springStiffness = this._settings.get_double('menu-spring-stiffness');
-    this._springDamping = this._settings.get_double('menu-spring-damping');
-    this._springMass = this._settings.get_double('menu-spring-mass');
+    this._enableAnimation = this._settings.get_boolean(this._animationKey());
+    this._menuScale = this._settings.get_double(this._key('scale'));
+    this._matchQuickSettingsHeight = this._settings.get_boolean(this._key('match-quick-settings-height'));
+    this._applyMenuScale();
+    this._springStiffness = this._settings.get_double(this._key('spring-stiffness'));
+    this._springDamping = this._settings.get_double(this._key('spring-damping'));
+    this._springMass = this._settings.get_double(this._key('spring-mass'));
     this._springScale.updateParams(this._springStiffness, this._springDamping, this._springMass);
     this._springPos.updateParams(this._springStiffness, this._springDamping, this._springMass);
 
@@ -176,13 +211,13 @@ export class UIManager {
     // 初回実行
     this._applySystemAccentColor();
 
-    if (this._settings.get_boolean('enable-menu-glass')) {
+    if (this._settings.get_boolean(this._enableKey)) {
       this._applyEffect();
     }
   }
 
   private _applySystemAccentColor() {
-    if (!this.targetActor) return;
+    if (!this._ownsAccentCss || !this.targetActor) return;
 
     // 1. 親要素と子要素を作成して、GNOMEテーマが要求する正しい階層を再現
     const parent = new UnpickableWidget({ style_class: 'calendar' });
@@ -247,13 +282,103 @@ export class UIManager {
     return [r, g, b];
   }
 
-  _getMenuMonitorGeometry() {
-    let monitorIndex = Main.layoutManager.findIndexForActor(this.targetActor);
-    if (monitorIndex < 0) {
-      monitorIndex = Main.layoutManager.primaryIndex;
+  _naturalHeightOf(actor: any): number {
+    if (!actor || !isActorValid(actor))
+      return 0;
+
+    try {
+      const [, allocated] = getAllocatedSize(actor);
+      if (allocated > 1)
+        return allocated;
+    } catch (e) { /* fall through to the preferred size */ }
+
+    try {
+      const [, natural] = actor.get_preferred_height(-1);
+      if (natural > 1)
+        return natural;
+    } catch (e) { /* no usable measurement */ }
+
+    return 0;
+  }
+
+  _quickSettingsHeightScale(): number | null {
+    const quickSettings = Main.panel.statusArea.quickSettings?.menu;
+    if (!quickSettings)
+      return null;
+
+    const targetHeight = this._naturalHeightOf(quickSettings.actor) || this._naturalHeightOf(quickSettings.box);
+    const ownHeight = this._naturalHeightOf(this.targetActor) || this._naturalHeightOf(this.animActor);
+    if (targetHeight <= 0 || ownHeight <= 0)
+      return null;
+
+    const ratio = targetHeight / ownHeight;
+    return Number.isFinite(ratio) && ratio > 0 ? ratio : null;
+  }
+
+  _applyMenuScale() {
+    if (!this.targetActor || !isActorValid(this.targetActor))
+      return;
+
+    let requested = this._menuScale;
+    if (this._matchQuickSettingsHeight) {
+      const matched = this._quickSettingsHeightScale();
+      if (matched !== null)
+        requested = matched;
     }
 
-    return Main.layoutManager.monitors[monitorIndex] || Main.layoutManager.primaryMonitor;
+    const scale = Number.isFinite(requested)
+      ? Math.min(1.0, Math.max(MIN_MENU_SCALE, requested))
+      : 1.0;
+
+    this.targetActor.set_pivot_point(0.5, 0.0);
+    this.targetActor.set_scale(scale, scale);
+  }
+
+  _getMenuMonitorGeometry() {
+    return resolveMonitorGeometry([this.menu?.sourceActor, this.targetActor]);
+  }
+
+
+  /**
+   * Keeps the glass directly beneath the menu it backs.
+   *
+   * [FIX] This used to pin bgActor just above Main.layoutManager.panelBox,
+   * near the BOTTOM of uiGroup, while the menu's own actor sits near the top.
+   * Anything added to uiGroup in between therefore painted over the glass but
+   * under the menu — most visibly a Dash to Dock container and its own glass,
+   * which produced a dropdown whose text and highlights were above the dock
+   * while its backdrop was below it. GNOME stacks a panel dropdown above the
+   * dock as one piece, and every other manager here already places its glass
+   * immediately below its own root; this now matches them.
+   *
+   * Re-asserted on open because uiGroup's child order is not ours to keep: an
+   * indicator, an extension or a dock rebuild that lands after setup() moves
+   * relative to us. set_child_below_sibling() is a list splice, and the
+   * index check below skips even that whenever the order is already right.
+   */
+  private _restackGlass(): void {
+    const uiGroup = Main.layoutManager.uiGroup;
+    const root = this._menuRoot;
+    if (!this.bgActor || !root) return;
+    if (!isActorValid(root) || root.get_parent() !== uiGroup) return;
+    if (this.bgActor.get_parent() !== uiGroup) return;
+
+    const children = uiGroup.get_children();
+    const rootIndex = children.indexOf(root);
+    if (rootIndex < 0) return;
+    if (children.indexOf(this.bgActor) === rootIndex - 1) return;
+
+    uiGroup.set_child_below_sibling(this.bgActor, root);
+  }
+
+  /** Appearance key in this instance's namespace — see _keyPrefix. */
+  private _key(suffix: string): string {
+    return `${this._keyPrefix}-${suffix}`;
+  }
+
+  /** The odd one out: the animation switch is named `enable-<surface>-animation`. */
+  private _animationKey(): string {
+    return `enable-${this._keyPrefix}-animation`;
   }
 
   // 設定の動的反映
@@ -264,105 +389,115 @@ export class UIManager {
     };
 
     // ON/OFF切り替え
-    connectSetting('enable-menu-glass', () => {
-      let enabled = this._settings.get_boolean('enable-menu-glass');
+    connectSetting(this._enableKey, () => {
+      let enabled = this._settings.get_boolean(this._enableKey);
       if (enabled && !this._isEffectActive) this._applyEffect();
       else if (!enabled && this._isEffectActive) this._removeEffect();
     });
 
-    connectSetting('enable-menu-animation', () => {
-      this._enableAnimation = this._settings.get_boolean('enable-menu-animation');
+    connectSetting(this._animationKey(), () => {
+      this._enableAnimation = this._settings.get_boolean(this._animationKey());
     });
 
-    connectSetting('menu-spring-stiffness', () => {
-      this._springStiffness = this._settings.get_double('menu-spring-stiffness');
+    connectSetting(this._key('spring-stiffness'), () => {
+      this._springStiffness = this._settings.get_double(this._key('spring-stiffness'));
       if (this._springScale) this._springScale.updateParams(this._springStiffness, this._springDamping, this._springMass);
     });
 
-    connectSetting('menu-spring-damping', () => {
-      this._springDamping = this._settings.get_double('menu-spring-damping');
+    connectSetting(this._key('spring-damping'), () => {
+      this._springDamping = this._settings.get_double(this._key('spring-damping'));
       if (this._springScale) this._springScale.updateParams(this._springStiffness, this._springDamping, this._springMass);
     });
 
-    connectSetting('menu-spring-mass', () => {
-      this._springMass = this._settings.get_double('menu-spring-mass');
+    connectSetting(this._key('spring-mass'), () => {
+      this._springMass = this._settings.get_double(this._key('spring-mass'));
       if (this._springScale) this._springScale.updateParams(this._springStiffness, this._springDamping, this._springMass);
     });
 
-    connectSetting('menu-animation-interval-ms', () => {
-      this._animationInterval = this._settings.get_int('menu-animation-interval-ms');
+    connectSetting(this._key('animation-interval-ms'), () => {
+      this._animationInterval = this._settings.get_int(this._key('animation-interval-ms'));
     });
 
-    connectSetting('menu-tint-color', () => {
+    connectSetting(this._key('tint-color'), () => {
       if (this.effect) {
-        let colorArray = this._hexToColorArray(this._settings.get_string('menu-tint-color'));
+        let colorArray = this._hexToColorArray(this._settings.get_string(this._key('tint-color')));
         this.effect.setTintColor(...colorArray);
       }
     });
 
-    connectSetting('menu-tint-strength', () => {
+    connectSetting(this._key('tint-strength'), () => {
       if (this.effect) {
-        this.effect.setTintStrength(this._settings.get_double('menu-tint-strength'));
+        this.effect.setTintStrength(this._settings.get_double(this._key('tint-strength')));
       }
     });
 
-    connectSetting('menu-blur-radius', () => {
+    connectSetting(this._key('blur-radius'), () => {
       if (this.effect) {
-        this.effect.setBlurRadius(this._settings.get_int('menu-blur-radius'));
+        this.effect.setBlurRadius(this._settings.get_int(this._key('blur-radius')));
       }
     });
 
-    connectSetting('menu-brightness', () => {
+    connectSetting(this._key('brightness'), () => {
       if (this.effect) {
-        this.effect.setBrightness(this._settings.get_double('menu-brightness'));
+        this.effect.setBrightness(this._settings.get_double(this._key('brightness')));
       }
     });
 
-    connectSetting('menu-contrast', () => {
+    connectSetting(this._key('contrast'), () => {
       if (this.effect) {
-        this.effect.setContrast(this._settings.get_double('menu-contrast'));
+        this.effect.setContrast(this._settings.get_double(this._key('contrast')));
       }
     });
 
-    connectSetting('menu-saturation', () => {
+    connectSetting(this._key('saturation'), () => {
       if (this.effect) {
-        this.effect.setSaturation(this._settings.get_double('menu-saturation'));
+        this.effect.setSaturation(this._settings.get_double(this._key('saturation')));
       }
     });
 
-    connectSetting('menu-corner-radius', () => {
+    connectSetting(this._key('corner-radius'), () => {
       if (this.effect) {
-        this._cornerRadius = this._settings.get_double('menu-corner-radius');
+        this._cornerRadius = this._settings.get_double(this._key('corner-radius'));
         this.effect.setCornerRadius(this._cornerRadius);
       }
     });
 
-    connectSetting('menu-glass-expand', () => {
+    connectSetting(this._key('glass-expand'), () => {
       if (this.effect) {
-        this._glassExpand = this._settings.get_int('menu-glass-expand');
+        this._glassExpand = this._settings.get_int(this._key('glass-expand'));
       }
     });
 
-    connectSetting('menu-x-offset', () => {
+    connectSetting(this._key('x-offset'), () => {
       if (this.animActor) {
-        this._menuXoffset = this._settings.get_int('menu-x-offset');
+        this._menuXoffset = this._settings.get_int(this._key('x-offset'));
         this.animActor.translation_x = this._menuXoffset;
       }
     });
 
-    connectSetting('menu-y-offset', () => {
+    connectSetting(this._key('scale'), () => {
+      this._menuScale = this._settings.get_double(this._key('scale'));
+      this._applyMenuScale();
+    });
+
+    connectSetting(this._key('match-quick-settings-height'), () => {
+      this._matchQuickSettingsHeight = this._settings.get_boolean(this._key('match-quick-settings-height'));
+      this._applyMenuScale();
+    });
+
+    connectSetting(this._key('y-offset'), () => {
       if (this.animActor) {
-        this._menuYoffset = this._settings.get_int('menu-y-offset');
+        this._menuYoffset = this._settings.get_int(this._key('y-offset'));
         this.animActor.translation_y = this._menuYoffset;
       }
     });
 
-    connectSetting('menu-enable-adaptive-text-color', () => {
-      this._adaptiveConfig.enabled = this._settings.get_boolean('menu-enable-adaptive-text-color');
+    connectSetting(this._key('enable-adaptive-text-color'), () => {
+      this._adaptiveConfig.enabled = this._settings.get_boolean(this._key('enable-adaptive-text-color'));
     });
 
-    connectSetting('menu-sample-interval-ms', () => {
-      this._adaptiveConfig.sampleIntervalMs = this._settings.get_int('menu-sample-interval-ms');
+    connectSetting(this._key('sample-interval-ms'), () => {
+      this._adaptiveConfig.sampleIntervalMs = this._settings.get_int(this._key('sample-interval-ms'));
     });
   }
 
@@ -378,19 +513,19 @@ export class UIManager {
     this.animActor.add_style_class_name('liquid-glass-menu-root');
 
     // Shift the menu to apply user offsets
-    this._menuXoffset = this._settings.get_int('menu-x-offset');
-    this._menuYoffset = this._settings.get_int('menu-y-offset');
+    this._menuXoffset = this._settings.get_int(this._key('x-offset'));
+    this._menuYoffset = this._settings.get_int(this._key('y-offset'));
     this.animActor.translation_x = this._menuXoffset;
     this.animActor.translation_y = this._menuYoffset;
 
-    this._glassExpand = this._settings.get_int('menu-glass-expand');
-    this._animationInterval = this._settings.get_int('menu-animation-interval-ms');
+    this._glassExpand = this._settings.get_int(this._key('glass-expand'));
+    this._animationInterval = this._settings.get_int(this._key('animation-interval-ms'));
 
     this._adaptiveConfig = {
       ...AdaptiveContrastConfig,
-      enabled: this._settings.get_boolean('menu-enable-adaptive-text-color'),
+      enabled: this._settings.get_boolean(this._key('enable-adaptive-text-color')),
       samplePerElement: SAMPLE_PER_ELEMENT,
-      sampleIntervalMs: this._settings.get_int('menu-sample-interval-ms'),
+      sampleIntervalMs: this._settings.get_int(this._key('sample-interval-ms')),
     };
 
     // 1. bgActor: full monitor, no effect — starts 1×1, _syncGeometry expands it immediately
@@ -433,15 +568,15 @@ export class UIManager {
     }
 
     // Insert bgActor below menuRoot in uiGroup to prevent recursive clone loops
+    this._menuRoot = menuRoot;
     if (menuRoot.get_parent() === Main.layoutManager.uiGroup) {
-      // Main.layoutManager.uiGroup.insert_child_below(this.bgActor, menuRoot);
-      Main.layoutManager.uiGroup.insert_child_above(this.bgActor, Main.layoutManager.panelBox);
+      Main.layoutManager.uiGroup.insert_child_below(this.bgActor, menuRoot);
     } else {
       Main.layoutManager.uiGroup.add_child(this.bgActor);
     }
 
     // 4. WindowCloneManager: handles wallpaper clone + window actor clones
-    this._windowCloneManager = new WindowCloneManager(this.liquidBox, this._cloneContainer, 'lg-menu');
+    this._windowCloneManager = new WindowCloneManager(this.liquidBox, this._cloneContainer, `lg-${this._label}`);
 
     // 5. UILayerSampler: handles uiGroup child clones (panels, notifications, overview, etc.)
     //    Exclude menuRoot and window groups to prevent recursive cloning and BMS loops.
@@ -450,19 +585,19 @@ export class UIManager {
       this.liquidBox,
       [menuRoot, global.windowGroup, global.window_group],
       this._cloneContainer,
-      'menu'
+      this._label
     );
 
-    let blurRadius = this._settings.get_int('menu-blur-radius');
-    let tintColorStr = this._settings.get_string('menu-tint-color');
-    let tintStrength = this._settings.get_double('menu-tint-strength');
-    let brightness = this._settings.get_double('menu-brightness');
-    let contrast = this._settings.get_double('menu-contrast');
-    let saturation = this._settings.get_double('menu-saturation');
-    this._cornerRadius = this._settings.get_double('menu-corner-radius');
+    let blurRadius = this._settings.get_int(this._key('blur-radius'));
+    let tintColorStr = this._settings.get_string(this._key('tint-color'));
+    let tintStrength = this._settings.get_double(this._key('tint-strength'));
+    let brightness = this._settings.get_double(this._key('brightness'));
+    let contrast = this._settings.get_double(this._key('contrast'));
+    let saturation = this._settings.get_double(this._key('saturation'));
+    this._cornerRadius = this._settings.get_double(this._key('corner-radius'));
 
     // Apply our custom GLSL liquid shader to liquidBox (includes built-in dual-Kawase blur)
-    this.effect = new LiquidEffect({ extensionPath: this.extensionPath, settings: this._settings, owner: 'menu' } as any);
+    this.effect = new LiquidEffect({ extensionPath: this.extensionPath, settings: this._settings, owner: this._label } as any);
     this.effect.setPadding(SHADER_PADDING);
     this.effect.setTintColor(...this._hexToColorArray(tintColorStr));
     this.effect.setTintStrength(tintStrength);
@@ -509,6 +644,9 @@ export class UIManager {
           }
         }
       }
+
+      // Before the clones, so this frame's capture already sees the final order.
+      this._restackGlass();
 
       this._windowCloneManager?.rebuildClones();
       this._uiSampler?.rebindSelf();
@@ -843,10 +981,12 @@ export class UIManager {
     }
 
     if (actor._currentTargetColor === color && actor._currentInsensitiveState === isInsensitive) return;
+    // Interpolating light to dark passes through the background's own grey.
+    const changesPolarity = actor._currentTargetColor !== color;
     actor._currentTargetColor = color;
     actor._currentInsensitiveState = isInsensitive;
 
-    this._animateActorColor(actor, color, isInsensitive, 380, skipAnimations);
+    this._animateActorColor(actor, color, isInsensitive, 380, skipAnimations || changesPolarity);
   }
 
   // Removes all dynamically applied adaptive text color styles and stops related animations
@@ -869,20 +1009,6 @@ export class UIManager {
     }
     this._styledActors.clear();
 
-    const currentTargets = this._collectAdaptiveTextTargets() as CustomBannerActor[];
-    for (let actor of currentTargets) {
-      if (actor && typeof actor.set_style === 'function') {
-        if (actor._colorTweenId) {
-          GLib.source_remove(actor._colorTweenId);
-          actor._colorTweenId = undefined;
-        }
-        actor._currentTargetColor = undefined;
-        actor._currentInsensitiveState = undefined;
-        try {
-          actor.set_style(null);
-        } catch (e) { }
-      }
-    }
   }
 
   // Iterates through the color map and applies the new target colors to the respective actors
@@ -942,6 +1068,7 @@ export class UIManager {
     this._contrastSampler
       .chooseColorsForActors(targets, this._adaptiveConfig)
       .then(colorMap => {
+        if (!this._isEffectActive || this._actorDestroyed) return;
         this._applyAdaptiveColorMap(colorMap, skipAnimations);
       })
       .catch(e => {
@@ -975,6 +1102,8 @@ export class UIManager {
       actor._colorTweenId = undefined;
     }
 
+    const originalStyle = (this._styledActors.get(actor) || '').trim();
+    const stylePrefix = originalStyle ? `${originalStyle.replace(/;$/, '')}; ` : '';
     let themeNode = actor.get_theme_node();
     let startColor = themeNode.get_foreground_color();
 
@@ -986,7 +1115,7 @@ export class UIManager {
     if (skipAnimations) {
       let alphaStr = targetAlpha.toFixed(3);
       let targetRgba = `rgba(${targetRgb.r}, ${targetRgb.g}, ${targetRgb.b}, ${alphaStr})`;
-      try { actor.set_style(`color: ${targetRgba}; -st-icon-foreground-color: ${targetRgba};`); } catch (e) { }
+      try { actor.set_style(`${stylePrefix}color: ${targetRgba}; -st-icon-foreground-color: ${targetRgba};`); } catch (e) { }
       return;
     }
 
@@ -1013,7 +1142,7 @@ export class UIManager {
       let alphaStr = a.toFixed(3);
       let currentRgba = `rgba(${r}, ${g}, ${b}, ${alphaStr})`;
 
-      try { actor.set_style(`color: ${currentRgba}; -st-icon-foreground-color: ${currentRgba};`); } catch (e) { }
+      try { actor.set_style(`${stylePrefix}color: ${currentRgba}; -st-icon-foreground-color: ${currentRgba};`); } catch (e) { }
 
       if (progress >= 1.0) {
         actor._colorTweenId = undefined;
@@ -1191,11 +1320,12 @@ export class UIManager {
     }
 
     // Remove transparent CSS overrides
-    this.targetActor.remove_style_class_name('liquid-glass-transparent');
-    if (this.animActor) {
+    if (!this._actorDestroyed) this.targetActor.remove_style_class_name('liquid-glass-transparent');
+    if (!this._actorDestroyed && this.animActor) {
       this.animActor.remove_style_class_name('liquid-glass-transparent');
       this.animActor.remove_style_class_name('liquid-glass-menu-root');
 
+      this.animActor.translation_x = 0;
       this.animActor.translation_y = 0;
       this.animActor.set_scale(1.0, 1.0);
       this.animActor.opacity = 255;
@@ -1207,11 +1337,13 @@ export class UIManager {
       this._dynamicCssFile = null;
     }
 
-    this.targetActor.translation_y = 0;
-    this.targetActor.set_scale(1.0, 1.0);
-    this.targetActor.opacity = 255;
+    if (!this._actorDestroyed) {
+      this.targetActor.translation_y = 0;
+      this.targetActor.set_scale(1.0, 1.0);
+      this.targetActor.opacity = 255;
+    }
 
-    if (this.menu.actor) {
+    if (!this._actorDestroyed && this.menu.actor) {
       this.menu.actor.opacity = 255;
 
       if (this.menu.isOpen) {
@@ -1234,6 +1366,7 @@ export class UIManager {
     }
     this.liquidBox = null;
     this._cloneContainer = null;
+    this._menuRoot = null;
 
     // Clean up managers (try-catch in their destroy() handles already-destroyed actors)
     this._uiSampler?.destroy();
@@ -1281,6 +1414,24 @@ export class UIManager {
         try { this._settings.disconnect(sigId); } catch (e) { }
       }
       this._settingsSignals = [];
+    });
+
+    // These connections also exist when the global menu effect is disabled,
+    // so they cannot be left to _removeEffect() below.
+    this._teardownStep('menuSignals', () => {
+      if (this._animSignalId) {
+        this.menu.disconnect(this._animSignalId);
+        this._animSignalId = 0;
+      }
+      if (this._destroySignalId) {
+        this.targetActor.disconnect(this._destroySignalId);
+        this._destroySignalId = 0;
+      }
+      if (this._interfaceSettings && this._accentColorSignalId) {
+        this._interfaceSettings.disconnect(this._accentColorSignalId);
+        this._accentColorSignalId = 0;
+        this._interfaceSettings = null;
+      }
     });
 
     // [FIX] This used to be `if (!this.targetActor) return;`, which skipped
