@@ -54,14 +54,47 @@ uniform float shadow_intensity;
 uniform float shadow_max_radius;
 uniform float padding;
 uniform float isDock;
-// [PERF] Single flag, set from LiquidEffect.setFastMode() — gated in JS by
-// LiquidEffect.DRAG_PERF_MODE_ENABLED so this is a pure no-op (uniform
-// stays 0.0) unless a caller explicitly opts in during e.g. a window drag.
-// 0.0 = current behavior, unchanged. 1.0 = cheaper approximations below:
-// heightGradientFast() (analytic SDF gradient direction + a single
-// directional sample, instead of 4 axis-aligned getHeight() samples) and
-// skipping the outer drop-shadow computation entirely.
-uniform float fast_mode;
+
+// [PERF] Blurred sub-rect (actor-local px, same space as `pixel_coord` and
+// dock_x/y/w/h). Layer 1 no longer holds a blurred copy of the WHOLE actor;
+// it holds only this rectangle, blurred. Everything the shader actually
+// draws — the glass body plus its refraction/AA reach — lives inside it, so
+// the pixels that used to be blurred and then thrown away are never produced
+// in the first place. The FBO, the actor and every stage coordinate are
+// unchanged: only the area handed to the blur chain shrank. That distinction
+// matters — a background-mode blur inside our subtree (Blur My Shell's panel)
+// resolves its source in STAGE coordinates and blits from the CURRENT
+// framebuffer, so shrinking the FBO itself would misalign it. See
+// dockManager.ts's "Full-screen FBO geometry" note.
+//
+// blur_rect_w/h < 1 means "the whole actor", which is what an unset uniform
+// (0.0) reads as — so the fallback is also the safe default.
+uniform float blur_rect_x;
+uniform float blur_rect_y;
+uniform float blur_rect_w;
+uniform float blur_rect_h;
+// [PERF/DEBUG] Master switch for the two early exits at the top of main().
+// 1.0 = on (normal). 0.0 = take the full per-pixel path everywhere, which is
+// what the shader did before those exits existed. Flipped at runtime from
+// Looking Glass via global._lgGlass.earlyExit(false) so a suspected rendering
+// difference can be A/B'd inside one session instead of across rebuilds.
+// LiquidEffect seeds it to 1.0 in _init(); an unset Cogl uniform reads 0.0,
+// which would silently disable the exits.
+uniform float early_exit_enabled;
+
+// [DEBUG] Diagnostic visualisation, 0 = off (normal rendering).
+//   1 = paint the shape and shadow masks directly, fully opaque, with a
+//       gamma boost so faint values are still legible:
+//         RED   = shadowAlpha  (the drop shadow's own coverage)
+//         GREEN = insideMask   (the glass shape itself)
+//         BLACK = neither
+//   2 = the same, with the raw un-boosted values.
+// This answers "is the shader computing a shadow at all, and where" without
+// any of the compositing, ordering or clipping that sits between this
+// shader's output and the screen. Set from Looking Glass with
+// global._lgGlass.debugView(1). Disables the early exits while active so the
+// whole surface is visualised.
+uniform float debug_view;
 
 // [NEW] SCB (Saturation, Contrast, Brightness) 調整用の変数
 uniform float brightness;
@@ -243,55 +276,64 @@ float gradientStep(vec2 resolution) {
     return clamp(minRes / 560.0, 0.45, 1.20);
 }
 
-// Estimates the height gradient (slope) by sampling neighboring pixels.
-vec2 heightGradient(vec2 p, vec2 b, float r, float zScale, vec2 resolution) {
-    float e = gradientStep(resolution);
-
-    float hR = getHeight(p + vec2(e, 0.0), b, r, zScale);
-    float hL = getHeight(p - vec2(e, 0.0), b, r, zScale);
-    float hB = getHeight(p + vec2(0.0, e), b, r, zScale);
-    float hT = getHeight(p - vec2(0.0, e), b, r, zScale);
-
-    return vec2((hR - hL) / (2.0 * e), (hB - hT) / (2.0 * e));
+// Unit gradient of sdRoundRect() at p — i.e. the direction of steepest
+// increase of the signed distance, which for an SDF is simply "straight out
+// of the shape". Closed form, no sampling.
+//
+// This is the same construction the distance function itself is built from:
+// inside the cross (both q components negative) the nearest edge is whichever
+// axis is closest, so the gradient is that axis; in the corner quadrant the
+// distance is length(max(q, 0)) and its gradient is that vector normalized.
+// sign(p) mirrors the result back out of the abs() folded first quadrant.
+vec2 sdRoundRectDir(vec2 p, vec2 b, float r) {
+    vec2 q = abs(p) - b + vec2(r);
+    if (max(q.x, q.y) < 0.0) {
+        // Edge region: nearest boundary is a straight side.
+        return (q.x > q.y) ? vec2(sign(p.x), 0.0) : vec2(0.0, sign(p.y));
+    }
+    // Corner region: radially outward from the corner circle's centre.
+    return sign(p) * normalize(max(q, 0.0) + vec2(1e-6));
 }
 
-// [PERF] Cheaper alternative to heightGradient() above, used when
-// fast_mode > 0.5 (see uniform declaration up top). heightGradient()
-// estimates BOTH the gradient's direction and magnitude numerically, which
-// costs 4 getHeight() evaluations per pixel (each itself doing an
-// sdRoundRect + profileHeight). For a rounded-rect SDF the gradient's
-// DIRECTION has a known closed form (Inigo Quilez's rounded-box distance
-// field gradient) that costs a few ALU ops and zero extra getHeight()
-// calls — only the magnitude still needs an actual height sample, and
-// that only needs ONE extra sample (taken along the now-known direction)
-// instead of 4. Net: 2 getHeight() calls instead of 4, plus the numerical
-// direction-estimation error heightGradient() has near the corners (where
-// the two axis-aligned finite differences straddle the rounding) is gone
-// entirely — this is a strict quality improvement for direction, traded
-// against a slightly coarser magnitude estimate (single forward sample
-// instead of a centered one), which is the actual approximation being
-// made here.
-vec2 heightGradientFast(vec2 p, vec2 b, float r, float zScale, vec2 resolution) {
-    vec2 q = abs(p) - b + vec2(r);
-    vec2 dir;
-    if (max(q.x, q.y) < 0.0) {
-        // Inside the "inner rect" part of the rounded box (straight edges,
-        // not yet in corner-rounding territory): gradient is axis-aligned,
-        // pointing out through whichever side is closer.
-        dir = (q.x > q.y) ? vec2(sign(p.x), 0.0) : vec2(0.0, sign(p.y));
-    } else {
-        // Corner region: gradient points radially outward from the corner
-        // circle's center, same construction sdRoundRect() itself uses for
-        // the corner term (length(max(d,0))).
-        vec2 qc = max(q, 0.0);
-        dir = sign(p) * normalize(qc + vec2(1e-6));
-    }
-
+// Height gradient of the glass surface at p.
+//
+// The height is a function of the signed distance alone — getHeight(p) is
+// profileHeight(t(d)) * fade(d) with d = sdRoundRect(p) — so by the chain
+// rule its gradient is
+//
+//     grad(H) = H'(d) * grad(d)
+//
+// and grad(d) is available in closed form from sdRoundRectDir() above. Only
+// the scalar H'(d) is left to estimate, which takes one central difference
+// ALONG that direction instead of two along each axis.
+//
+// [PERF] 4 getHeight() calls -> 2, i.e. 8 pow() -> 4 and 5 sdRoundRect() -> 3.
+// (Do not expect this to move the GPU needle: the earlyExit A/B measurement
+// showed this shader's arithmetic is a small fraction of the frame. The
+// reasons to do it are accuracy and deleting the fast_mode fork, which this
+// change removed outright.)
+//
+// [FIX] More accurate than the axis-aligned version it replaces, not just
+// cheaper. Differencing along x and y separately picks up the SDF's curvature
+// across the step, so the resulting vector was never exactly parallel to
+// grad(d) — most visible on rounded corners, where the two axes disagree
+// about the surface orientation. Differencing along the true gradient
+// direction cannot tilt the normal that way.
+//
+// H'(d) is NOT evaluated in closed form on purpose. It exists — but the
+// superellipse profile has an infinite slope at t = 0 (the surface is
+// vertical exactly at the glass edge; profileHeight's inner^(1/n) term has an
+// unbounded derivative there for n > 1). The finite difference is what keeps
+// that bounded, at a magnitude tied to gradientStep(), which is precisely the
+// smoothing the current look depends on.
+vec2 heightGradient(vec2 p, vec2 b, float r, float zScale, vec2 resolution) {
+    vec2 dir = sdRoundRectDir(p, b, r);
     float e = gradientStep(resolution);
-    float h0 = getHeight(p, b, r, zScale);
-    float h1 = getHeight(p + dir * e, b, r, zScale);
-    float slope = (h1 - h0) / e;
-    return dir * slope;
+
+    float hOut = getHeight(p + dir * e, b, r, zScale);
+    float hIn  = getHeight(p - dir * e, b, r, zScale);
+
+    return dir * ((hOut - hIn) / (2.0 * e));
 }
 
 // Converts the 2D gradient into a 3D normal vector.
@@ -338,6 +380,21 @@ vec2 stabilizedUV(vec2 candidate, vec2 fallback) {
     return mix(fallback, clamped, keep);
 }
 
+// [PERF] Maps a full-actor UV (0..1 across `resolution`) into the blurred
+// sub-rect's own UV, clamped 1.2 texels inside it — the same margin the old
+// SAFE() macro kept from the capture's edge, just measured against the rect.
+// When the rect covers the whole actor this is exactly the old expression.
+vec2 blurUV(vec2 fullUV, vec2 resolution) {
+    if (blur_rect_w < 1.0 || blur_rect_h < 1.0) {
+        vec2 mFull = vec2(1.2) / max(resolution, vec2(1.0));
+        return clamp(fullUV, mFull, vec2(1.0) - mFull);
+    }
+    vec2 size = vec2(blur_rect_w, blur_rect_h);
+    vec2 m = vec2(1.2) / size;
+    return clamp((fullUV * resolution - vec2(blur_rect_x, blur_rect_y)) / size,
+                 m, vec2(1.0) - m);
+}
+
 // [NEW] Adjust color saturation, contrast, brightness
 vec3 applySCB(vec3 color, float b, float c, float s) {
     // 1. 輝度 (Brightness): 単純な乗算
@@ -353,6 +410,26 @@ vec3 applySCB(vec3 color, float b, float c, float s) {
     
     // コントラスト調整等でマイナスになった値を0に丸める
     return max(color, 0.0);
+}
+
+// The flat "panel background" fallback fill, composited UNDER the glass+shadow
+// result. Extracted from the tail of main() so the fast paths there can apply
+// the identical term; see the panel_bg_* / panel_rect_* uniform comments.
+//
+// Returns the PREMULTIPLIED contribution: .rgb is already scaled by .a, which
+// is what the caller adds to finalRgb / finalAlpha respectively.
+//
+// `coveredAlpha` is how much the glass itself already covers this pixel — the
+// fill only shows through whatever is left.
+vec4 panelFallback(vec2 pixel_coord, float coveredAlpha) {
+    vec2 panelCenter = vec2(panel_rect_x, panel_rect_y) + vec2(panel_rect_w, panel_rect_h) * 0.5;
+    vec2 panelLocal = pixel_coord - panelCenter;
+    vec2 panelBox = max(vec2(panel_rect_w, panel_rect_h) * 0.5, vec2(1.0));
+    float panelDist = sdRoundRect(panelLocal, panelBox, corner_radius);
+    float panelMask = 1.0 - smoothstep(-1.0, 1.0, panelDist);
+
+    float contribution = panel_bg_a * (1.0 - coveredAlpha) * panelMask;
+    return vec4(vec3(panel_bg_r, panel_bg_g, panel_bg_b) * contribution, contribution);
 }
 
 void main() {
@@ -456,6 +533,104 @@ void main() {
     float outsideTransition = smoothstep(-edgeFeather, edgeFeather, d);
     float insideMask = 1.0 - outsideTransition;
     float outsideMask = outsideTransition;
+
+    // ══════════════════════════════════════════════════════════════════════
+    // [PERF] Two early exits. Everything between here and the final composite
+    // is per-pixel work that provably collapses to a constant in these two
+    // regions, and the two of them together cover the large majority of every
+    // glass surface — the whole monitor minus the dock for the full-screen
+    // FBO surfaces (dock/menu/notification/OSD/quick-settings), and ~80% of
+    // the area for an application window.
+    //
+    // Both are spatially coherent (one big contiguous region each), so a GPU
+    // wavefront takes one side or the other wholesale rather than paying for
+    // both.
+    // ══════════════════════════════════════════════════════════════════════
+
+    // ── Exit 1: beyond the shadow's reach ─────────────────────────────────
+    // Past maxRadius the shadow block below multiplies its result by
+    // `1.0 - step(maxRadius, d)` (and by a boundsMask that is already 0
+    // there), and insideMask is 0 for any d >= edgeFeather. So alpha,
+    // shadowContribution and finalRgb are all exactly 0, and the only thing
+    // that can still write a pixel is the panel fallback fill.
+    //
+    // Multi-region mode (Quick Settings "Toggles") zeroes shadowAlpha
+    // outright further down, so there the shape's own edge is the only thing
+    // that can produce a pixel and the exit can start right at edgeFeather.
+    float shadowReach = (multi_region_mode > 0.5) ? 0.0 : max(shadow_max_radius, 5.0);
+    if (early_exit_enabled > 0.5 && debug_view < 0.5 && d >= max(shadowReach, edgeFeather)) {
+        cogl_color_out = panelFallback(pixel_coord, 0.0) * cogl_color_in;
+        return;
+    }
+
+    // ── Exit 2: the flat interior ─────────────────────────────────────────
+    // Deep enough inside the shape that the height profile has reached its
+    // plateau, which makes the surface geometrically flat:
+    //
+    //   getHeight() == max_z everywhere in a gradientStep() neighbourhood
+    //     => heightGradient() == 0
+    //     => normal == (0, 0, 1)
+    //     => refract() returns (0, 0, -1) => displacement == 0
+    //
+    // and with a flat normal every edge term vanishes as well: rimDot is
+    // 1 - dot(N, viewDir) = 0 so the Fresnel rim is 0, edgeBand is 0 past
+    // rim_width, the AO band is 0 past ao_radius, insideMask is 1 so the
+    // shadow contributes nothing, and the panel fill is masked out by
+    // (1 - finalAlpha) == 0.
+    //
+    // What survives is constant across the whole region: the specular and
+    // sheen lobes evaluated at N = (0, 0, 1). Both are folded in below.
+    //
+    // The threshold has to clear every one of those terms at once, including
+    // the finite-difference neighbourhood the gradient samples (the SDF is
+    // 1-Lipschitz, so a step of `e` moves d by at most `e`).
+    float smoothZoneEarly = max(edge_smoothing, 1.0);
+    float interiorThreshold = max(
+        max(corner_radius + gradientStep(resolution) + smoothZoneEarly,
+            edgeFeather * 4.0),
+        max(ao_radius, rim_width));
+    if (early_exit_enabled > 0.5 && debug_view < 0.5 && -d >= interiorThreshold) {
+        // Refraction is zero here, so this is the same coordinate the full
+        // path would arrive at: stabilizedUV(uv + 0, uv).
+        vec2 uvFlat = stabilizedUV(uv, uv);
+
+        // Same 4-tap RGSS pattern, with the same aa_spread the full path
+        // would compute (edgeProximity == 0 => mix(0.75, 2.5, 0) == 0.75).
+        vec2 texelFlat = vec2(0.75) / resolution;
+        vec3 flatRgb = (
+            texture2D(cogl_sampler1, blurUV(uvFlat + vec2( 0.375, -0.125) * texelFlat, resolution)).rgb +
+            texture2D(cogl_sampler1, blurUV(uvFlat + vec2( 0.125,  0.375) * texelFlat, resolution)).rgb +
+            texture2D(cogl_sampler1, blurUV(uvFlat + vec2(-0.375,  0.125) * texelFlat, resolution)).rgb +
+            texture2D(cogl_sampler1, blurUV(uvFlat + vec2(-0.125, -0.375) * texelFlat, resolution)).rgb
+        ) * 0.25;
+
+        flatRgb = applySCB(flatRgb, brightness, contrast, saturation);
+        flatRgb = mix(flatRgb, activeTint, activeBaseStrength);
+        flatRgb = mix(flatRgb, vec3(tint_r, tint_g, tint_b), tint_strength);
+
+        // Specular and sheen at N = (0, 0, 1). reflect(-L, N) is
+        // (-L.x, -L.y, L.z), so dot(reflectDir, viewDir) is L.z; the sheen's
+        // facing term dot(N, L) is L.z as well. specMask reduces to
+        // mix(0.25, 1.0, 1.0) * clamp(0.0 + 0.65, 0, 1) == 0.65.
+        vec3 lightDirFlat = normalize(vec3(cos(radians(light_angle_deg)),
+                                           sin(radians(light_angle_deg)), 0.38));
+        float facing = max(lightDirFlat.z, 0.0);
+        float specFlat = pow(facing, max(shininess, 1.0)) * specular_intensity * 0.65;
+        float sheenFlat = pow(facing, 1.65) * sheen_intensity;
+        vec3 addedFlat = vec3(specFlat + sheenFlat) * surface_light_enabled;
+
+        // Screen blend, then the same overflow normalization as the full path.
+        vec3 litFlat = flatRgb + addedFlat - (flatRgb * addedFlat);
+        float maxChannelFlat = max(litFlat.r, max(litFlat.g, litFlat.b));
+        if (maxChannelFlat > 1.0) {
+            litFlat /= maxChannelFlat;
+        }
+        litFlat = max(litFlat, 0.0);
+
+        // alpha == insideMask == 1, so the shadow and panel terms are both 0.
+        cogl_color_out = vec4(litFlat, 1.0) * cogl_color_in;
+        return;
+    }
 
     // ------------------------------------------------------------------
     // Realistic drop shadow (anchors the glass on light backgrounds).
@@ -610,19 +785,20 @@ void main() {
         shadowAlpha = 0.0;
     }
 
-    // [PERF] fast_mode (see uniform declaration up top): same "zero the
-    // result rather than restructure the computation" approach as
-    // multi_region_mode just above — the shadow math itself (dot products
-    // and a couple of quintic-ease multiplications, no pow()/texture calls)
-    // is cheap next to the 4-tap-vs-2-tap getHeight() saving from
-    // heightGradientFast() above, and this keeps the change a pure
-    // result-level toggle with no risk of a GLSL scoping mistake in the
-    // fairly intricate umbra/penumbra/bounds sequence above. A genuine
-    // "skip the ALU work" version is possible but wasn't made here since it
-    // can't be compile-tested outside a running shell — ask if you want
-    // that version to try locally.
-    if (fast_mode > 0.5) {
-        shadowAlpha = 0.0;
+    // [DEBUG] See the debug_view uniform. Placed here because shadowAlpha is
+    // final at this point (the multi-region zeroing above is the last thing
+    // that touches it).
+    if (debug_view > 0.5) {
+        // Mode 1 gamma-boosts both channels because the raw values are easy
+        // to misread: a drop shadow at the default intensity peaks around
+        // 0.29, and RGB(0.29, 0, 0) on black reads as "black" to the eye.
+        // pow(x, 0.35) lifts that to ~0.64 while still mapping 0 to 0, so
+        // "no shadow at all" stays unambiguous. Mode 2 leaves the values raw
+        // for when the exact magnitude matters.
+        float dbgShadow = (debug_view < 1.5) ? pow(shadowAlpha, 0.35) : shadowAlpha;
+        float dbgInside = (debug_view < 1.5) ? pow(insideMask, 0.35) : insideMask;
+        cogl_color_out = vec4(dbgShadow, dbgInside, 0.0, 1.0) * cogl_color_in;
+        return;
     }
 
     // 9) Shadow color: dark with a subtle cool/blue cast. Suggests ambient
@@ -631,11 +807,14 @@ void main() {
     //    pure black" look.
     vec3 shadowColor = vec3(0.03, 0.04, 0.08);
 
-    vec4 source = texture2D(cogl_sampler1, uv);
+    // [PERF] A `vec4 source = texture2D(cogl_sampler1, uv);` used to sit here
+    // and was never read by anything below — the body samples the blurred
+    // layer through the RGSS block further down and nowhere else. Most
+    // drivers dead-code-eliminate an unused fetch, but not all of them do it
+    // reliably for a texture lookup, and there is nothing to gain by leaving
+    // it to chance.
 
-    vec2 gradH = (fast_mode > 0.5)
-        ? heightGradientFast(local_pos, box_size, corner_radius, max_z, resolution)
-        : heightGradient(local_pos, box_size, corner_radius, max_z, resolution);
+    vec2 gradH = heightGradient(local_pos, box_size, corner_radius, max_z, resolution);
     vec3 normal = getNormal(gradH);
 
     vec2 disp = getDisplacement(d, normal, resolution);
@@ -646,14 +825,40 @@ void main() {
 
     vec2 refractedUv = stabilizedUV(uv + disp, uv);
 
-    float minRes = max(min(resolution.x, resolution.y), 1.0);
     vec2 chromaDir = length(disp) > 0.00001 ? normalize(disp) : vec2(0.0);
-    
+
     // Calculate Chromatic Aberration vectors (separating RGB channels slightly).
-    vec2 chromaVec = chromaDir * (chroma_strength / minRes) * edgeDampen;
-    vec2 uvR = stabilizedUV(refractedUv + chromaVec, refractedUv);
+    //
+    // [FIX] chroma_strength is now in PIXELS. It used to be divided by
+    // minRes (the shorter side of the FBO), which made the uniform mean "a
+    // fraction of the screen" — so the 0.0-0.1 slider produced a channel
+    // split of at most 0.18px on a 1920x1080 dock surface and 0.011px at the
+    // default of 0.006. That is far below one texel of an already-blurred
+    // source, which is why moving the slider had no visible effect anywhere
+    // in its range.
+    //
+    // The giveaway was displacement_scale a few lines up: it carries the
+    // same `/ minRes` normalization but ships with a default of 78.5 and a
+    // 0-200 range, i.e. the two sliders were ~2000x apart in units for the
+    // same maths. Dividing by `resolution` (the vec2, per axis) instead
+    // makes the offset exactly chroma_strength pixels in every direction,
+    // since chromaDir is a unit vector.
+    //
+    // The schema default and the prefs range are rescaled to match (1.5px
+    // default, 0-5px range).
+    vec2 chromaVec = chromaDir * (chroma_strength / resolution) * edgeDampen;
     vec2 uvG = refractedUv;
-    vec2 uvB = stabilizedUV(refractedUv - chromaVec, refractedUv);
+
+    // [PERF] Is the channel split large enough to change any sampled texel?
+    // chromaVec is a UV offset, so multiplying by the resolution converts it
+    // to pixels. Below a hundredth of a pixel the three channels provably
+    // resolve to the same coordinates (see the single-fetch branch below),
+    // and the 12-fetch path is pure waste. This is true across the whole
+    // glass whenever chroma_strength is 0, and everywhere the refraction
+    // itself vanishes (the flat interior: disp == 0 makes chromaDir == 0)
+    // regardless of the setting.
+    vec2 chromaPx = chromaVec * resolution;
+    bool chromaActive = dot(chromaPx, chromaPx) > 1.0e-4;
 
     // Step 1: RGSS (Rotated Grid Super-Sampling) Pattern Implementation
     // Instead of sampling in a simple square, sampling in a slanted diamond pattern
@@ -670,26 +875,52 @@ void main() {
     // Hard limit sampling coordinates to 1.2px inside the texture bounds.
     // This prevents bilinear filtering from accidentally pulling in black/transparent 
     // pixels from the void outside the texture space.
-    vec2 margin = vec2(1.2) / resolution;
-    #define SAFE(u) clamp(u, margin, 1.0 - margin)
+    // [PERF] SAFE() used to clamp against the capture's own edge; blurUV()
+    // does the same job against the blurred sub-rect (see its definition).
+    #define SAFE(u) blurUV(u, resolution)
 
     // Step 2: Multi-tap Sampling (Averaging 4 sub-pixels to smooth out the image)
-    vec3 refractedRgb = vec3(
-        (texture2D(cogl_sampler1, SAFE(uvR + off1)).r +
-         texture2D(cogl_sampler1, SAFE(uvR + off2)).r +
-         texture2D(cogl_sampler1, SAFE(uvR + off3)).r +
-         texture2D(cogl_sampler1, SAFE(uvR + off4)).r) * 0.25,
+    vec3 refractedRgb;
+    if (chromaActive) {
+        // Each channel walks its own refracted path — 3 channels x 4 RGSS
+        // taps = 12 fetches.
+        vec2 uvR = stabilizedUV(refractedUv + chromaVec, refractedUv);
+        vec2 uvB = stabilizedUV(refractedUv - chromaVec, refractedUv);
 
-        (texture2D(cogl_sampler1, SAFE(uvG + off1)).g +
-         texture2D(cogl_sampler1, SAFE(uvG + off2)).g +
-         texture2D(cogl_sampler1, SAFE(uvG + off3)).g +
-         texture2D(cogl_sampler1, SAFE(uvG + off4)).g) * 0.25,
+        refractedRgb = vec3(
+            (texture2D(cogl_sampler1, SAFE(uvR + off1)).r +
+             texture2D(cogl_sampler1, SAFE(uvR + off2)).r +
+             texture2D(cogl_sampler1, SAFE(uvR + off3)).r +
+             texture2D(cogl_sampler1, SAFE(uvR + off4)).r) * 0.25,
 
-        (texture2D(cogl_sampler1, SAFE(uvB + off1)).b +
-         texture2D(cogl_sampler1, SAFE(uvB + off2)).b +
-         texture2D(cogl_sampler1, SAFE(uvB + off3)).b +
-         texture2D(cogl_sampler1, SAFE(uvB + off4)).b) * 0.25
-    );
+            (texture2D(cogl_sampler1, SAFE(uvG + off1)).g +
+             texture2D(cogl_sampler1, SAFE(uvG + off2)).g +
+             texture2D(cogl_sampler1, SAFE(uvG + off3)).g +
+             texture2D(cogl_sampler1, SAFE(uvG + off4)).g) * 0.25,
+
+            (texture2D(cogl_sampler1, SAFE(uvB + off1)).b +
+             texture2D(cogl_sampler1, SAFE(uvB + off2)).b +
+             texture2D(cogl_sampler1, SAFE(uvB + off3)).b +
+             texture2D(cogl_sampler1, SAFE(uvB + off4)).b) * 0.25
+        );
+    } else {
+        // [PERF] Same 4 RGSS taps, all three channels taken from each — 4
+        // fetches instead of 12, and bit-for-bit the same result.
+        //
+        // Why the coordinates really are identical, not merely close: with
+        // chromaVec == 0 the R/B coordinate is stabilizedUV(refractedUv,
+        // refractedUv) = mix(refractedUv, clamp(refractedUv, .001, .999),
+        // keep), which equals refractedUv (== uvG) for every refractedUv
+        // already inside [.001, .999] — i.e. everywhere except within one
+        // thousandth of the texture border. In that last sliver the two
+        // differ by at most 0.001 in UV, and SAFE() then clamps both to the
+        // same 1.2-texel margin inside the blurred rect. So the sampled
+        // texels match on both sides of the branch.
+        refractedRgb = (texture2D(cogl_sampler1, SAFE(uvG + off1)).rgb +
+                        texture2D(cogl_sampler1, SAFE(uvG + off2)).rgb +
+                        texture2D(cogl_sampler1, SAFE(uvG + off3)).rgb +
+                        texture2D(cogl_sampler1, SAFE(uvG + off4)).rgb) * 0.25;
+    }
 
     // Apply color saturation, contrast, brightness
     vec3 adjustedRefracted = applySCB(refractedRgb, brightness, contrast, saturation); 
@@ -906,16 +1137,11 @@ void main() {
     // uniform; this is an approximation of the panel's true corner radius
     // (rectangular corners would be visible only in the ~1-2px outside a
     // rounded corner, which is preferable to a few-hundred-px black box).
-    vec2 panelCenter = vec2(panel_rect_x, panel_rect_y) + vec2(panel_rect_w, panel_rect_h) * 0.5;
-    vec2 panelLocal = pixel_coord - panelCenter;
-    vec2 panelBox = max(vec2(panel_rect_w, panel_rect_h) * 0.5, vec2(1.0));
-    float panelDist = sdRoundRect(panelLocal, panelBox, corner_radius);
-    float panelMask = 1.0 - smoothstep(-1.0, 1.0, panelDist);
-
-    vec3 panelBg = vec3(panel_bg_r, panel_bg_g, panel_bg_b);
-    float panelContribution = panel_bg_a * (1.0 - finalAlpha) * panelMask;
-    finalRgb += panelBg * panelContribution;
-    finalAlpha += panelContribution;
+    // [PERF] Extracted to panelFallback() so the early-out paths below can
+    // apply the exact same term without duplicating it. Identical maths.
+    vec4 panelTerm = panelFallback(pixel_coord, finalAlpha);
+    finalRgb += panelTerm.rgb;
+    finalAlpha += panelTerm.a;
 
     // Output with premultiplied alpha format, required by Clutter/Cogl pipeline.
     cogl_color_out = vec4(finalRgb, finalAlpha) * cogl_color_in;

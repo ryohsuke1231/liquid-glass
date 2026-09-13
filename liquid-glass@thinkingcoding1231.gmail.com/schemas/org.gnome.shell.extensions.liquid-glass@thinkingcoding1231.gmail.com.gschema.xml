@@ -394,6 +394,12 @@
       <description>Adjusts the saturation of the glass effect behind application windows.</description>
     </key>
 
+    <key name="glass-blur-downscale" type="i">
+      <default>2</default>
+      <summary>Blur resolution</summary>
+      <description>Divisor for the resolution the background blur is computed at. 2 = half resolution (default). 4 = quarter resolution: every blur pass touches a quarter as many pixels and uses a quarter of the texture memory, but the blur becomes visibly coarser and fine detail behind the glass is lost. Any other value is treated as 2.</description>
+    </key>
+
     <key name="blur-method" type="i">
       <default>0</default>
       <summary>Blur method</summary>
@@ -431,9 +437,9 @@
     </key>
 
     <key name="glass-chroma-strength" type="d">
-      <default>0.006</default>
+      <default>1.5</default>
       <summary>Chromatic aberration strength</summary>
-      <description>Controls the RGB color separation effect caused by refraction.</description>
+      <description>Controls the RGB color separation effect caused by refraction, in pixels. Previously this value was a fraction of the screen size, which capped the visible effect at well under one pixel; existing values carried over from that scale will need re-tuning.</description>
     </key>
 
     <key name="glass-specular-intensity" type="d">
@@ -517,6 +523,12 @@
       <default>false</default>
       <summary>Output logs</summary>
       <description>Output logs to the terminal.</description>
+    </key>
+
+    <key name="glass-debug-diagnostics" type="b">
+      <default>false</default>
+      <summary>Per-paint render diagnostics</summary>
+      <description>Collect the per-paint state that global._lgGlass.dump() reports (capture size, UV range, texture pool, blur result). This runs on every paint of every glass surface, so it costs performance even when logging is off. Leave this disabled unless you are debugging a rendering problem.</description>
     </key>
 
   </schema>

@@ -6,7 +6,7 @@ import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import { LiquidEffect } from './liquidEffect.js';
 import { StageContrastSampler, AdaptiveContrastConfig } from './contrastSampler.js';
-import { UnpickableActor, UILayerSampler, WindowCloneManager, reportFrameLoopError, ensureGlassAllocated, isActorValid, LayoutOpaqueActor, UnpickableStyledWidget, getAllocatedSize, getTransformedRect, } from './utils.js';
+import { UnpickableActor, UILayerSampler, WindowCloneManager, reportFrameLoopError, ensureGlassAllocated, isActorValid, LayoutOpaqueActor, UnpickableStyledWidget, getAllocatedSize, getTransformedRect, isFrameSyncFrozen, setClipIfChanged, syncGlassCaptureClip } from './utils.js';
 // ========== Configuration Parameters ==========
 // Transparent padding outside the glass area.
 // This prevents the shader distortion or rounded corners from being clipped by the actor bounds.
@@ -79,6 +79,10 @@ export class QuickSettingsManager {
     _signals;
     _animSignalId = 0;
     _frameSyncId;
+    // [FIX] Set by cleanup() before anything that can throw. Read by the
+    // per-frame BEFORE_REDRAW tick so an orphaned chain stops itself even if
+    // cleanup() never reached its laterRemove(). See the note in frameTick().
+    _torndown = false;
     _glassExpand;
     _menuXoffset;
     _menuYoffset;
@@ -469,7 +473,7 @@ export class QuickSettingsManager {
         let contrast = this._settings.get_double('quick-settings-contrast');
         // LiquidEffect on liquidBox (includes built-in dual-Kawase blur)
         // Apply our custom GLSL liquid shader to the outer background actor
-        this.effect = new LiquidEffect({ extensionPath: this.extensionPath, settings: this._settings });
+        this.effect = new LiquidEffect({ extensionPath: this.extensionPath, settings: this._settings, owner: 'quick-settings' });
         // Tell the shader about the padding so it calculates refraction coordinates correctly
         this.effect.setPadding(SHADER_PADDING);
         this.effect.setTintColor(...this._hexToColorArray(tintColorStr));
@@ -483,7 +487,7 @@ export class QuickSettingsManager {
         this.liquidBox.add_effect(this.effect);
         // ── 5. WindowCloneManager + UILayerSampler ────────────────────────────────
         this._windowCloneManager = new WindowCloneManager(this.liquidBox, this._cloneContainer, 'lg-qs');
-        this._uiSampler = new UILayerSampler(this.bgActor, this.liquidBox, [menuRoot, global.windowGroup, global.window_group], this._cloneContainer);
+        this._uiSampler = new UILayerSampler(this.bgActor, this.liquidBox, [menuRoot, global.windowGroup, global.window_group], this._cloneContainer, 'quick-settings');
         this.bgActor.hide();
         // ── Helper functions for GNOME's render pipeline ──────────────────────────
         const laterAdd = (laterType, callback) => {
@@ -522,8 +526,25 @@ export class QuickSettingsManager {
         // the menu was closed and reopened.
         let frameTick = () => {
             this._frameSyncId = 0;
+            // [FIX] Hard stop after teardown. Every one of these ticks ends by
+            // re-adding itself as a BEFORE_REDRAW later, so a cleanup() that does
+            // not reach its laterRemove() — because an earlier step threw — leaves
+            // a self-rescheduling chain running forever against destroyed actors,
+            // holding this whole manager (and its settings and logger) alive. The
+            // next enable() then builds a second set on top of a live first set,
+            // which is the "the extension can no longer be enabled" symptom.
+            // Removing the later is still done in cleanup(); this is the backstop
+            // that does not depend on cleanup() getting that far.
+            if (this._torndown)
+                return GLib.SOURCE_REMOVE;
             if (!this.bgActor || !this.targetActor.mapped)
                 return GLib.SOURCE_REMOVE;
+            // [DIAG] See setFrameSyncFrozen() in utils.ts. Reschedules but does
+            // nothing, so the cost of this poll can be measured directly.
+            if (isFrameSyncFrozen()) {
+                this._frameSyncId = laterAdd(frameLaterType, frameTick);
+                return GLib.SOURCE_REMOVE;
+            }
             // Repair the subtree if Clutter has stopped allocating it. Sampled
             // here, at the top of the tick, because the previous frame's relayout
             // has settled by now and this frame's sync has not dirtied anything
@@ -723,7 +744,7 @@ export class QuickSettingsManager {
         let brightness = this._settings.get_double('quick-settings-brightness');
         let saturation = this._settings.get_double('quick-settings-saturation');
         let contrast = this._settings.get_double('quick-settings-contrast');
-        this.effect = new LiquidEffect({ extensionPath: this.extensionPath, settings: this._settings });
+        this.effect = new LiquidEffect({ extensionPath: this.extensionPath, settings: this._settings, owner: 'quick-settings-toggles' });
         this.effect.setPadding(SHADER_PADDING);
         // [FIX-8] Toggles mode needs the tint_r/g/b uniform pushed too, now that
         // the custom-color layer reads it directly instead of the TS side folding
@@ -742,7 +763,7 @@ export class QuickSettingsManager {
         this.liquidBox.add_effect(this.effect);
         // ── 5. WindowCloneManager + UILayerSampler (ONE shared instance) ──────────
         this._windowCloneManager = new WindowCloneManager(this.liquidBox, this._cloneContainer, 'lg-qs-toggles');
-        this._uiSampler = new UILayerSampler(this.bgActor, this.liquidBox, [menuRoot, global.windowGroup, global.window_group], this._cloneContainer);
+        this._uiSampler = new UILayerSampler(this.bgActor, this.liquidBox, [menuRoot, global.windowGroup, global.window_group], this._cloneContainer, 'quick-settings-toggles');
         this.bgActor.hide();
         const laterAdd = (laterType, callback) => {
             return global.compositor?.get_laters?.().add(laterType, callback);
@@ -775,6 +796,17 @@ export class QuickSettingsManager {
         // Same reschedule-survives-a-throw rule as above.
         let frameTick = () => {
             this._frameSyncId = 0;
+            // [FIX] Hard stop after teardown. Every one of these ticks ends by
+            // re-adding itself as a BEFORE_REDRAW later, so a cleanup() that does
+            // not reach its laterRemove() — because an earlier step threw — leaves
+            // a self-rescheduling chain running forever against destroyed actors,
+            // holding this whole manager (and its settings and logger) alive. The
+            // next enable() then builds a second set on top of a live first set,
+            // which is the "the extension can no longer be enabled" symptom.
+            // Removing the later is still done in cleanup(); this is the backstop
+            // that does not depend on cleanup() getting that far.
+            if (this._torndown)
+                return GLib.SOURCE_REMOVE;
             if (!this.bgActor || !this.targetActor.mapped)
                 return GLib.SOURCE_REMOVE;
             // Repair the subtree if Clutter has stopped allocating it. Sampled
@@ -1965,7 +1997,8 @@ export class QuickSettingsManager {
             this.liquidBox?.set_size(screenW, screenH);
             const CLIP_PADDING = 200;
             this.liquidBox?.remove_clip();
-            this.bgActor.set_clip(localBgX - CLIP_PADDING, localBgY - CLIP_PADDING, bgW + CLIP_PADDING * 2, bgH + CLIP_PADDING * 2);
+            // [PERF] set_clip() queues a redraw unconditionally — see setClipIfChanged().
+            setClipIfChanged(this.bgActor, localBgX - CLIP_PADDING, localBgY - CLIP_PADDING, bgW + CLIP_PADDING * 2, bgH + CLIP_PADDING * 2);
             this.effect?.setResolution(screenW, screenH);
             this._lastBgW = bgW;
             this._lastBgH = bgH;
@@ -1975,6 +2008,17 @@ export class QuickSettingsManager {
             this._lastScreenH = screenH;
         }
         this._windowCloneManager?.setOffset(-monitorX, -monitorY);
+        // [PERF ①/①b] See syncGlassCaptureClip() in utils.ts. Sits between the
+        // effect's geometry uniforms and the two sync() calls that consume the
+        // cull rect it produces.
+        syncGlassCaptureClip({
+            cloneContainer: this._cloneContainer,
+            effect: this.effect,
+            originX: monitorX,
+            originY: monitorY,
+            uiSampler: this._uiSampler,
+            windowCloneManager: this._windowCloneManager,
+        });
         this._uiSampler?.refresh();
         this._uiSampler?.sync(monitorX, monitorY, screenW, screenH);
         this._windowCloneManager?.sync();
@@ -2099,7 +2143,8 @@ export class QuickSettingsManager {
                 // Soft clip — limits GPU work to the menu area + generous margin
                 const CLIP_PADDING = 200;
                 this.liquidBox?.remove_clip();
-                this.bgActor.set_clip(localBgX - CLIP_PADDING, localBgY - CLIP_PADDING, bgW + CLIP_PADDING * 2, bgH + CLIP_PADDING * 2);
+                // [PERF] set_clip() queues a redraw unconditionally — see setClipIfChanged().
+                setClipIfChanged(this.bgActor, localBgX - CLIP_PADDING, localBgY - CLIP_PADDING, bgW + CLIP_PADDING * 2, bgH + CLIP_PADDING * 2);
                 const SHADOW_MAX_RADIUS = CLIP_PADDING - 20;
                 this.effect?.setShadowMaxRadius(SHADOW_MAX_RADIUS);
                 // Inform shader of full-screen resolution and where the menu lives in the FBO
@@ -2114,6 +2159,15 @@ export class QuickSettingsManager {
             }
             // ── Sync clones every frame (dockManager pattern) ──────────────────────
             this._windowCloneManager?.setOffset(-monitorX, -monitorY);
+            // [PERF ①/①b] See syncGlassCaptureClip() in utils.ts.
+            syncGlassCaptureClip({
+                cloneContainer: this._cloneContainer,
+                effect: this.effect,
+                originX: monitorX,
+                originY: monitorY,
+                uiSampler: this._uiSampler,
+                windowCloneManager: this._windowCloneManager,
+            });
             this._uiSampler?.refresh();
             this._uiSampler?.sync(monitorX, monitorY, screenW, screenH);
             this._windowCloneManager?.sync();
@@ -2806,17 +2860,47 @@ export class QuickSettingsManager {
         this._lastBgY = undefined;
         this._activeMode = null;
     }
-    cleanup() {
-        for (let sigId of this._settingsSignals) {
-            try {
-                this._settings.disconnect(sigId);
-            }
-            catch (e) { }
+    // [FIX] Teardown must not be all-or-nothing.
+    //
+    // These steps used to run bare, one after another, so the first one that
+    // threw skipped every step after it — signal handlers, actors, effects and
+    // (worst of all) the per-frame later chain stayed alive, and the next
+    // enable() built a second set on top. Disabling is exactly when a throw is
+    // most likely: the shell is destroying the same actors we are.
+    _teardownStep(name, fn) {
+        try {
+            fn();
         }
-        this._settingsSignals = [];
-        if (!this.targetActor)
-            return;
-        this._removeEffect();
+        catch (e) {
+            try {
+                this._logger?.error(`[Liquid Glass] ${this.constructor.name}.${name} failed during cleanup: ${e}`);
+            }
+            catch (_) {
+                console.error(`[Liquid Glass] ${name} failed during cleanup: ${e}`);
+            }
+        }
+    }
+    cleanup() {
+        this._torndown = true;
+        this._teardownStep('frameSync', () => {
+            if (this._frameSyncId !== 0) {
+                if (global.compositor?.get_laters)
+                    global.compositor.get_laters().remove(this._frameSyncId);
+                this._frameSyncId = 0;
+            }
+        });
+        this._teardownStep('settingsSignals', () => {
+            for (let sigId of this._settingsSignals) {
+                try {
+                    this._settings.disconnect(sigId);
+                }
+                catch (e) { }
+            }
+            this._settingsSignals = [];
+        });
+        // [FIX] `if (!this.targetActor) return;` used to sit here and skip
+        // _removeEffect() outright whenever the panel button had gone away.
+        this._teardownStep('removeEffect', () => this._removeEffect());
     }
 }
 // A straightforward mathematical implementation of Hooke's Law for spring physics

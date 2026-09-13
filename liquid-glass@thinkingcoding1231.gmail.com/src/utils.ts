@@ -10,6 +10,7 @@ import Clutter from 'gi://Clutter';
 import Cogl from 'gi://Cogl';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import St from 'gi://St';
+import Shell from 'gi://Shell';
 import Mtk from 'gi://Mtk';
 
 /**
@@ -175,6 +176,353 @@ export function setActorVisible(actor: Clutter.Actor, visible: boolean): void {
       actor.get_parent()?.queue_relayout();
     }
   } catch (_) { /* noop */ }
+}
+
+// ─── [PERF] Idle gating: write a clone property only when it changes ─────────
+//
+// Every manager's BEFORE_REDRAW tick used to re-write translation_x/y,
+// size, scale, pivot and opacity onto every clone of every glass, every
+// frame, whether or not anything had moved. Clutter's setters for the
+// transform properties do not compare before storing: they go straight to
+// transform_changed() + clutter_actor_queue_redraw(). So a completely
+// static desktop still damaged every clone 60 times a second, which damaged
+// the glass that contains it, which re-ran capture + blur + composite for
+// the whole nested stack.
+//
+// Measured (2026-09-11, 3 glass windows + dock, log__2.log):
+//
+//   state                     stage    glass paints   GPU
+//   normal                    60 fps   ~600/s         ~47%
+//   freezeSync(true)          ~35 fps  ~234/s         ~21%
+//   extension off             --       0              ~3%
+//
+// GPU is linear in glass-paints-per-second, and the stage only ran at a
+// full 60 fps because we kept damaging it. Nothing here changes what is
+// drawn — only whether a redundant write is issued at all.
+//
+// The last written value is cached on the clone itself rather than read
+// back from C: a GObject property read costs ~180ns through gjs (measured),
+// and with hundreds of clone syncs per frame that alone is a millisecond.
+// A JS expando is free, it is dropped with the actor, and nothing but these
+// helpers ever writes these particular properties on our clones.
+//
+// A/B: global._lgGlass.diffWrites(false) restores the unconditional writes.
+let _diffWritesEnabled = true;
+
+export function setDiffWritesEnabled(enabled: boolean): void {
+  _diffWritesEnabled = !!enabled;
+}
+
+export function isDiffWritesEnabled(): boolean {
+  return _diffWritesEnabled;
+}
+
+interface CloneWriteCache {
+  _lgTx?: number;
+  _lgTy?: number;
+  _lgW?: number;
+  _lgH?: number;
+  _lgSx?: number;
+  _lgSy?: number;
+  _lgPx?: number;
+  _lgPy?: number;
+  _lgOpacity?: number;
+}
+
+/** Drops the cache so the next sync writes unconditionally. */
+export function invalidateCloneWriteCache(actor: any): void {
+  if (!actor) return;
+  const c = actor as CloneWriteCache;
+  c._lgTx = c._lgTy = c._lgW = c._lgH = undefined;
+  c._lgSx = c._lgSy = c._lgPx = c._lgPy = c._lgOpacity = undefined;
+}
+
+export function setTranslationIfChanged(actor: any, x: number, y: number): boolean {
+  const c = actor as CloneWriteCache;
+  if (_diffWritesEnabled && c._lgTx === x && c._lgTy === y) return false;
+  c._lgTx = x; c._lgTy = y;
+  actor.translation_x = x;
+  actor.translation_y = y;
+  return true;
+}
+
+export function setSizeIfChanged(actor: any, w: number, h: number): boolean {
+  const c = actor as CloneWriteCache;
+  if (_diffWritesEnabled && c._lgW === w && c._lgH === h) return false;
+  c._lgW = w; c._lgH = h;
+  actor.set_size(w, h);
+  return true;
+}
+
+export function setScaleIfChanged(actor: any, sx: number, sy: number): boolean {
+  const c = actor as CloneWriteCache;
+  if (_diffWritesEnabled && c._lgSx === sx && c._lgSy === sy) return false;
+  c._lgSx = sx; c._lgSy = sy;
+  actor.set_scale(sx, sy);
+  return true;
+}
+
+export function setPivotIfChanged(actor: any, px: number, py: number): boolean {
+  const c = actor as CloneWriteCache;
+  if (_diffWritesEnabled && c._lgPx === px && c._lgPy === py) return false;
+  c._lgPx = px; c._lgPy = py;
+  actor.set_pivot_point(px, py);
+  return true;
+}
+
+export function setClipIfChanged(actor: any, x: number, y: number, w: number, h: number): boolean {
+  const c = actor as any;
+  if (_diffWritesEnabled &&
+      c._lgClipX === x && c._lgClipY === y && c._lgClipW === w && c._lgClipH === h) return false;
+  c._lgClipX = x; c._lgClipY = y; c._lgClipW = w; c._lgClipH = h;
+  actor.set_clip(x, y, w, h);
+  return true;
+}
+
+// ─── [PERF ①/①b] Capture clipping and clone culling ──────────────────────────
+//
+// Every glass is a ClutterOffscreenEffect, so each paint is
+//
+//   1. bind the offscreen FBO and clear it
+//   2. paint the whole clone subtree into it
+//        (wallpaper clone + every window clone + UI clones + BMS replica)
+//   3. run the blur and the composite (vfunc_paint_target)
+//
+// The blur sub-rect (phase 8) and the composite sub-rect (②) only ever
+// shrank step 3. Step 2 is still paid in full, and for the dock / menus /
+// notifications / OSD / quick settings it is paid over the WHOLE MONITOR,
+// because their bgActor is monitor-sized on purpose (see landmine 9 in
+// memo.md: shrinking it breaks Blur My Shell's stage-coordinate blit).
+//
+// Application windows already avoid this: applicationManager builds a
+// `clipBox` with clip_to_allocation and sizes it to the glass box, so their
+// clone subtree is clipped to the glass already. These two switches bring
+// the same saving to the other five.
+//
+// ①  captureClip — set_clip() on the clone container.
+//    Verified against mutter 50.1 rather than assumed:
+//      * clutter-actor.c:3570  a clip becomes a ClutterClipNode wrapping the
+//        actor's node, INSIDE the actor's own transform node. So the clip
+//        rect is in the same local space the children are positioned in, and
+//        it is pushed while the offscreen framebuffer is current — which is
+//        exactly why the existing bgActor.set_clip() never helped: bgActor
+//        sits OUTSIDE the effect, so its clip only ever scissored the
+//        composite into the stage framebuffer.
+//      * clutter-offscreen-effect.c:346 sizes the FBO from
+//        clutter_actor_get_paint_volume() of the effect's actor, and
+//        clutter-actor.c:5586 builds that volume starting FROM THE ACTOR'S
+//        OWN ALLOCATION and only ever unions children into it. liquidBox is
+//        set_size(monitor) already, so clipping a descendant cannot shrink
+//        it. The FBO keeps its size AND its origin => computeCaptureLayout(),
+//        _lgCaptureOffset and BMS's stage-coordinate blit are all untouched.
+//        This is what keeps landmine 9 out of the picture.
+//
+// ①b cloneCull — hide clones that fall outside that same rect.
+//    set_clip() only scissors: the clipped-out actors still build and run
+//    their paint nodes, and a NESTED glass renders into its own FBO, which
+//    the parent's scissor does not touch at all. A clone with visible=false,
+//    on the other hand, makes clutter_actor_paint() return immediately, so
+//    its source is never painted THROUGH IT and the nested glass never runs.
+//
+//    That is the part that matters: it turns the 2^N nesting into
+//    2^(number of windows actually overlapping this glass) without removing
+//    the nesting itself. Nothing changes visually — a window that does not
+//    intersect the glass box contributed zero pixels to the capture anyway.
+//
+//    UILayerSampler.syncProperties() has always done this test, but against
+//    the CONTAINER's bounds, which are the whole monitor — so it never culled
+//    anything. setCullRect() gives it a rect that means something.
+//
+// A/B: global._lgGlass.captureClip(false) / .cloneCull(false).
+//
+// ─── MEASURED (2026-09-13, 3 glass windows + dock, while moving things) ───
+//
+//   both off (④ only, the previous baseline)   36-38%
+//   ① on, ①b off                               40-42%   ← WORSE than neither
+//   ① off, ①b on                               26-30%
+//   both on                                    29%
+//
+// ① costs about 4 points and returns nothing, so it ships OFF. The reason is
+// visible in the numbers rather than guessed at: the wallpaper and the window
+// clones are a handful of large quads, and scissoring them saves far less
+// fill than the extra clip push/pop and the batching it breaks costs — while
+// the FBO is cleared at full size either way (clutter-paint-nodes.c:1034
+// clears the whole layer node unconditionally).
+//
+// ①b is the one that pays, and for a different reason: it removes whole
+// nested glass renders, which no amount of scissoring can.
+//
+// The ① code is kept, and kept working, because it is the only lever left if
+// the capture's fill rate ever does become the bottleneck (a much larger
+// monitor, say). Turn it on with global._lgGlass.captureClip(true).
+let _captureClipEnabled = false;
+let _cloneCullEnabled = true;
+
+export function setCaptureClipEnabled(enabled: boolean): void {
+  _captureClipEnabled = !!enabled;
+}
+
+export function isCaptureClipEnabled(): boolean {
+  return _captureClipEnabled;
+}
+
+export function setCloneCullEnabled(enabled: boolean): void {
+  _cloneCullEnabled = !!enabled;
+}
+
+export function isCloneCullEnabled(): boolean {
+  return _cloneCullEnabled;
+}
+
+// [DIAG] ①b runs at three independent sites, and the cull log showed every
+// decision to be geometrically correct — so the next question is not "is the
+// rect wrong" but "which of the three breaks the picture". These split the
+// master switch so one paste answers that:
+//
+//   global._lgGlass.cullApp(false)      ApplicationManager._syncClones()
+//                                       (behind-window clones inside a
+//                                        window's own glass)
+//   global._lgGlass.cullWindows(false)  WindowCloneManager.sync()
+//                                       (window clones inside dock / menu /
+//                                        notification / OSD / quick settings)
+//   global._lgGlass.cullUi(false)       UILayerSampler.syncProperties()
+//                                       (uiGroup clones in those same five)
+//
+// Each is ANDed with the master cloneCull switch.
+let _cullApp = true;
+let _cullWindows = true;
+let _cullUi = true;
+
+export function setCullSiteEnabled(site: 'app' | 'windows' | 'ui', enabled: boolean): void {
+  if (site === 'app') _cullApp = !!enabled;
+  else if (site === 'windows') _cullWindows = !!enabled;
+  else _cullUi = !!enabled;
+}
+
+export function isCullSiteEnabled(site: 'app' | 'windows' | 'ui'): boolean {
+  if (!_cloneCullEnabled) return false;
+  if (site === 'app') return _cullApp;
+  if (site === 'windows') return _cullWindows;
+  return _cullUi;
+}
+
+/** [x, y, w, h]. */
+export type GlassRect = [number, number, number, number];
+
+/** True when the two rects share at least one pixel. */
+export function rectsIntersect(
+  ax: number, ay: number, aw: number, ah: number,
+  b: GlassRect
+): boolean {
+  return ax < b[0] + b[2] && ax + aw > b[0] &&
+    ay < b[1] + b[3] && ay + ah > b[1];
+}
+
+/** Grows `a` in place so it also contains `b`. */
+export function unionRectInto(a: GlassRect, b: GlassRect): void {
+  const x1 = Math.max(a[0] + a[2], b[0] + b[2]);
+  const y1 = Math.max(a[1] + a[3], b[1] + b[3]);
+  a[0] = Math.min(a[0], b[0]);
+  a[1] = Math.min(a[1], b[1]);
+  a[2] = x1 - a[0];
+  a[3] = y1 - a[1];
+}
+
+export function setPositionIfChanged(actor: any, x: number, y: number): boolean {
+  const c = actor as any;
+  if (_diffWritesEnabled && c._lgPosX === x && c._lgPosY === y) return false;
+  c._lgPosX = x; c._lgPosY = y;
+  actor.set_position(x, y);
+  return true;
+}
+
+/**
+ * [PERF ①b] Culls a clone by OPACITY, not by visibility.
+ *
+ * clutter_actor_paint() opens with
+ *
+ *     if (!CLUTTER_ACTOR_IS_TOPLEVEL (self) &&
+ *         ((priv->opacity_override >= 0) ? priv->opacity_override : priv->opacity) == 0)
+ *       return;
+ *
+ * (clutter-actor.c:3526) — before the mapped check, before the paint node is
+ * built. So a zero-opacity clone is skipped just as completely as a hidden
+ * one, and its source is never painted through it: the nested glass does not
+ * run either, which is the whole point of the cull.
+ *
+ * What it avoids is everything the `visible` route drags in. Toggling
+ * visibility maps and unmaps the actor, which is landmine 8 in memo.md, and
+ * setActorVisible()'s show path has to fire queue_relayout() on the clone AND
+ * its parent to get an actor that was hidden mid-allocation unstuck. With a
+ * cull that flips on every window drag that crosses a glass boundary, that is
+ * a relayout storm — and a relayout is damage, which is exactly what this
+ * whole line of work exists to stop producing.
+ *
+ * The clone's real opacity is restored by the caller's next
+ * setOpacityIfChanged(): un-culling drops the cached value so the write
+ * cannot be skipped.
+ */
+export function setCloneCulled(actor: any, culled: boolean, why?: string): void {
+  if (!actor) return;
+  const wasCulled = !!actor._lgCulled;
+  if (wasCulled === !!culled) return;
+  actor._lgCulled = !!culled;
+
+  // [DIAG] Logged on the TRANSITION only, so a cull that flips once costs two
+  // lines and a cull that flaps shows up as a flood. This is the probe for
+  // "part of the glass background went black": the black is written to the
+  // screen at the moment of a wrong cull and then stays there, because with
+  // ④ in place nothing damages that region again — so the report taken
+  // afterwards shows everything correct. The timeline is what identifies it.
+  if (why) {
+    let name = '(?)';
+    try { name = actor.get_name?.() || '(unnamed)'; } catch (_) { }
+    utilsLog(`[Liquid Glass][cull] ${culled ? 'CULL ' : 'SHOW '} "${name}" ${why}`);
+  }
+  if (culled) {
+    actor.opacity = 0;
+  } else {
+    // Force the next setOpacityIfChanged() to write: the cache still holds
+    // the value from before the cull, which is no longer what the actor has.
+    actor._lgOpacity = undefined;
+  }
+
+  // [FIX] Damage the PARENT, not just this actor.
+  //
+  // ClutterOffscreenEffect does not re-render its framebuffer on every paint:
+  //
+  //     if (priv->offscreen == NULL || (flags & CLUTTER_EFFECT_PAINT_ACTOR_DIRTY))
+  //       parent_class->paint (...);            // re-render
+  //     else
+  //       clutter_offscreen_effect_paint_texture (...);   // reuse the cache
+  //
+  // (clutter-offscreen-effect.c:569). So a change inside the capture that
+  // does not mark the glass actor dirty is simply never picked up — the glass
+  // goes on showing the cached capture.
+  //
+  // The opacity write above normally does queue that damage, but
+  // _clutter_actor_queue_redraw_full() drops it outright for an actor that is
+  // not mapped and has no mapped clones (clutter-actor.c:7674) — which is
+  // exactly the state of a clone that was built this frame and culled before
+  // anything showed it. Poking the parent costs one call per TRANSITION (not
+  // per frame) and cannot be dropped that way.
+  try { actor.get_parent?.()?.queue_redraw(); } catch (_) { /* noop */ }
+}
+
+/** True while setCloneCulled() is holding this clone at zero opacity. */
+export function isCloneCulled(actor: any): boolean {
+  return !!(actor && actor._lgCulled);
+}
+
+export function setOpacityIfChanged(actor: any, opacity: number): boolean {
+  const c = actor as CloneWriteCache;
+  // While culled the actor is deliberately held at 0; setCloneCulled(false)
+  // is what releases it (and drops the cache so this write lands).
+  if ((actor as any)._lgCulled) return false;
+  if (_diffWritesEnabled && c._lgOpacity === opacity) return false;
+  c._lgOpacity = opacity;
+  actor.opacity = opacity;
+  return true;
 }
 
 /**
@@ -865,12 +1213,113 @@ export type TextureBlitActor = InstanceType<typeof TextureBlitActor>;
  * behind it" (panel, windows, other extensions' UI). One instance per glass
  * (permanent dock glass, popup-menu glass, etc).
  */
+/**
+ * How UILayerSampler supplies a uiGroup child that has a Blur My Shell target
+ * under it.
+ *
+ * Neither of the first two is right, and which one is in use decides which
+ * symptom appears — measured in a native session by toggling the two
+ * extensions on in either order:
+ *
+ *   SNAPSHOT — Liquid Glass sees BMS at clone time and takes a self-excluding
+ *     stage snapshot of the child's rect. BMS itself keeps working, but the
+ *     snapshot is of the WHOLE stage cropped to that rect, so anything else
+ *     overlapping it is captured too: with the dock moved to the top edge it
+ *     overlaps the panel and its icons show up as ghosts inside the dock's own
+ *     glass. The window texture lag was reported in this configuration as well.
+ *
+ *   CLONE — Liquid Glass was enabled first, found no BMS target, and made an
+ *     ordinary Clutter.Clone. No ghosts and no lag, but BMS's own panel
+ *     rendering drifts by about 10px wherever the dock overlaps the panel:
+ *     Shell.BlurEffect in background mode samples the framebuffer under the
+ *     actor, and painting that actor a second time inside our offscreen gives
+ *     it a second, differently-positioned consumer.
+ *
+ *   SKIP — leave the child out of the glass entirely. No ghosts, no lag, BMS
+ *     untouched; the cost is that the panel simply does not appear in the
+ *     blurred backdrop.
+ *
+ * Switchable at runtime (global._lgGlass.bmsMode(n)) so the attribution can be
+ * settled inside one session instead of by rebuilding between orders.
+ */
+export const BMS_MODE = { SNAPSHOT: 0, CLONE: 1, SKIP: 2, REPLICATE: 3 };
+
+// [FIX] SKIP is the default, confirmed by switching all three modes in one
+// native session with BMS's dynamic panel blur on:
+//
+//   0 SNAPSHOT -> window texture lag + the dock's own icons ghosted into its
+//                 glass (the snapshot is the whole stage cropped to the
+//                 child's rect, and it runs a full stage paint with our root
+//                 hidden on every after-paint — the very "toggle live UI
+//                 visibility every frame" that memo.md's addendum 3 records
+//                 as breaking Clutter's damage bookkeeping)
+//   1 CLONE    -> lag and ghosts gone, but BMS's own panel drifts ~10px
+//                 wherever the dock overlaps it
+//   2 SKIP     -> all three gone; the panel simply is not in the glass
+//
+// SKIP breaks nothing, but it gives up the panel: with the dock at the top
+// edge the dock's glass is drawn ABOVE panelBox, so a panel that is not in the
+// glass is a panel that is not on screen there at all.
+//
+//   3 REPLICATE -> the default. None of the three costs above.
+//
+// REPLICATE works because of one structural detail of BMS: it inserts its
+// blur widget into panel_box as a SIBLING of the panel
+// (components/panel.js — `panel_box.insert_child_at_index(background_group, 0)`),
+// not as a child of it. So "the panel without BMS's blur widget" is not
+// something that has to be filtered out of a clone — it is simply a different
+// actor to clone. BMS is then never painted a second time, which is the whole
+// of the CLONE problem, and nothing is snapshotted, which is the whole of the
+// SNAPSHOT problem.
+//
+// What that leaves missing is the blurred backdrop BMS draws behind the panel,
+// so we draw our own in its place: the same effect class BMS uses
+// (Shell.BlurEffect in BACKGROUND mode — see BMS's
+// effects/native_dynamic_gaussian_blur.js) with the same live radius and
+// brightness, sitting under the panel clone inside our own offscreen, where
+// what is "behind" it is our own cloned wallpaper and windows. Same effect,
+// same parameters, same input relationship — so it reproduces what BMS draws
+// rather than approximating it.
+let _bmsMode: number = BMS_MODE.REPLICATE;
+
+// Every live sampler, so a mode change can rebuild the affected clones.
+const _liveSamplers: Set<UILayerSampler> = new Set();
+
+export function setBmsMode(mode: number): string {
+  _bmsMode = mode;
+  let n = 0;
+  for (const sampler of _liveSamplers) {
+    try { sampler.rebuildBmsClones(); n++; } catch (_) { }
+  }
+  const name = mode === BMS_MODE.SNAPSHOT ? 'SNAPSHOT'
+    : mode === BMS_MODE.CLONE ? 'CLONE'
+      : mode === BMS_MODE.SKIP ? 'SKIP'
+        : mode === BMS_MODE.REPLICATE ? 'REPLICATE' : `? (${mode})`;
+  const msg = `[Liquid Glass] BMS mode = ${name} on ${n} sampler(s)`;
+  console.log(msg);
+  return msg;
+}
+
+export function getBmsMode(): number {
+  return _bmsMode;
+}
+
 export class UILayerSampler {
   private readonly _selfActor: Clutter.Actor;
   private readonly _container: Clutter.Actor;
   private readonly _extraExclusions: Set<Clutter.Actor>;
 
   private _selfRoot: Clutter.Actor | null = null;
+  private _label: string = '?';
+  // Per cloned child: whether a Blur My Shell target was found under it at the
+  // moment its clone was built.
+  private _bmsStateAtClone: Map<Clutter.Actor, boolean> = new Map();
+  // The BMS target actor as of the last refresh(), so a change can be noticed.
+  private _lastBmsTarget: Clutter.Actor | null | undefined = undefined;
+  private _ancestorExclusionSources: Clutter.Actor[] = [];
+  // Names of the uiGroup children currently cloned, so a change can be logged
+  // once instead of every frame.
+  private _clonedNamesLogged: string = '';
   private _clones: Map<Clutter.Actor, Clutter.Actor> = new Map();
   private _uiClonesContainer: Clutter.Actor | null = null;
 
@@ -897,16 +1346,52 @@ export class UILayerSampler {
   // screen rect — see _checkCloneDrift().
   private _driftingClones: Set<Clutter.Actor> = new Set();
 
+  // [PERF ①b] Screen-coordinate rect this glass can actually show, or null
+  // for "no culling" (the pre-① behaviour: cull only against the container,
+  // i.e. the whole monitor). Set once per frame by syncGlassCaptureClip().
+  private _cullRect: GlassRect | null = null;
+
+  // [PERF ①] Screen rects of the Blur My Shell replicas drawn this frame.
+  //
+  // A BACKGROUND-mode BMS blur takes its source rect in STAGE coordinates
+  // and blits it out of whatever framebuffer is current — here, our
+  // offscreen. If the capture clip stops the wallpaper and the window clones
+  // from being painted under the panel, BMS blurs TRANSPARENT pixels, and
+  // its gaussian smears that transparency back across the whole panel: the
+  // "the blur peels away from the top" symptom from memo.md's 追記4, back
+  // again. The panel is full width, so with the dock at the top edge (where
+  // it overlaps the panel) the clip has to widen to the full screen — but
+  // the HEIGHT still collapses, which is where most of the saving is.
+  private _bmsScreenRects: GlassRect[] = [];
+
   constructor(
     selfActor: Clutter.Actor,
     container: Clutter.Actor,
     extraExclusions: Clutter.Actor[] = [],
-    cloneContainer: Clutter.Actor | null = null
+    cloneContainer: Clutter.Actor | null = null,
+    label: string = '?',
+    /**
+     * [FIX] Actors whose uiGroup ANCESTOR should be excluded, resolved fresh on
+     * every refresh() instead of once at construction.
+     *
+     * extraExclusions above holds fixed actors, which is only correct while
+     * the thing being excluded keeps the same uiGroup child as its root.
+     * dockManager's use does not: it passes the uiGroup ancestor it walked to
+     * at setup time, and Dash to Dock destroys and rebuilds its container
+     * whenever its settings change — moving the dock to the top edge does
+     * exactly that ("Dash to Dock container destroyed (settings changed?)" in
+     * the log). A stale entry there means the sampler starts cloning the dock
+     * into the dock's own glass, which shows up as ghost icons inside it.
+     */
+    ancestorExclusions: Clutter.Actor[] = []
   ) {
     this._selfActor = selfActor;
     this._container = container;
     this._extraExclusions = new Set(extraExclusions);
+    this._ancestorExclusionSources = ancestorExclusions.slice();
+    this._label = label;
     this._selfRoot = this._findUiGroupAncestor(selfActor);
+    _liveSamplers.add(this);
 
     this._uiClonesContainer = new UnpickableActor();
     this._uiClonesContainer.set_name("ui-clones-container");
@@ -921,6 +1406,33 @@ export class UILayerSampler {
     } else {
       this._container.add_child(this._uiClonesContainer);
     }
+  }
+
+  /**
+   * [PERF ①b] Restricts clone culling to `rect` (screen coordinates), or
+   * null to fall back to culling against the container's own bounds.
+   */
+  setCullRect(rect: GlassRect | null): void {
+    this._cullRect = rect;
+  }
+
+  /**
+   * [PERF ①] Screen rects of the BMS replicas painted during the LAST sync.
+   * One frame old by construction (they are recorded while the clones are
+   * synced, and the clip is computed before that) — harmless, because the
+   * panel does not move. Empty when this glass draws no BMS replica.
+   */
+  getBmsScreenRects(): GlassRect[] {
+    return this._bmsScreenRects;
+  }
+
+  /** True when this sampler has a BMS replica whose rect is not known yet. */
+  hasUnmeasuredBmsReplica(): boolean {
+    if (this._bmsScreenRects.length > 0) return false;
+    for (const clone of this._clones.values()) {
+      if ((clone as any)._lgBmsReplica) return true;
+    }
+    return false;
   }
 
   private _findUiGroupAncestor(actor: Clutter.Actor): Clutter.Actor | null {
@@ -983,6 +1495,286 @@ export class UILayerSampler {
   setDebugDisableBmsClone(_disabled: boolean): void { /* no-op */ }
   /** @deprecated no-op, see setDebugDisableBmsClone. */
   setDebugBmsProbeEnabled(_enabled: boolean): void { /* no-op */ }
+
+  /**
+   * Builds the stand-in for a uiGroup child that holds a Blur My Shell target
+   * (in practice: panelBox).
+   *
+   * Two actors, in this order:
+   *
+   *   1. an St.Widget carrying our own Shell.BlurEffect in BACKGROUND mode,
+   *      standing exactly where BMS puts its own blurred widget, with BMS's
+   *      current radius and brightness copied off its live effect;
+   *   2. a clone of every OTHER child of panel_box — the panel itself.
+   *
+   * BMS's blur widget is deliberately not among them. It is a sibling of the
+   * panel rather than a child (components/panel.js inserts background_group
+   * into panel_box), so leaving it out costs nothing but choosing a different
+   * actor to clone — and it is what keeps BMS's own effect from being painted
+   * a second time, from a second framebuffer, which is what made the real
+   * panel drift.
+   *
+   * Our blur samples what is behind it in OUR offscreen, which is the cloned
+   * wallpaper and windows — the same relationship BMS's has to the real
+   * framebuffer. So the panel appears inside the glass blurred the way BMS
+   * blurs it, and our own glass blur then applies on top as it does to
+   * everything else.
+   */
+  private _createBmsReplicaActor(child: Clutter.Actor): Clutter.Actor | null {
+    try {
+      const target = this._findBmsDescendant(child);
+      if (!target) return null;
+
+      // BMS's blur widget lives inside its own background group; that group is
+      // the child of panel_box we must not clone.
+      let bmsGroup: Clutter.Actor | null = target;
+      while (bmsGroup && bmsGroup.get_parent() !== child) {
+        bmsGroup = bmsGroup.get_parent();
+      }
+      if (!bmsGroup) return null;
+
+      const container = new UnpickableActor();
+      container.set_name(`${(child as any).name ?? 'bms'}-replica`);
+
+      const blurWidget = new St.Widget({ name: 'lg-bms-replica-blur' });
+      blurWidget.add_effect(this._buildReplicaBlurEffect(target));
+      container.add_child(blurWidget);
+
+      const parts: { src: Clutter.Actor, clone: Clutter.Actor }[] = [];
+      for (const c of child.get_children()) {
+        if (c === bmsGroup) continue;
+        const clone = new UnpickableClone({ source: c });
+        clone.set_name(`${(c as any).name ?? 'part'}-replicaClone`);
+        container.add_child(clone);
+        parts.push({ src: c, clone });
+      }
+      if (parts.length === 0) {
+        container.destroy();
+        return null;
+      }
+
+      (container as any)._lgBmsReplica = { blurWidget, parts, bmsTarget: target };
+      utilsLog(`[Liquid Glass][ui-sampler:${this._label}] BMS replica built for ` +
+        `name="${(child as any).name ?? '(unnamed)'}" with ${parts.length} part(s)`);
+      return container;
+    } catch (e) {
+      reportFrameLoopError('UILayerSampler._createBmsReplicaActor', e);
+      return null;
+    }
+  }
+
+  /**
+   * Where the actor's own pixels start inside the offscreen this sampler's
+   * clones are drawn into, in pixels. Published by LiquidEffect each paint;
+   * (0, 0) until then, and for any container that carries no such effect.
+   */
+  private _captureOffset(): [number, number] {
+    try {
+      const off = (this._container as any)?._lgCaptureOffset;
+      if (Array.isArray(off) && Number.isFinite(off[0]) && Number.isFinite(off[1]))
+        return [off[0], off[1]];
+    } catch (_) { /* noop */ }
+    return [0, 0];
+  }
+
+  /**
+   * Builds the blur effect for a replica, as the SAME CLASS Blur My Shell is
+   * using on the real panel.
+   *
+   * [FIX] This used to hardcode Shell.BlurEffect, and that was a different
+   * implementation from the one BMS had picked. BMS chooses at load time:
+   *
+   *   // blur-my-shell/effects/native_dynamic_gaussian_blur.js
+   *   let BlurOrShell = await utils.import_in_shell_only('gi://Blur');
+   *   if (BlurOrShell === null)
+   *       BlurOrShell = await utils.import_in_shell_only('gi://Shell');
+   *
+   * Blur-1.0 is present on this system, so the real panel runs the Blur
+   * module's effect while the replica ran gnome-shell's — which visibly
+   * diverges as the radius grows. gnome-shell's blur only downscales while
+   * BOTH dimensions exceed 256px (shell-blur-effect.c's
+   * calculate_downscale_factor, and again in mutter's clutter-blur.c), and the
+   * panel is 46px tall, so nothing is ever downscaled and the gaussian is asked
+   * for ceil(1.5 * sigma) * 2 taps at full size: 18 at sigma 6, but 240 at
+   * sigma 80. The result degrades toward unblurred exactly as reported, while
+   * the real panel — a different implementation — stayed sharp-free.
+   *
+   * Rather than re-derive which module to import, take the class off BMS's own
+   * live effect. That matches whatever it chose, including its subclass and
+   * the corner-radius handling that only exists on the Blur module's branch.
+   */
+  private _buildReplicaBlurEffect(bmsTarget: Clutter.Actor): Clutter.Effect {
+    try {
+      const theirs: any = (bmsTarget.get_effects() ?? [])
+        .find((e: any) => typeof e?.radius === 'number');
+      if (theirs) {
+        const Ctor: any = Object.getPrototypeOf(theirs)?.constructor;
+        if (typeof Ctor === 'function') {
+          // corner_radius must ALWAYS be a number. BMS's constructor
+          // destructures it and, on the Blur-module branch, hands it straight
+          // to super() — `undefined` there is rejected by GObject with
+          // "Invalid value 'undefined' for property corner-radius", which is
+          // exactly what sent this down the fallback path on the first
+          // attempt. Its own unscaled_corner_radius getter reads a field that
+          // only its setter writes, and DummyPipeline sets `corner_radius`
+          // instead, so the unscaled one is undefined in practice.
+          const cornerRadius =
+            theirs.unscaled_corner_radius ?? theirs.corner_radius ?? 0;
+
+          const params: any = {
+            unscaled_radius: theirs.unscaled_radius ?? theirs.radius ?? 0,
+            brightness: theirs.brightness ?? 1.0,
+            corner_radius: cornerRadius,
+          };
+
+          const ours = new Ctor(params);
+          utilsLog(`[Liquid Glass][ui-sampler:${this._label}] replica blur uses ` +
+            `${Ctor.name ?? '?'} (matching BMS's own effect), ` +
+            `unscaled_radius=${params.unscaled_radius} brightness=${params.brightness} ` +
+            `corner_radius=${params.corner_radius}`);
+          return ours as Clutter.Effect;
+        }
+      }
+    } catch (e) {
+      utilsLog(`[Liquid Glass][ui-sampler:${this._label}] could not mirror BMS's ` +
+        `blur effect (${e}); falling back to Shell.BlurEffect`);
+    }
+
+    // Fallback only: BMS not reachable, or its effect could not be copied.
+    return new Shell.BlurEffect({
+      mode: Shell.BlurMode.BACKGROUND,
+      radius: 0,
+      brightness: 1.0,
+    }) as unknown as Clutter.Effect;
+  }
+
+  /**
+   * Per-frame geometry for a replica built above. `source` is panel_box, so
+   * every part is placed at its own position inside it, and the blur widget
+   * takes the panel's rect — the same rect BMS gives its own widget in
+   * update_size()'s dynamic branch (`background.x = panel.x`, etc).
+   */
+  private _syncBmsReplica(source: Clutter.Actor, replica: any): void {
+    try {
+      const parts: { src: Clutter.Actor, clone: Clutter.Actor }[] = replica.parts;
+      let panelRect: [number, number, number, number] | null = null;
+
+      for (const { src, clone } of parts) {
+        if (!isActorValid(src) || !isActorValid(clone)) continue;
+        const [w, h] = getAllocatedSize(src);
+        if (!(w > 0) || !(h > 0)) {
+          setActorVisible(clone, false);
+          continue;
+        }
+        setPositionIfChanged(clone, src.x, src.y);
+        setSizeIfChanged(clone, w, h);
+        setOpacityIfChanged(clone, src.opacity);
+        setActorVisible(clone, src.visible && src.mapped);
+        if (!panelRect) panelRect = [src.x, src.y, w, h];
+      }
+
+      const blurWidget: Clutter.Actor = replica.blurWidget;
+      if (isActorValid(blurWidget) && panelRect) {
+        replica.panelRect = panelRect;
+
+        // [FIX] Compensate for the offscreen's capture padding.
+        //
+        // A background-mode blur asks for its source by STAGE coordinates and
+        // then blits that rectangle out of whatever framebuffer is current.
+        // On the real panel those two spaces are the same. Inside our
+        // offscreen they are not: ClutterOffscreenEffect enlarges the paint
+        // box by 3px, so actor-local (0, 0) sits at texel (2, 2) and a blit
+        // asking for stage (0, 0) reads two rows and columns of cleared
+        // padding instead.
+        //
+        // That is what "the blur peels away from the top, by more the larger
+        // the sigma" is: the gaussian smears those transparent rows down over
+        // its whole radius, and where the blurred result is transparent the
+        // sharp clone behind it shows through. At sigma 100 the smear is wider
+        // than the 46px panel, which is why the blur looked like it had
+        // vanished entirely. The real panel never shows it because it is not
+        // being drawn into an offscreen at all.
+        //
+        // Shifting the widget by the padding makes the blit land on the actor's
+        // own pixels. The visible backdrop moves by those same 2px, which on a
+        // blurred image is not detectable.
+        const [offX, offY] = this._captureOffset();
+        setPositionIfChanged(blurWidget, panelRect[0] + offX, panelRect[1] + offY);
+        setSizeIfChanged(blurWidget, panelRect[2], panelRect[3]);
+        setActorVisible(blurWidget, true);
+
+        // Track BMS's live values rather than re-reading its settings: the
+        // effect already holds them scaled by the theme's scale factor.
+        const src = replica.bmsTarget as Clutter.Actor;
+        let ours = blurWidget.get_effects()[0] as any;
+        if (ours && isActorValid(src)) {
+          const theirs = (src.get_effects() ?? []).find(
+            (e: any) => typeof e?.radius === 'number') as any;
+          if (theirs) {
+            // [FIX] Self-heal a class mismatch. The replica is built once, and
+            // if BMS's effect was not on its actor yet — or constructing its
+            // class failed — the fallback would otherwise stay for the life of
+            // the clone, silently blurring by a different implementation than
+            // the real panel. Rebuilding it here costs one comparison a frame.
+            if (Object.getPrototypeOf(ours)?.constructor !==
+              Object.getPrototypeOf(theirs)?.constructor) {
+              try {
+                blurWidget.remove_effect(ours);
+                blurWidget.add_effect(this._buildReplicaBlurEffect(src));
+                ours = blurWidget.get_effects()[0] as any;
+              } catch (_) { /* keep the one we have */ }
+            }
+
+            if (ours.radius !== theirs.radius) ours.radius = theirs.radius;
+            if (ours.brightness !== theirs.brightness) ours.brightness = theirs.brightness;
+          }
+        }
+      }
+      this._reportReplicaGeometry(source, replica);
+    } catch (e) {
+      reportFrameLoopError('UILayerSampler._syncBmsReplica', e);
+    }
+  }
+
+  /**
+   * [DIAG] Logs the replica's real geometry whenever it changes.
+   *
+   * The blurred band inside the glass not lining up with the panel is a
+   * question about coordinates — where the blur widget ended up, and which
+   * space Shell.BlurEffect resolved it in — and none of that is visible from
+   * the outside. Reported on change only, so a stable panel costs one line.
+   */
+  private _reportReplicaGeometry(source: Clutter.Actor, replica: any): void {
+    if (!_utilsLogger) return;
+    try {
+      const blurWidget: Clutter.Actor = replica.blurWidget;
+      const [srcAbsX, srcAbsY] = source.get_transformed_position();
+      const [bwAbsX, bwAbsY] = blurWidget.get_transformed_position();
+      const [bwW, bwH] = blurWidget.get_size();
+      const ours: any = blurWidget.get_effects()[0];
+      const theirs: any = (replica.bmsTarget?.get_effects?.() ?? [])
+        .find((e: any) => typeof e?.radius === 'number');
+
+      const parts = replica.parts
+        .map((p: any) => `${(p.src as any).name ?? '?'}@(${p.src.x},${p.src.y})` +
+          `${getAllocatedSize(p.src)[0]}x${getAllocatedSize(p.src)[1]}`)
+        .join(' ');
+
+      const line =
+        `src=${(source as any).name ?? '?'}@(${Math.round(srcAbsX)},${Math.round(srcAbsY)}) ` +
+        `parts=[${parts}] ` +
+        `blur=(${blurWidget.x},${blurWidget.y}) ${bwW}x${bwH} ` +
+        `blurAbs=(${Math.round(bwAbsX)},${Math.round(bwAbsY)}) ` +
+        `r=${ours?.radius}/${theirs?.radius} b=${ours?.brightness}/${theirs?.brightness} ` +
+        `capOff=(${this._captureOffset()[0]},${this._captureOffset()[1]}) ` +
+        `cls=${Object.getPrototypeOf(ours ?? {})?.constructor?.name ?? '?'}/` +
+        `${Object.getPrototypeOf(theirs ?? {})?.constructor?.name ?? '?'}`;
+
+      if (line === replica.lastGeomLine) return;
+      replica.lastGeomLine = line;
+      utilsLog(`[Liquid Glass][ui-sampler:${this._label}] replica geom ${line}`);
+    } catch (_) { /* noop */ }
+  }
 
   /**
    * Primary path for rendering the BMS-blurred panel inside the glass. See
@@ -1192,6 +1984,25 @@ export class UILayerSampler {
     const children = uiGroup.get_children();
     const seen = new Set<Clutter.Actor>();
 
+    // [FIX] One lookup per refresh, not per child: notice BMS appearing or
+    // disappearing and rebuild only the clones whose answer moved.
+    const bmsTarget = this._resolveBmsTargetActor();
+    if (this._lastBmsTarget !== bmsTarget) {
+      const first = this._lastBmsTarget === undefined;
+      this._lastBmsTarget = bmsTarget;
+      if (!first) this._reevaluateBmsClones();
+    }
+
+    // [FIX] Resolved every refresh: see ancestorExclusions in the constructor.
+    const dynamicExclusions = new Set<Clutter.Actor>();
+    for (const src of this._ancestorExclusionSources) {
+      try {
+        if (!isActorValid(src)) continue;
+        const root = this._findUiGroupAncestor(src);
+        if (root) dynamicExclusions.add(root);
+      } catch (_) { /* noop */ }
+    }
+
     for (const child of children) {
       // Per-child containment: refresh() runs from the same per-frame
       // BEFORE_REDRAW tick as everything else, and one uiGroup child going
@@ -1203,6 +2014,7 @@ export class UILayerSampler {
         if (child === this._selfActor || child === this._selfRoot) continue;
         if (child === Main.layoutManager._backgroundGroup) continue;
         if (this._extraExclusions.has(child)) continue;
+        if (dynamicExclusions.has(child)) continue;
         if (!child.visible || !child.mapped) continue;
         // if (this._containsOtherLiquidGlassRoot(child)) continue;
         // Deep scan for nested Liquid Glass roots only once per newly discovered actor.
@@ -1239,8 +2051,29 @@ export class UILayerSampler {
 
           const bmsTarget = this._findBmsDescendant(child);
 
+          // SKIP: leave the BMS target out of the glass altogether. Done here
+          // rather than in the exclusion block above so the child is still
+          // tracked (and rebuilt) when the mode or the BMS state changes.
+          if (bmsTarget && _bmsMode === BMS_MODE.SKIP) {
+            seen.delete(child);
+            continue;
+          }
+
           let sourceClone: Clutter.Actor | null = null;
-          if (bmsTarget) {
+          if (bmsTarget && _bmsMode === BMS_MODE.REPLICATE) {
+            sourceClone = this._createBmsReplicaActor(child);
+            if (!sourceClone) {
+              // Do NOT quietly fall through to the ordinary clone here: that
+              // is the path that makes BMS's own panel drift. Leaving the
+              // child out is the lesser failure, and it is logged.
+              utilsLog(`[Liquid Glass][ui-sampler:${this._label}] BMS replica ` +
+                `could not be built for name="${(child as any).name ?? '(unnamed)'}"; ` +
+                `leaving it out of the glass rather than cloning BMS's target`);
+              seen.delete(child);
+              continue;
+            }
+          }
+          if (!sourceClone && bmsTarget && _bmsMode === BMS_MODE.SNAPSHOT) {
             // 1st: the real fix — a snapshot that structurally cannot
             // include ourselves (see SelfExcludingSnapshotCapture).
             sourceClone = this._createSelfExcludingSnapshotActor(child);
@@ -1254,6 +2087,10 @@ export class UILayerSampler {
           if (!sourceClone) {
             sourceClone = new UnpickableClone({ source: child });
           }
+          // [FIX] Remember whether this child was cloned as "BMS present" or
+          // not, so the answer can be re-checked when the extension set
+          // changes. See _reevaluateBmsClones().
+          this._bmsStateAtClone.set(child, !!bmsTarget);
           sourceClone.set_name(`${child.name}-sourceClone`);
 
           sourceClone.connect('destroy', () => {
@@ -1275,6 +2112,8 @@ export class UILayerSampler {
         this._clones.delete(actor);
       }
     }
+
+    this._reportClonedSet();
   }
 
   private static _stageToLocal(
@@ -1342,15 +2181,55 @@ export class UILayerSampler {
       // WindowCloneManager.sync(). This is what keeps a UI clone (the
       // Overview's controls, the panel) from freezing at a stale rect when
       // the glass subtree stops being allocated.
+      // [PERF ①b] Cull against the rect this glass can actually show, when
+      // one has been handed to us. Decided here, before the writes, so a
+      // culled clone costs nothing at all this frame.
+      //
+      // Two clones are never culled:
+      //   - one carrying a BMS replica, because the replica's blur reads the
+      //     framebuffer and the clip rect was widened to keep its band
+      //     intact (see _bmsScreenRects);
+      //   - one whose source has no usable size or position yet, because a
+      //     degenerate rect intersects nothing and would cull a clone that is
+      //     merely waiting for its first allocation. Fail open: not culling
+      //     costs a frame of fill, culling wrongly leaves a hole in the glass.
+      const cull = this._cullRect;
+      const cullable = !!cull && isCullSiteEnabled('ui') &&
+        !(sourceClone as any)._lgBmsReplica &&
+        scaledW > 0 && scaledH > 0 &&
+        Number.isFinite(absX) && Number.isFinite(absY);
+      if (cullable && !rectsIntersect(absX, absY, scaledW, scaledH, cull!)) {
+        setCloneCulled(sourceClone, true,
+          `src=(${Math.round(absX)},${Math.round(absY)},${Math.round(scaledW)}x${Math.round(scaledH)}) ` +
+          `cullRect=[${cull!.map(Math.round)}] label=${this._label}`);
+        return;
+      }
+      setCloneCulled(sourceClone, false, `label=${this._label}`);
+
+      // [PERF] Compare-then-write: see setTranslationIfChanged(). The UI
+      // sampler runs this for every uiGroup child of every open glass, on
+      // every frame; unconditional transform writes damaged all of them
+      // even with nothing on screen moving.
       if (sourceClone.x !== 0 || sourceClone.y !== 0) sourceClone.set_position(0, 0);
-      sourceClone.translation_x = absX;
-      sourceClone.translation_y = absY;
+      setTranslationIfChanged(sourceClone, absX, absY);
 
-      sourceClone.set_size(scaledW, scaledH);
-      sourceClone.set_scale(1.0, 1.0);
-      sourceClone.set_pivot_point(0, 0);
+      setSizeIfChanged(sourceClone, scaledW, scaledH);
+      setScaleIfChanged(sourceClone, 1.0, 1.0);
+      setPivotIfChanged(sourceClone, 0, 0);
 
-      sourceClone.opacity = source.opacity;
+      setOpacityIfChanged(sourceClone, source.opacity);
+
+      const replica = (sourceClone as any)._lgBmsReplica;
+      if (replica) {
+        this._syncBmsReplica(source, replica);
+        // [PERF ①] Remember where this replica lands on screen so the
+        // capture clip can be widened to cover it — see _bmsScreenRects.
+        // panelRect is local to this clone, and the clone's local origin is
+        // at (absX, absY) in screen space.
+        const pr = replica.panelRect;
+        if (pr && pr[2] > 0 && pr[3] > 0)
+          this._bmsScreenRects.push([absX + pr[0], absY + pr[1], pr[2], pr[3]]);
+      }
 
       this._checkCloneDrift(source, sourceClone, absX, absY);
 
@@ -1359,6 +2238,10 @@ export class UILayerSampler {
 
       const isVisible = source.visible && source.mapped;
 
+      // The pre-① containment test. It runs against the container, which is
+      // the whole monitor for every glass with a monitor-sized bgActor, so
+      // in practice it only catches clones that are genuinely off-screen.
+      // The real culling happens above, against _cullRect.
       if (isVisible && containerW > 0 && containerH > 0) {
         const isIntersecting =
           localX < containerW &&
@@ -1422,6 +2305,9 @@ export class UILayerSampler {
   // frustum to the full monitor; actual rendering is still limited to the
   // dock area by the clip applied to liquidBox/blurBox elsewhere.
   sync(cX?: number, cY?: number, cW?: number, cH?: number) {
+    // [PERF ①] Rebuilt every frame by syncProperties(); see _bmsScreenRects.
+    this._bmsScreenRects = [];
+
     let contW = cW ?? 0;
     let contH = cH ?? 0;
     let contAbsX = cX ?? 0;
@@ -1456,8 +2342,7 @@ export class UILayerSampler {
     if (this._uiClonesContainer) {
       if (this._uiClonesContainer.x !== 0 || this._uiClonesContainer.y !== 0)
         this._uiClonesContainer.set_position(0, 0);
-      this._uiClonesContainer.translation_x = -contAbsX;
-      this._uiClonesContainer.translation_y = -contAbsY;
+      setTranslationIfChanged(this._uiClonesContainer, -contAbsX, -contAbsY);
     }
 
     for (const [actor, sourceClone] of this._clones) {
@@ -1465,7 +2350,105 @@ export class UILayerSampler {
     }
   }
 
+  /**
+   * [FIX] Re-checks the Blur My Shell decision when BMS comes or goes.
+   *
+   * Which clone a uiGroup child gets depends on whether a BMS target is found
+   * underneath it, and that was decided once, when the clone was first built.
+   * So the two extensions behaved differently depending on the order they were
+   * switched on:
+   *
+   *   BMS first, then this one — the target is found, the child is supplied as
+   *     a self-excluding snapshot, and BMS keeps working.
+   *   This one first, then BMS — nothing was found, so the child is an
+   *     ordinary Clutter.Clone. BMS then installs its effect on an actor that
+   *     already has a second consumer, and its own panel rendering drifts
+   *     (reported: about 10px, whenever the dock overlaps the panel).
+   *
+   * Driven by comparing the resolved target each refresh rather than by
+   * extension-state-changed: BMS populates _panel_blur.actors_list during and
+   * after its own enable(), so a signal handler can easily look too early,
+   * while "the target is not what it was" is true whenever it settles.
+   */
+  private _reevaluateBmsClones(): void {
+    // The cache is keyed by actor and holds "is there an offscreen effect
+    // under here", which is exactly what an extension being toggled changes.
+    this._existingEffectCache.clear();
+
+    for (const [child, wasBms] of [...this._bmsStateAtClone]) {
+      try {
+        if (!isActorValid(child)) {
+          this._bmsStateAtClone.delete(child);
+          continue;
+        }
+        const isBms = !!this._findBmsDescendant(child);
+        if (isBms === wasBms) continue;
+
+        utilsLog(`[Liquid Glass][ui-sampler:${this._label}] BMS state changed for ` +
+          `name="${(child as any).name ?? '(unnamed)'}" (${wasBms} -> ${isBms}); rebuilding its clone`);
+
+        const clone = this._clones.get(child);
+        if (clone) {
+          this._clones.delete(child);
+          try { clone.destroy(); } catch (_) { }
+        }
+        this._bmsStateAtClone.delete(child);
+      } catch (e) {
+        reportFrameLoopError('UILayerSampler._reevaluateBmsClones', e);
+      }
+    }
+
+    // refresh() runs from each manager's per-frame tick and rebuilds whatever
+    // is missing, so nothing else is needed here.
+  }
+
+  /**
+   * Drops every clone built for a child that currently has a BMS target under
+   * it, so the next refresh() rebuilds it down whatever path the mode now
+   * selects. Called when the mode is switched at runtime.
+   */
+  rebuildBmsClones(): void {
+    this._existingEffectCache.clear();
+    for (const [child] of [...this._bmsStateAtClone]) {
+      try {
+        if (isActorValid(child) && !this._findBmsDescendant(child)) continue;
+        const clone = this._clones.get(child);
+        if (clone) {
+          this._clones.delete(child);
+          try { clone.destroy(); } catch (_) { }
+        }
+        this._bmsStateAtClone.delete(child);
+      } catch (e) {
+        reportFrameLoopError('UILayerSampler.rebuildBmsClones', e);
+      }
+    }
+    this._clonedNamesLogged = '';
+  }
+
+  /**
+   * Logs which uiGroup children this sampler is cloning, whenever that set
+   * changes.
+   *
+   * Exists because "what ended up inside this glass" is otherwise invisible:
+   * a wrongly-included child shows up only as a ghost of itself in the blurred
+   * backdrop, with nothing in the log to say why. The dock cloning ITSELF is
+   * the case this was written for.
+   */
+  private _reportClonedSet(): void {
+    let names = '';
+    for (const actor of this._clones.keys()) {
+      let n = '(unnamed)';
+      try { n = (actor as any).name || actor.constructor?.name || '(unnamed)'; } catch (_) { }
+      names += (names ? ', ' : '') + n;
+    }
+    if (names === this._clonedNamesLogged) return;
+    this._clonedNamesLogged = names;
+    utilsLog(`[Liquid Glass][ui-sampler:${this._label}] cloning [${names}]`);
+  }
+
   destroy() {
+    _liveSamplers.delete(this);
+    this._bmsStateAtClone.clear();
     if (this._uiClonesContainer) {
       try { this._uiClonesContainer.destroy(); } catch (_) { }
     }
@@ -1478,6 +2461,10 @@ export class UILayerSampler {
 
 
 export class WindowCloneManager {
+  // [PERF ①b] See setCullRect(). Null until a manager hands one over, so a
+  // caller that never calls setCullRect() keeps the old behaviour exactly.
+  private _cullRect: GlassRect | null = null;
+
   private windowClonesContainer: Clutter.Actor | null = null;
   private _windowClones: Map<Clutter.Actor, Clutter.Clone>;
   private bgClone: Clutter.Clone | null = null;
@@ -1568,13 +2555,46 @@ export class WindowCloneManager {
     if (this.windowClonesContainer) {
       if (this.windowClonesContainer.x !== 0 || this.windowClonesContainer.y !== 0)
         this.windowClonesContainer.set_position(0, 0);
-      this.windowClonesContainer.translation_x = x;
-      this.windowClonesContainer.translation_y = y;
+      setTranslationIfChanged(this.windowClonesContainer, x, y);
     }
     if (this.bgClone) {
       if (this.bgClone.x !== 0 || this.bgClone.y !== 0) this.bgClone.set_position(0, 0);
-      this.bgClone.translation_x = x;
-      this.bgClone.translation_y = y;
+      setTranslationIfChanged(this.bgClone, x, y);
+    }
+  }
+
+  /**
+   * [PERF ①b] Screen-coordinate rect this glass can actually show, or null
+   * for "draw every window". See the long note on setCaptureClipEnabled().
+   */
+  setCullRect(rect: GlassRect | null): void {
+    this._cullRect = rect;
+  }
+
+  /**
+   * [PERF ①] Clips the wallpaper clone.
+   *
+   * bgClone is inserted into `container` (liquidBox) rather than into
+   * `cloneContainer` — see rebuildClones(), where it is deliberately put at
+   * index 0 of the container so it sits behind everything. So the clip that
+   * syncGlassCaptureClip() applies to the clone container does NOT reach it,
+   * and the wallpaper is the single biggest full-screen quad in the capture.
+   *
+   * `rect` is in SCREEN coordinates, not shader space: setOffset() gives
+   * bgClone translation (-monitorX, -monitorY) and leaves its position at
+   * (0, 0), so a point at bgClone-local p paints at liquidBox-local
+   * p - monitorOrigin, i.e. at screen p. Clutter applies the clip inside the
+   * actor's own transform (clutter-actor.c:3570: the clip node is a CHILD of
+   * the transform node), so the rect is read in exactly that local space.
+   */
+  applyBgCloneClip(rect: GlassRect | null): void {
+    const bg = this.bgClone;
+    if (!bg || !isActorValid(bg)) return;
+    if (rect) {
+      setClipIfChanged(bg, rect[0], rect[1], rect[2], rect[3]);
+    } else if ((bg as any)._lgClipW !== undefined) {
+      (bg as any)._lgClipW = undefined;
+      try { bg.remove_clip(); } catch (_) { }
     }
   }
 
@@ -1603,7 +2623,55 @@ export class WindowCloneManager {
 
       if (width <= 0 || height <= 0) continue;
 
+      // The clone is placed at the window's own screen position (see the
+      // long note further down), so the source rect below is already in the
+      // same space as _cullRect.
+      const wX = w.x + w.translation_x;
+      const wY = w.y + w.translation_y;
+
+      // [PERF ①b] A window that does not overlap the rect this glass can
+      // show contributes nothing to the capture — the clip (and, for
+      // applicationManager, clipBox's clip_to_allocation) would throw away
+      // every one of its pixels anyway. Hiding the clone instead of merely
+      // scissoring it is what makes the difference: clutter_actor_paint()
+      // returns immediately for an invisible actor, so the source is never
+      // painted through this clone, and if that source is a window with its
+      // own glass, ITS capture/blur/composite does not run either.
+      //
+      // Still counted as active: the clone stays alive and correctly placed,
+      // it is only culled, so nothing has to be rebuilt when the window comes
+      // back into range.
       activeWindows.add(w);
+      const sxSafe = Number.isFinite(w.scale_x) && w.scale_x > 0 ? w.scale_x : 1;
+      const sySafe = Number.isFinite(w.scale_y) && w.scale_y > 0 ? w.scale_y : 1;
+
+      // [FIX ①b] The cull decision is taken here but ACTED ON below, after
+      // the clone exists and has been given its stacking index.
+      //
+      // The first cut skipped the whole iteration with `continue`, which had
+      // two consequences that turned out to matter more than the work it
+      // saved:
+      //
+      //   * a window that was culled before its clone existed never got one,
+      //     so every crossing of a glass boundary destroyed and rebuilt a
+      //     clone — and a brand new Clutter actor is visible=false and
+      //     unallocated, i.e. exactly the state in which
+      //     _clutter_actor_queue_redraw_full() throws its damage away
+      //     (clutter-actor.c:7674). Inside a ClutterOffscreenEffect that is
+      //     not cosmetic: the capture FBO is only re-rendered when the glass
+      //     actor is dirty (clutter-offscreen-effect.c:569), so lost damage
+      //     means the glass keeps showing a stale capture.
+      //
+      //   * zIndex was not advanced for culled windows, so every cull and
+      //     un-cull renumbered the whole stack and set_child_at_index() ran
+      //     on clones that had not moved.
+      //
+      // Now the clone is always built, always placed and always indexed; the
+      // only thing the cull changes is whether it gets painted. That is where
+      // the saving was anyway — an opacity-0 clone never paints its source,
+      // so the nested glass inside that source never runs.
+      const culled = !!this._cullRect && isCullSiteEnabled('windows') &&
+        !rectsIntersect(wX, wY, width * sxSafe, height * sySafe, this._cullRect);
 
       let clone = this._windowClones.get(w);
       // A clone can be destroyed out from under this map — its container is
@@ -1624,6 +2692,27 @@ export class WindowCloneManager {
         this.windowClonesContainer?.add_child(clone);
         this._windowClones.set(w, clone);
       }
+
+      // [PERF ①b] Map the clone first — an unmapped actor cannot even report
+      // damage — then apply this frame's cull decision. setCloneCulled() is
+      // a no-op when the state has not changed.
+      setActorVisible(clone, true);
+      setCloneCulled(clone, culled,
+        culled
+          ? `src=(${Math.round(wX)},${Math.round(wY)},${Math.round(width * sxSafe)}x${Math.round(height * sySafe)}) ` +
+            `cullRect=[${this._cullRect!.map(Math.round)}] label=${this.label}`
+          : `label=${this.label}`);
+
+      // [PERF] The WRITES below are now conditional (see
+      // setTranslationIfChanged), but these removals stay unconditional on
+      // purpose: removing a transition that does not exist is a hash lookup
+      // that queues no damage, whereas leaving a live transition in place
+      // while the write is skipped would let the transition keep driving the
+      // property and desync the cache from the actor.
+      const tX = wX;
+      const tY = wY;
+      const pX = w.pivot_point ? w.pivot_point.x : 0;
+      const pY = w.pivot_point ? w.pivot_point.y : 0;
 
       clone.remove_transition('position');
       clone.remove_transition('size');
@@ -1655,18 +2744,15 @@ export class WindowCloneManager {
       // same snapshot (DELTA=(0,0), hasAlloc=true everywhere). Positioning
       // that cannot be starved by the layout system does not go stale.
       if (clone.x !== 0 || clone.y !== 0) clone.set_position(0, 0);
-      clone.translation_x = w.x + w.translation_x;
-      clone.translation_y = w.y + w.translation_y;
+      setTranslationIfChanged(clone, tX, tY);
 
-      clone.set_size(width, height);
+      setSizeIfChanged(clone, width, height);
 
       clone.remove_transition('scale-x');
       clone.remove_transition('scale-y');
-      clone.set_scale(w.scale_x, w.scale_y);
+      setScaleIfChanged(clone, w.scale_x, w.scale_y);
 
-      let pX = w.pivot_point ? w.pivot_point.x : 0;
-      let pY = w.pivot_point ? w.pivot_point.y : 0;
-      clone.set_pivot_point(pX, pY);
+      setPivotIfChanged(clone, pX, pY);
 
       // Clutter.Clone paints its source with the clone's own opacity, not
       // the source's — so without this the glass shows a window at full
@@ -1675,9 +2761,19 @@ export class WindowCloneManager {
       // That is the "the clone is offset/too solid during the open and
       // close animation" artifact: the geometry follows the animation but
       // the fade does not.
-      clone.opacity = w.opacity;
+      setOpacityIfChanged(clone, w.opacity);
 
-      this.windowClonesContainer?.set_child_at_index(clone, zIndex);
+      // [PERF] set_child_at_index() unparents and re-adds the child, which
+      // queues a relayout on the container even when the index is the one
+      // it already has — i.e. it damaged the whole glass every frame all by
+      // itself. The stacking order only changes on a restack.
+      //
+      // Culled clones are indexed too (zIndex advances for them below), so
+      // the numbering does not shift every time one is culled.
+      if (!isDiffWritesEnabled() || (clone as any)._lgZIndex !== zIndex) {
+        (clone as any)._lgZIndex = zIndex;
+        this.windowClonesContainer?.set_child_at_index(clone, zIndex);
+      }
       zIndex++;
     }
 
@@ -1722,9 +2818,19 @@ export const InverseCornerEffect = GObject.registerClass(
   class InverseCornerEffect extends Clutter.ShaderEffect {
     private _radius: number = 0;
     private _inset: number = 0;
+    // The glass shape's OWN corner radius. _radius is that plus a couple of
+    // pixels (CORNER_PADDING) so the cut safely over-reveals past the glass's
+    // antialiased corner; keeping both lets the shader tell the two arcs
+    // apart, which is what confines the reveal to the corners.
+    private _glassRadius: number = 0;
 
     setRadius(radius: number) {
       this._radius = radius;
+      this._updateShader();
+    }
+
+    setGlassRadius(radius: number) {
+      this._glassRadius = radius;
       this._updateShader();
     }
 
@@ -1737,6 +2843,7 @@ export const InverseCornerEffect = GObject.registerClass(
       const shader = `
         uniform sampler2D cogl_sampler;
         uniform float radius;
+        uniform float glass_radius;
         uniform float inset;
         uniform float width;
         uniform float height;
@@ -1782,13 +2889,49 @@ export const InverseCornerEffect = GObject.registerClass(
           // 4 corners inward, not shift the straight edges too.
           vec2 windowHalf = max(resolution * 0.5 - vec2(inset), vec2(1.0));
 
-          float d = sdRoundRect(p, windowHalf, radius);
+          // [FIX] This overlay redraws the raw, sharp background on top of the
+          // glass, so every pixel it covers is a pixel of drop shadow that
+          // cannot be seen. It must therefore cover the corner arcs and
+          // NOTHING else. Three terms, each removing one way it used to
+          // overreach:
+          //
+          //   1. outside the cut arc          — the original test
+          //   2. still inside the glass shape — stops it reaching outward into
+          //                                     the shadow at all
+          //   3. only where the two arcs differ — zero along the straight
+          //                                     edges, so no seam there
+          //
+          // History: with only term 1, sdRoundRect is positive everywhere
+          // outside the box, so the overlay painted the ENTIRE margin ring and
+          // erased the whole drop shadow. Bounding it by the window's square
+          // bounds fixed the straight edges but not the corners: the notch
+          // between the rounded arc and the square corner is precisely where
+          // the shadow wraps around, and the overlay was still sitting on it.
+          // Bounding by the glass shape instead is what actually separates
+          // "erase the glass's corner" from "do not touch the shadow".
+          float dCut = sdRoundRect(p, windowHalf, radius);
+          float dGlass = sdRoundRect(p, windowHalf, max(glass_radius, 0.0));
 
-          // Sharper transition for the corner cut to avoid dark fringes
-          float alpha = smoothstep(-0.5, 0.5, d);
+          // 1. Outside the cut arc.
+          float alpha = smoothstep(-0.5, 0.5, dCut);
+
+          // 2. Inside the glass, plus a small outward guard so the glass's own
+          //    antialiased boundary is covered rather than left as a fringe.
+          //    Term 3 keeps this guard from eating shadow along the edges.
+          alpha *= 1.0 - smoothstep(-0.5, 0.5, dGlass - 1.5);
+
+          // 3. Corner-only. A rounded rect with a larger radius is a subset of
+          //    one with a smaller radius, and the two coincide exactly along
+          //    the straight sides — so this difference is 0 there and grows to
+          //    about 0.41 * (radius - glass_radius) at the square corner.
+          alpha *= smoothstep(0.15, 0.6, dCut - dGlass);
 
           // Fade out at the very edges of the overlay actor to ensure it blends seamlessly
           // with the background and hides any potential window shadow cutoff.
+          // (With the notch restriction above this is normally already 1
+          // throughout the painted region — the notches sit at least "inset"
+          // px in from the actor edge — but it still guards a degenerate
+          // inset smaller than the fade distance.)
           vec2 edgeDist = min(st, 1.0 - st) * resolution;
           float edgeFade = smoothstep(0.0, 10.0, min(edgeDist.x, edgeDist.y));
           alpha *= edgeFade;
@@ -1817,6 +2960,7 @@ export const InverseCornerEffect = GObject.registerClass(
       if (Number.isNaN(w) || Number.isNaN(h) || w <= 0 || h <= 0) return;
 
       this._setUniform('radius', this._radius);
+      this._setUniform('glass_radius', this._glassRadius);
       this._setUniform('inset', this._inset);
       this._setUniform('width', w);
       this._setUniform('height', h);
@@ -1848,15 +2992,82 @@ export function getWindowActors(): any[] {
 
 /**
  * Safe helper to check whether a Clutter actor (GObject) is still valid and
- * has not been disposed. Touching a property on a disposed GObject throws;
- * this is used to guard per-frame sync loops (e.g. ApplicationManager, which
- * juggles many short-lived per-window clones) against that.
+ * has not been disposed. Used to guard both the per-frame sync loops and
+ * every teardown path; see the traps documented on isActorValid() itself —
+ * a disposed GObject neither throws nor returns undefined, so this is the
+ * only reliable test.
  */
+// ─── [DIAG] Frame-sync freeze ────────────────────────────────────────────────
+//
+// Every manager keeps a self-rescheduling Meta.LaterType.BEFORE_REDRAW chain
+// alive for as long as its target is mapped, and re-syncs its geometry and its
+// clones on every single tick. That is a poll, not an event: the dock's glass
+// was measured running vfunc_paint_target 119 times in 2.0s (= 59.5/s) with
+// the desktop sitting still.
+//
+// This switch makes every tick reschedule itself and do nothing else. It does
+// NOT stop the laters — so if the GPU load collapses, the cost is the per-frame
+// sync work and the repaint it dirties into existence, and the fix is to make
+// those ticks conditional. If the load barely moves, the cost is elsewhere and
+// idle gating would be wasted effort.
+//
+// Diagnostic only: while frozen the glass stops following anything that moves.
+// global._lgGlass.freezeSync(true) / (false).
+let _frameSyncFrozen = false;
+
+export function setFrameSyncFrozen(frozen: boolean): void {
+  _frameSyncFrozen = !!frozen;
+}
+
+export function isFrameSyncFrozen(): boolean {
+  return _frameSyncFrozen;
+}
+
+// gjs answers this one from the JS side without touching the C object (that
+// is how it can report the state at all), and it is the ONLY spelling that
+// works inside gnome-shell — see the two traps below.
+//
+// Trap 1: `String(actor)` does NOT reach gjs here. gnome-shell's
+// environment.js:366 replaces Clutter.Actor.prototype.toString with
+//     Clutter.Actor.prototype.toString = function () {
+//         return St.describe_actor(this);
+//     };
+// St.describe_actor() is a C call, so on a disposed actor it (a) emits the
+// very "impossible to access it" critical this function exists to prevent —
+// with a backtrace pointing at the String() line — and (b) returns a plain
+// description that never contains "(DISPOSED)". Going through
+// GObject.Object.prototype.toString bypasses the override.
+//
+// Trap 2: reading a property off a disposed wrapper does not throw AND does
+// not return undefined — gjs logs the critical and hands back the type's
+// default, so `actor.visible` is `false`, a perfectly good boolean, and the
+// old `typeof actor.visible === 'boolean'` test passed for dead actors.
+// Method calls behave the same way (critical, no throw). That is why every
+// try/catch guard in this file was a no-op and why _cleanupState() went on
+// to call remove_constraint()/destroy() on disposed actors.
+// Verified against gjs 1.88.0 with a standalone run_dispose() repro.
+const _gobjectToString: (this: any) => string =
+  (GObject as any).Object.prototype.toString;
+
 export function isActorValid(actor: any): boolean {
   if (!actor) return false;
+
+  let desc: string;
   try {
-    let _v = actor.visible;
-    return true;
+    desc = _gobjectToString.call(actor);
+  } catch (e) {
+    return false;
+  }
+  // "[object (DISPOSED) instance wrapper GType:... ]" /
+  // "[object (FINALIZED) instance wrapper ...]"
+  if (desc.indexOf('(DISPOSED)') >= 0 || desc.indexOf('(FINALIZED)') >= 0)
+    return false;
+
+  // Alive as far as gjs is concerned, so this read cannot be the disposed
+  // case any more. It stays only to reject things that are not actors at
+  // all (a plain object, a GObject that is not a Clutter.Actor).
+  try {
+    return typeof actor.visible === 'boolean';
   } catch (e) {
     return false;
   }
@@ -1993,3 +3204,120 @@ export const InvertedPositionConstraint = GObject.registerClass({
   }
 });
 export type InvertedPositionConstraint = InstanceType<typeof InvertedPositionConstraint>;
+
+
+/**
+ * [PERF ①/①b] Per-frame entry point for the capture clip and the clone cull.
+ *
+ * Call it from the manager's own sync, AFTER setResolution()/
+ * setGlassGeometry() (so the effect's uniforms describe this frame) and
+ * BEFORE uiSampler.sync()/windowCloneManager.sync() (so the cull rect this
+ * computes is the one those two use this frame, not next frame).
+ *
+ * Coordinate spaces, because getting one of these wrong makes the glass show
+ * an empty background and nothing else:
+ *
+ *   shader space  liquidBox-local pixels. What LiquidEffect works in
+ *                 (resolution_x/y, dock_x/y/w/h, getCaptureClipRect()).
+ *   screen space  absolute stage coordinates. What the clones are positioned
+ *                 in — both WindowCloneManager and UILayerSampler place
+ *                 their clones at the SOURCE's absolute position and let a
+ *                 container-level translation map them into the FBO.
+ *
+ * They differ by the glass's own origin on screen, which the caller passes as
+ * originX/originY (the monitor origin for every current caller).
+ *
+ * The clip goes on the clone container, whose own transform is identity, so
+ * its local space IS shader space and the rect can be applied as-is.
+ */
+export function syncGlassCaptureClip(opts: {
+  /** The actor holding bgClone / windowClones / uiClones. */
+  cloneContainer: Clutter.Actor | null,
+  /** The LiquidEffect driving this glass. */
+  effect: any,
+  /** Screen position of shader-space (0, 0), i.e. of the glass's bgActor. */
+  originX: number,
+  originY: number,
+  uiSampler?: UILayerSampler | null,
+  windowCloneManager?: WindowCloneManager | null,
+}): void {
+  const { cloneContainer, effect, originX, originY } = opts;
+  const uiSampler = opts.uiSampler ?? null;
+  const windowCloneManager = opts.windowCloneManager ?? null;
+
+  const clear = () => {
+    if (cloneContainer && isActorValid(cloneContainer) &&
+        (cloneContainer as any)._lgClipW !== undefined) {
+      (cloneContainer as any)._lgClipX = undefined;
+      (cloneContainer as any)._lgClipY = undefined;
+      (cloneContainer as any)._lgClipW = undefined;
+      (cloneContainer as any)._lgClipH = undefined;
+      try { cloneContainer.remove_clip(); } catch (_) { }
+    }
+    uiSampler?.setCullRect(null);
+    windowCloneManager?.setCullRect(null);
+    windowCloneManager?.applyBgCloneClip(null);
+    if (effect) effect._lgCaptureClip = null;
+  };
+
+  if (!isCaptureClipEnabled() && !isCloneCullEnabled()) { clear(); return; }
+  if (!effect || typeof effect.getCaptureClipRect !== 'function') { clear(); return; }
+
+  let rect: GlassRect | null = null;
+  try {
+    const r = effect.getCaptureClipRect();
+    if (r) rect = [r[0], r[1], r[2], r[3]];
+  } catch (_) {
+    clear();
+    return;
+  }
+  if (!rect) { clear(); return; }
+
+  // A BMS replica whose rect we have not measured yet: sit this frame out
+  // rather than risk clipping the panel's band away for one frame. It costs
+  // a single unclipped paint, once, right after the replica is built.
+  if (uiSampler?.hasUnmeasuredBmsReplica()) { clear(); return; }
+
+  // Widen to cover every BMS replica this glass draws. A BACKGROUND-mode BMS
+  // blur reads the framebuffer over the panel's full stage rect, so any part
+  // of that rect we stop painting into comes back as blurred transparency
+  // smeared across the whole panel (memo.md 追記4). The panel is full width,
+  // so with the dock at the top edge this widens the clip to the full screen
+  // — the height still collapses, which is where the saving is.
+  const bmsRects = uiSampler?.getBmsScreenRects() ?? [];
+  for (const b of bmsRects) {
+    unionRectInto(rect, [b[0] - originX, b[1] - originY, b[2], b[3]]);
+  }
+
+  const [resW, resH] = typeof effect.getResolution === 'function'
+    ? effect.getResolution() : [0, 0];
+  if (resW >= 1 && resH >= 1) {
+    const x1 = Math.min(resW, rect[0] + rect[2]);
+    const y1 = Math.min(resH, rect[1] + rect[3]);
+    rect[0] = Math.max(0, rect[0]);
+    rect[1] = Math.max(0, rect[1]);
+    rect[2] = x1 - rect[0];
+    rect[3] = y1 - rect[1];
+    if (!(rect[2] >= 2) || !(rect[3] >= 2)) { clear(); return; }
+  }
+
+  if (isCaptureClipEnabled() && cloneContainer && isActorValid(cloneContainer)) {
+    setClipIfChanged(cloneContainer, rect[0], rect[1], rect[2], rect[3]);
+  } else if (cloneContainer && isActorValid(cloneContainer) &&
+             (cloneContainer as any)._lgClipW !== undefined) {
+    (cloneContainer as any)._lgClipW = undefined;
+    try { cloneContainer.remove_clip(); } catch (_) { }
+  }
+
+  // [DIAG] Visible in global._lgGlass.dump() as `captureClip`.
+  effect._lgCaptureClip = rect.slice();
+
+  const screenRect: GlassRect = [rect[0] + originX, rect[1] + originY, rect[2], rect[3]];
+
+  // The wallpaper clone is not under cloneContainer, so it needs its own
+  // clip — in screen space. See applyBgCloneClip().
+  windowCloneManager?.applyBgCloneClip(isCaptureClipEnabled() ? screenRect : null);
+
+  uiSampler?.setCullRect(screenRect);
+  windowCloneManager?.setCullRect(screenRect);
+}

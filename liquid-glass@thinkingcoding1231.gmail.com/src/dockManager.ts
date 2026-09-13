@@ -6,7 +6,8 @@ import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import { LiquidEffect } from './liquidEffect.js';
 import Gio from 'gi://Gio';
-import { UnpickableActor, UILayerSampler, WindowCloneManager, reportFrameLoopError, ensureGlassAllocated } from './utils.js';
+import { UnpickableActor, UILayerSampler, WindowCloneManager, reportFrameLoopError, ensureGlassAllocated, isFrameSyncFrozen,
+  setClipIfChanged, syncGlassCaptureClip } from './utils.js';
 
 import { Logger } from './logger.js';
 
@@ -49,6 +50,10 @@ export class DashManager {
   private _signals: number[];
   private _settingsSignals: number[]; // GSettingsのイベントリスナーを管理
   private _frameSyncId: number;
+  // [FIX] Set by cleanup() before anything that can throw. Read by the
+  // per-frame BEFORE_REDRAW tick so an orphaned chain stops itself even if
+  // cleanup() never reached its laterRemove(). See the note in frameTick().
+  private _torndown: boolean = false;
   private _isEffectActive: boolean; // エフェクトが現在適用されているかのフラグ
 
   private _originalStyle: string | undefined;
@@ -74,6 +79,8 @@ export class DashManager {
   private _outputLogs: boolean = false;
 
   private _marginValue: number = 0;
+  // Tracks the hide/show transition so the reason is logged once, not per frame.
+  private _lastHidden: boolean | undefined;
 
   private _uiSampler: UILayerSampler | null = null;
   private _windowCloneManager: WindowCloneManager | null = null;
@@ -293,7 +300,7 @@ export class DashManager {
     let contrast = this._settings.get_double('dock-contrast');
     let saturation = this._settings.get_double('dock-saturation');
 
-    this.effect = new LiquidEffect({ extensionPath: this.extensionPath, settings: this._settings, logger: this._logger } as any);
+    this.effect = new LiquidEffect({ extensionPath: this.extensionPath, settings: this._settings, logger: this._logger, owner: 'dock' } as any);
     this.effect.setPadding(SHADER_PADDING);
     this.effect.setTintColor(...hexToColorArray(tintColorStr));
     this.effect.setTintStrength(tintStrength);
@@ -308,7 +315,18 @@ export class DashManager {
 
     // WindowCloneManager + UILayerSampler deposit their clones inside liquidBox.
     this._windowCloneManager = new WindowCloneManager(this.liquidBox, this._cloneContainer, 'lg-dock');
-    this._uiSampler = new UILayerSampler(this.bgActor, this.liquidBox, [dockRoot, global.windowGroup, global.window_group], this._cloneContainer);
+    // [FIX] dockRoot is passed BOTH as a fixed exclusion and as an ancestor
+    // source. The fixed entry covers the common case; the ancestor source is
+    // what keeps the exclusion correct after Dash to Dock destroys and
+    // rebuilds its container (which it does whenever its settings change,
+    // including a change of dock position). Without the second one the dock
+    // starts being cloned into its own glass — ghost icons inside the dock.
+    this._uiSampler = new UILayerSampler(
+      this.bgActor, this.liquidBox,
+      [dockRoot, global.windowGroup, global.window_group],
+      this._cloneContainer,
+      'dock',
+      [this.targetActor]);
 
     this.bgActor.show();
 
@@ -354,7 +372,24 @@ export class DashManager {
     // 'notify::mapped'. Same shape as ApplicationManager._frameTick().
     let frameTick = () => {
       this._frameSyncId = 0;
+      // [FIX] Hard stop after teardown. Every one of these ticks ends by
+      // re-adding itself as a BEFORE_REDRAW later, so a cleanup() that does
+      // not reach its laterRemove() — because an earlier step threw — leaves
+      // a self-rescheduling chain running forever against destroyed actors,
+      // holding this whole manager (and its settings and logger) alive. The
+      // next enable() then builds a second set on top of a live first set,
+      // which is the "the extension can no longer be enabled" symptom.
+      // Removing the later is still done in cleanup(); this is the backstop
+      // that does not depend on cleanup() getting that far.
+      if (this._torndown) return GLib.SOURCE_REMOVE;
       if (!this.bgActor || !this.targetActor.mapped) return GLib.SOURCE_REMOVE;
+
+      // [DIAG] See setFrameSyncFrozen() in utils.ts. Reschedules but does
+      // nothing, so the cost of this poll can be measured directly.
+      if (isFrameSyncFrozen()) {
+        this._frameSyncId = laterAdd(frameLaterType, frameTick);
+        return GLib.SOURCE_REMOVE;
+      }
 
       // Repair the subtree if Clutter has stopped allocating it. Sampled
       // here, at the top of the tick, because the previous frame's relayout
@@ -648,9 +683,28 @@ export class DashManager {
       if (absY + baseH > monitor.y + monitor.height) visibleH -= ((absY + baseH) - (monitor.y + monitor.height));
     }
 
-    if (visibleW <= 5 || visibleH <= 5) {
+    // [FIX] Was `<= 5`. The guard exists to avoid drawing a glass for a dock
+    // that has been reduced to nothing, but 5px is wide enough to catch a dock
+    // that is merely sitting flush against a screen edge — which is exactly
+    // what a small dock-margin-bottom produces, and it made the glass vanish
+    // while the margin was being tuned. Only a genuinely degenerate box is
+    // rejected now, and the decision is logged on transition so a dock that
+    // still disappears says why.
+    if (visibleW <= 1 || visibleH <= 1) {
+      if (this._lastHidden !== true) {
+        this._lastHidden = true;
+        this._logger.log(
+          `[Liquid Glass][dock] hiding the glass: visible=(${visibleW.toFixed(1)}x${visibleH.toFixed(1)}) ` +
+          `base=(${baseW.toFixed(1)}x${baseH.toFixed(1)}) abs=(${absX.toFixed(1)},${absY.toFixed(1)}) ` +
+          `monitor=(${monitor?.x},${monitor?.y},${monitor?.width}x${monitor?.height}) ` +
+          `margin=${this._marginValue}`);
+      }
       this.bgActor.opacity = 0;
     } else {
+      if (this._lastHidden === true) {
+        this._lastHidden = false;
+        this._logger.log('[Liquid Glass][dock] glass visible again');
+      }
       this.bgActor.opacity = this.targetActor.opacity;
     }
 
@@ -704,7 +758,13 @@ export class DashManager {
     // Clip only bgActor; liquidBox has no separate clip
     // this.liquidBox?.remove_clip();
 
-    this.bgActor.set_clip(
+    // [PERF] clutter_actor_set_clip() does not compare before storing: it
+    // notifies and calls clutter_actor_queue_redraw() every single time. Run
+    // unconditionally from this per-frame tick, it damaged the dock's glass
+    // (and therefore re-ran its capture/blur/composite) on every frame with
+    // nothing on screen having moved. See setClipIfChanged() in utils.ts.
+    setClipIfChanged(
+      this.bgActor,
       localBgX - CLIP_PADDING, localBgY - CLIP_PADDING,
       bgW + CLIP_PADDING * 2, bgH + CLIP_PADDING * 2
     );
@@ -739,6 +799,21 @@ export class DashManager {
     // FBO, which maps back to (w.x, w.y) in screen space once bgActor's
     // monitor-origin position is added by Clutter's scene graph. ✓
     this._windowCloneManager?.setOffset(-monitor.x, -monitor.y);
+
+
+    // [PERF ①/①b] Clip the offscreen CAPTURE to the region this glass can
+    // actually show, and hide the clones that fall outside it. Must sit
+    // between setGlassGeometry() (which makes the effect's uniforms describe
+    // this frame) and the two sync() calls below (which consume the cull
+    // rect this sets). See syncGlassCaptureClip() in utils.ts.
+    syncGlassCaptureClip({
+      cloneContainer: this._cloneContainer,
+      effect: this.effect,
+      originX: monitor.x,
+      originY: monitor.y,
+      uiSampler: this._uiSampler,
+      windowCloneManager: this._windowCloneManager,
+    });
 
     // UILayerSampler is synced with the monitor origin and full-screen
     // dimensions instead of the dock-relative bgX/bgY/bgW/bgH.
@@ -827,17 +902,51 @@ export class DashManager {
   }
 
   // 拡張機能全体が無効化される時の最終クリーンアップ
+  // [FIX] Teardown must not be all-or-nothing.
+  //
+  // These steps used to run bare, one after another, so the first one that
+  // threw skipped every step after it — signal handlers, actors, effects and
+  // (worst of all) the per-frame later chain stayed alive, and the next
+  // enable() built a second set on top. Disabling is exactly when a throw is
+  // most likely: the shell is destroying the same actors we are.
+  private _teardownStep(name: string, fn: () => void): void {
+    try {
+      fn();
+    } catch (e) {
+      try {
+        this._logger?.error(`[Liquid Glass] ${this.constructor.name}.${name} failed during cleanup: ${e}`);
+      } catch (_) {
+        console.error(`[Liquid Glass] ${name} failed during cleanup: ${e}`);
+      }
+    }
+  }
+
   cleanup() {
+    this._torndown = true;
+
+    // 毎フレームの later チェーンを最初に、無条件で止める。_removeEffect()
+    // の途中で throw しても孤児チェーンが残らないようにするため
+    // （_teardownStep のコメント参照）。
+    this._teardownStep('frameSync', () => {
+      if (this._frameSyncId !== 0) {
+        if (global.compositor?.get_laters)
+          global.compositor.get_laters().remove(this._frameSyncId);
+        this._frameSyncId = 0;
+      }
+    });
+
     // エフェクトを解除
-    this._removeEffect();
+    this._teardownStep('removeEffect', () => this._removeEffect());
 
     // メモリリークを防ぐため、GSettingsのリスナーもすべて解除する
-    if (this._settings) {
-      for (let id of this._settingsSignals) {
-        this._settings.disconnect(id);
+    this._teardownStep('settingsSignals', () => {
+      if (this._settings) {
+        for (let id of this._settingsSignals) {
+          try { this._settings.disconnect(id); } catch (e) { }
+        }
+        this._settingsSignals = [];
       }
-      this._settingsSignals = [];
-    }
+    });
   }
 
   // ドックの内部から、計算の基準となるアイコンまたはインジケーターを1つ再帰的に探し出す

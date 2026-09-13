@@ -139,7 +139,7 @@ Before writing the GNOME implementation in GJS/Clutter, I built a standalone Web
 
 You can run the web prototype locally:
 ```bash
-cd prototype
+cd prototypes/sandbox-threejs
 npm install
 npm run dev
 ```

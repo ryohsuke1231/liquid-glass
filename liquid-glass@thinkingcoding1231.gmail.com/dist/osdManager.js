@@ -6,7 +6,7 @@ import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import { LiquidEffect } from './liquidEffect.js';
 import { StageContrastSampler, AdaptiveContrastConfig } from './contrastSampler.js';
-import { UnpickableActor, UILayerSampler, WindowCloneManager, reportFrameLoopError, ensureGlassAllocated, } from './utils.js';
+import { UnpickableActor, UILayerSampler, WindowCloneManager, reportFrameLoopError, ensureGlassAllocated, isFrameSyncFrozen, setClipIfChanged, syncGlassCaptureClip } from './utils.js';
 // ========== Configuration Parameters (Defaults, overridden by settings) ==========
 const SHADER_PADDING = 20;
 export class OsdManager {
@@ -15,6 +15,10 @@ export class OsdManager {
     _logger;
     _settingsSignals;
     _frameSyncId;
+    // [FIX] Set by cleanup() before anything that can throw. Read by the
+    // per-frame BEFORE_REDRAW tick so an orphaned chain stops itself even if
+    // cleanup() never reached its laterRemove(). See the note in frameTick().
+    _torndown = false;
     _isEffectActive;
     _osdYOffset;
     _osdStates;
@@ -212,8 +216,25 @@ export class OsdManager {
         const frameLaterType = Meta.LaterType.BEFORE_REDRAW;
         const frameTick = () => {
             this._frameSyncId = 0;
+            // [FIX] Hard stop after teardown. Every one of these ticks ends by
+            // re-adding itself as a BEFORE_REDRAW later, so a cleanup() that does
+            // not reach its laterRemove() — because an earlier step threw — leaves
+            // a self-rescheduling chain running forever against destroyed actors,
+            // holding this whole manager (and its settings and logger) alive. The
+            // next enable() then builds a second set on top of a live first set,
+            // which is the "the extension can no longer be enabled" symptom.
+            // Removing the later is still done in cleanup(); this is the backstop
+            // that does not depend on cleanup() getting that far.
+            if (this._torndown)
+                return GLib.SOURCE_REMOVE;
             if (!this._isEffectActive)
                 return GLib.SOURCE_REMOVE;
+            // [DIAG] See setFrameSyncFrozen() in utils.ts. Reschedules but does
+            // nothing, so the cost of this poll can be measured directly.
+            if (isFrameSyncFrozen()) {
+                this._frameSyncId = this._laterAdd(frameLaterType, frameTick);
+                return GLib.SOURCE_REMOVE;
+            }
             for (let state of this._osdStates) {
                 // Per-state try/catch: one broken OSD must not stop the others, and
                 // must not skip the reschedule below (see DockManager's frameTick).
@@ -312,7 +333,7 @@ export class OsdManager {
         let saturation = this._settings.get_double('osd-saturation');
         let contrast = this._settings.get_double('osd-contrast');
         // LiquidEffect on liquidBox (includes built-in dual-Kawase blur)
-        let effect = new LiquidEffect({ extensionPath: this.extensionPath, settings: this._settings });
+        let effect = new LiquidEffect({ extensionPath: this.extensionPath, settings: this._settings, owner: 'osd' });
         effect.setPadding(SHADER_PADDING);
         effect.setTintColor(...this._hexToColorArray(tintColorStr));
         effect.setTintStrength(this._baseTint);
@@ -326,7 +347,7 @@ export class OsdManager {
         bgActor.hide();
         // ── 5. WindowCloneManager + UILayerSampler ────────────────────────────────
         let windowCloneManager = new WindowCloneManager(liquidBox, cloneContainer, 'lg-osd');
-        let uiSampler = new UILayerSampler(bgActor, liquidBox, [osdRoot, global.windowGroup, global.window_group], cloneContainer);
+        let uiSampler = new UILayerSampler(bgActor, liquidBox, [osdRoot, global.windowGroup, global.window_group], cloneContainer, 'osd');
         // ── 7. Build initial clones ───────────────────────────────────────────────
         windowCloneManager.rebuildClones();
         uiSampler.rebindSelf();
@@ -467,7 +488,8 @@ export class OsdManager {
             // Soft clip — limits GPU work to the OSD area + generous margin
             const CLIP_PADDING = 200;
             state.liquidBox?.remove_clip();
-            state.bgActor.set_clip(localBgX - CLIP_PADDING, localBgY - CLIP_PADDING, bgW + CLIP_PADDING * 2, bgH + CLIP_PADDING * 2);
+            // [PERF] set_clip() queues a redraw unconditionally — see setClipIfChanged().
+            setClipIfChanged(state.bgActor, localBgX - CLIP_PADDING, localBgY - CLIP_PADDING, bgW + CLIP_PADDING * 2, bgH + CLIP_PADDING * 2);
             const SHADOW_MAX_RADIUS = CLIP_PADDING - 20;
             state.effect?.setShadowMaxRadius(SHADOW_MAX_RADIUS);
             // Inform shader of full-screen resolution and OSD position within FBO
@@ -483,6 +505,19 @@ export class OsdManager {
         // ── Sync clones every frame (dockManager pattern) ────────────────────────
         state._windowCloneManager?.setOffset(-monitorX, -monitorY);
         state._uiSampler?.refresh();
+        // [PERF ①/①b] Clip the offscreen CAPTURE to the region this glass can
+        // actually show, and hide the clones that fall outside it. Must sit
+        // between setGlassGeometry() (which makes the effect's uniforms describe
+        // this frame) and the two sync() calls below (which consume the cull
+        // rect this sets). See syncGlassCaptureClip() in utils.ts.
+        syncGlassCaptureClip({
+            cloneContainer: state._cloneContainer,
+            effect: state.effect,
+            originX: monitorX,
+            originY: monitorY,
+            uiSampler: state._uiSampler,
+            windowCloneManager: state._windowCloneManager,
+        });
         state._uiSampler?.sync(monitorX, monitorY, screenW, screenH);
         state._windowCloneManager?.sync();
     }
@@ -558,12 +593,45 @@ export class OsdManager {
         catch (e) { }
         state._windowCloneManager = null;
     }
-    cleanup() {
-        for (let sigId of this._settingsSignals) {
-            this._settings.disconnect(sigId);
+    // [FIX] Teardown must not be all-or-nothing.
+    //
+    // These steps used to run bare, one after another, so the first one that
+    // threw skipped every step after it — signal handlers, actors, effects and
+    // (worst of all) the per-frame later chain stayed alive, and the next
+    // enable() built a second set on top. Disabling is exactly when a throw is
+    // most likely: the shell is destroying the same actors we are.
+    _teardownStep(name, fn) {
+        try {
+            fn();
         }
-        this._settingsSignals = [];
-        this._removeEffect();
+        catch (e) {
+            try {
+                this._logger?.error(`[Liquid Glass] ${this.constructor.name}.${name} failed during cleanup: ${e}`);
+            }
+            catch (_) {
+                console.error(`[Liquid Glass] ${name} failed during cleanup: ${e}`);
+            }
+        }
+    }
+    cleanup() {
+        this._torndown = true;
+        this._teardownStep('frameSync', () => {
+            if (this._frameSyncId !== 0) {
+                if (global.compositor?.get_laters)
+                    global.compositor.get_laters().remove(this._frameSyncId);
+                this._frameSyncId = 0;
+            }
+        });
+        this._teardownStep('settingsSignals', () => {
+            for (let sigId of this._settingsSignals) {
+                try {
+                    this._settings.disconnect(sigId);
+                }
+                catch (e) { }
+            }
+            this._settingsSignals = [];
+        });
+        this._teardownStep('removeEffect', () => this._removeEffect());
     }
     // ── Adaptive text colour helpers ────────────────────────────────────────────
     _collectAdaptiveTextTargets() {
