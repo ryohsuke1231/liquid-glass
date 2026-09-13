@@ -6,10 +6,9 @@ import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import { LiquidEffect } from './liquidEffect.js';
 import { StageContrastSampler, AdaptiveContrastConfig } from './contrastSampler.js';
-import { UnpickableActor, UILayerSampler, WindowCloneManager, reportFrameLoopError, ensureGlassAllocated, isFrameSyncFrozen, setClipIfChanged, syncGlassCaptureClip } from './utils.js';
+import { UnpickableActor, UILayerSampler, WindowCloneManager, reportFrameLoopError, ensureGlassAllocated, getTransformedRect, resolveMonitorGeometry, isFrameSyncFrozen, setClipIfChanged, syncGlassCaptureClip, } from './utils.js';
 // ========== Configuration Parameters (Defaults, overridden by settings) ==========
 const SHADER_PADDING = 20;
-const HIDE_SAFETY_MARGIN = 7;
 export class NotificationManager {
     extensionPath;
     _settings;
@@ -35,7 +34,10 @@ export class NotificationManager {
     // cleanup() never reached its laterRemove(). See the note in frameTick().
     _torndown = false;
     _isEffectActive;
-    _stableBaseW;
+    _bannerIdleId = 0;
+    _pendingBanner = null;
+    _bannerGeneration = 0;
+    _originalBannerOffset = 0;
     _lastBgW;
     _lastBgH;
     _lastBgX;
@@ -162,13 +164,13 @@ export class NotificationManager {
     _applyEffect() {
         if (this._isEffectActive)
             return;
-        this._isEffectActive = true;
         // @ts-expect-error: _bannerBin is an internal property
         let bannerBin = this.tray._bannerBin;
         if (!bannerBin) {
             this._logger.error('[Liquid Glass] _bannerBin is not found. GNOME internal structure might have changed.');
             return;
         }
+        this._isEffectActive = true;
         // Apply settings initially
         this._adaptiveConfig.enabled = this._settings.get_boolean('notification-enable-adaptive-text-color');
         this._adaptiveConfig.sampleIntervalMs = this._settings.get_int('notification-sample-interval-ms');
@@ -180,13 +182,19 @@ export class NotificationManager {
         this._signals.push(bannerBin.connect('child-added', (container, actor) => {
             if (actor === this.bgActor || actor.get_name?.() === 'liquid-glass-bg-actor')
                 return;
-            GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
-                // @ts-expect-error: _banner is an internal property
-                let banner = this.tray._banner || actor;
-                if (banner && banner !== this.currentBanner) {
+            if (this._bannerIdleId)
+                GLib.Source.remove(this._bannerIdleId);
+            this._pendingBanner = actor;
+            this._bannerIdleId = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+                this._bannerIdleId = 0;
+                this._pendingBanner = null;
+                // A queued setup may outlive the notification or the effect toggle.
+                if (!this._isEffectActive || actor.get_parent() !== bannerBin)
+                    return GLib.SOURCE_REMOVE;
+                if (actor !== this.currentBanner) {
                     this._cleanupCurrentBanner();
-                    this.currentBanner = banner;
-                    this._setupBannerEffect(banner);
+                    this.currentBanner = actor;
+                    this._setupBannerEffect(actor);
                 }
                 return GLib.SOURCE_REMOVE;
             });
@@ -194,7 +202,14 @@ export class NotificationManager {
         this._signals.push(bannerBin.connect('child-removed', (container, actor) => {
             if (actor === this.bgActor || actor.get_name?.() === 'liquid-glass-bg-actor')
                 return;
-            this._cleanupCurrentBanner();
+            if (actor === this._pendingBanner) {
+                if (this._bannerIdleId)
+                    GLib.Source.remove(this._bannerIdleId);
+                this._bannerIdleId = 0;
+                this._pendingBanner = null;
+            }
+            if (actor === this.currentBanner)
+                this._cleanupCurrentBanner();
         }));
         // @ts-expect-error
         if (this.tray._banner) {
@@ -209,11 +224,14 @@ export class NotificationManager {
         // @ts-expect-error
         if (this.tray._bannerBin) {
             // @ts-expect-error
-            this.tray._bannerBin.translation_y = this._settings.get_int('notification-y-offset');
+            this._originalBannerOffset = this.tray._bannerBin.translation_y;
+            // @ts-expect-error: shell-owned container
+            this.tray._bannerBin.translation_y = this._originalBannerOffset + this._notificationYOffset;
         }
         // ── 1. bgActor: full monitor, no effect ──────────────────────────────────
         this.bgActor = new UnpickableActor();
         this.bgActor.set_name('liquid-glass-bg-actor');
+        this.bgActor.hide();
         this.bgActor.set_size(1.0, 1.0);
         this.bgActor.set_pivot_point(0.0, 0.0);
         // ── 2. liquidBox: outer layer — LiquidEffect with built-in dual-Kawase blur ─
@@ -273,7 +291,7 @@ export class NotificationManager {
         // ── 5. WindowCloneManager + UILayerSampler ────────────────────────────────
         this._windowCloneManager = new WindowCloneManager(this.liquidBox, this._cloneContainer, 'lg-notification');
         this._uiSampler = new UILayerSampler(this.bgActor, this.liquidBox, [bannerRoot, global.windowGroup, global.window_group], this._cloneContainer, 'notification');
-        this.bgActor.show();
+        // First valid geometry sync makes the glass visible.
         // Initial clone build (also applies liquid-glass mutual exclusions)
         this._buildClones();
         // ── 7. Frame-render loop ──────────────────────────────────────────────────
@@ -332,49 +350,25 @@ export class NotificationManager {
     _syncGeometry() {
         if (!this.bgActor || !this.currentBanner)
             return;
-        let [w, h] = this.currentBanner.get_size();
-        let [absX, absY] = this.currentBanner.get_transformed_position();
-        if (Number.isNaN(absX) || Number.isNaN(absY))
-            return;
-        this.bgActor.opacity = this.currentBanner.opacity;
-        let themeNode = this.currentBanner.get_theme_node();
-        let mL = themeNode ? themeNode.get_margin(St.Side.LEFT) : 0;
-        let mR = themeNode ? themeNode.get_margin(St.Side.RIGHT) : 0;
-        let mT = themeNode ? themeNode.get_margin(St.Side.TOP) : 0;
-        let mB = themeNode ? themeNode.get_margin(St.Side.BOTTOM) : 0;
-        // Hide when the notification banner has slid completely off-screen
-        if (absY + h <= mB + HIDE_SAFETY_MARGIN) {
+        // Keep the offset on the same parent GNOME animates, never on the glass alone.
+        // @ts-expect-error: shell-owned container
+        this.tray._bannerBin.translation_y = this._originalBannerOffset + this._notificationYOffset;
+        // GNOME animates opacity and scale on _bannerBin, not on the banner.
+        // Both the origin and size must include that ancestor transform.
+        const [absX, absY, w, h] = getTransformedRect(this.currentBanner);
+        const opacity = this.currentBanner.get_paint_opacity();
+        if (!this.currentBanner.mapped || !this.tray.visible || opacity === 0 ||
+            ![absX, absY, w, h].every(Number.isFinite) || w <= 0 || h <= 0) {
             this.bgActor.hide();
             return;
         }
-        else if (!this.bgActor.visible) {
-            this.bgActor.show();
-        }
-        // Margin-bloat compensation (same logic as before, now used only for shader geometry)
-        let marginW = mL + mR;
-        let marginH = mT + mB;
-        if (this._stableBaseW === undefined) {
-            this._stableBaseW = w;
-        }
-        if (Math.abs(this._stableBaseW - (w + marginW)) <= 1) {
-            this._stableBaseW = w;
-        }
-        let isBloated = Math.abs(w - (this._stableBaseW + marginW)) <= 1;
-        let visualW = isBloated ? w - marginW : w;
-        let visualH = isBloated ? h - marginH : h;
-        if (!isBloated)
-            this._stableBaseW = w;
-        let visualX = absX;
-        let visualY = absY;
-        let bgW = visualW + (this._glassExpand * 2) + (SHADER_PADDING * 2);
-        let bgH = visualH + (this._glassExpand * 2) + (SHADER_PADDING * 2);
-        let bgX_abs = visualX - this._glassExpand - SHADER_PADDING;
-        let bgY_abs = visualY - this._glassExpand - SHADER_PADDING;
-        // ── Monitor geometry ─────────────────────────────────────────────────────
-        let monitorIndex = Main.layoutManager.findIndexForActor(this.tray);
-        if (monitorIndex < 0)
-            monitorIndex = Main.layoutManager.primaryIndex;
-        let monitor = Main.layoutManager.monitors[monitorIndex] || Main.layoutManager.primaryMonitor;
+        this.bgActor.opacity = opacity;
+        this.bgActor.show();
+        const bgW = w + this._glassExpand * 2 + SHADER_PADDING * 2;
+        const bgH = h + this._glassExpand * 2 + SHADER_PADDING * 2;
+        const bgX_abs = absX - this._glassExpand - SHADER_PADDING;
+        const bgY_abs = absY - this._glassExpand - SHADER_PADDING;
+        const monitor = resolveMonitorGeometry([this.currentBanner, this.tray]);
         let monitorX = monitor?.x ?? 0;
         let monitorY = monitor?.y ?? 0;
         let screenW = Math.max(1, monitor?.width ?? 1);
@@ -456,16 +450,16 @@ export class NotificationManager {
     }
     // ── Per-banner cleanup ──────────────────────────────────────────────────────
     _cleanupCurrentBanner() {
+        this._bannerGeneration++;
         this._stopAdaptiveColorSampling();
         this._clearAdaptiveStyles();
         // @ts-expect-error
-        if (this.tray._bannerBin) {
+        if (this.currentBanner && this.tray._bannerBin) {
             // @ts-expect-error
-            this.tray._bannerBin.translation_y = 0;
+            this.tray._bannerBin.translation_y = this._originalBannerOffset;
         }
         if (this.currentBanner) {
             this.currentBanner.remove_style_class_name('liquid-glass-transparent');
-            this.currentBanner.translation_y = 0;
             this.currentBanner = null;
         }
         if (this._frameSyncId !== 0) {
@@ -498,7 +492,6 @@ export class NotificationManager {
         this._lastBgY = undefined;
         this._lastScreenW = undefined;
         this._lastScreenH = undefined;
-        this._stableBaseW = undefined;
         this._isFirstAdaptiveRun = true;
     }
     // ── Effect remove / cleanup ─────────────────────────────────────────────────
@@ -506,6 +499,10 @@ export class NotificationManager {
         if (!this._isEffectActive)
             return;
         this._isEffectActive = false;
+        if (this._bannerIdleId)
+            GLib.Source.remove(this._bannerIdleId);
+        this._bannerIdleId = 0;
+        this._pendingBanner = null;
         // @ts-expect-error
         let bannerBin = this.tray._bannerBin;
         for (let sigId of this._signals) {
@@ -566,10 +563,21 @@ export class NotificationManager {
     _setActorColor(actor, color, skipAnimations = false) {
         if (!actor || typeof actor.set_style !== 'function')
             return;
+        if (!this._styledActors.has(actor)) {
+            this._styledActors.set(actor, actor.get_style() || '');
+            actor.connect('destroy', () => {
+                if (actor._colorTweenId)
+                    GLib.source_remove(actor._colorTweenId);
+                actor._colorTweenId = undefined;
+                this._styledActors.delete(actor);
+            });
+        }
         if (actor._currentTargetColor === color)
             return;
+        // Interpolating light to dark passes through the background's own grey.
+        const changesPolarity = actor._currentTargetColor !== color;
         actor._currentTargetColor = color;
-        this._animateActorColor(actor, color, 380, skipAnimations);
+        this._animateActorColor(actor, color, 380, skipAnimations || changesPolarity);
     }
     _clearAdaptiveStyles() {
         for (const [actor, style] of this._styledActors.entries()) {
@@ -638,9 +646,12 @@ export class NotificationManager {
         if (targets.length === 0)
             return;
         this._adaptiveInFlight = true;
+        const generation = this._bannerGeneration;
         this._contrastSampler
             .chooseColorsForActors(targets, this._adaptiveConfig)
             .then(colorMap => {
+            if (generation !== this._bannerGeneration || !this.currentBanner)
+                return;
             this._applyAdaptiveColorMap(colorMap, this._isFirstAdaptiveRun);
             this._isFirstAdaptiveRun = false;
         })
@@ -665,12 +676,14 @@ export class NotificationManager {
             GLib.source_remove(actor._colorTweenId);
             actor._colorTweenId = undefined;
         }
+        const originalStyle = (this._styledActors.get(actor) || '').trim();
+        const stylePrefix = originalStyle ? `${originalStyle.replace(/;$/, '')}; ` : '';
         let themeNode = actor.get_theme_node();
         let startColor = themeNode.get_foreground_color();
         let targetRgb = this._hexToRgb(targetHexColor);
         let startTime = GLib.get_monotonic_time();
         if (skipAnimations) {
-            actor.set_style(`color: ${targetHexColor}; -st-icon-foreground-color: ${targetHexColor};`);
+            actor.set_style(`${stylePrefix}color: ${targetHexColor}; -st-icon-foreground-color: ${targetHexColor};`);
             return;
         }
         actor._colorTweenId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 16, () => {
@@ -685,7 +698,7 @@ export class NotificationManager {
             let r = Math.round(startColor.red + (targetRgb.r - startColor.red) * ease);
             let g = Math.round(startColor.green + (targetRgb.g - startColor.green) * ease);
             let b = Math.round(startColor.blue + (targetRgb.b - startColor.blue) * ease);
-            actor.set_style(`color: ${this._rgbToHex(r, g, b)}; -st-icon-foreground-color: ${this._rgbToHex(r, g, b)};`);
+            actor.set_style(`${stylePrefix}color: ${this._rgbToHex(r, g, b)}; -st-icon-foreground-color: ${this._rgbToHex(r, g, b)};`);
             if (progress >= 1.0) {
                 actor._colorTweenId = undefined;
                 return GLib.SOURCE_REMOVE;

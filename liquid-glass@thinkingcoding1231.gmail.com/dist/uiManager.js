@@ -7,7 +7,7 @@ import Meta from 'gi://Meta';
 import Gio from 'gi://Gio';
 import { LiquidEffect } from './liquidEffect.js';
 import { StageContrastSampler, AdaptiveContrastConfig } from './contrastSampler.js';
-import { UnpickableActor, UILayerSampler, UnpickableWidget, WindowCloneManager, reportFrameLoopError, ensureGlassAllocated, isFrameSyncFrozen, setClipIfChanged, syncGlassCaptureClip } from './utils.js';
+import { UnpickableActor, UILayerSampler, UnpickableWidget, WindowCloneManager, reportFrameLoopError, ensureGlassAllocated, resolveMonitorGeometry, isActorValid, getAllocatedSize, isFrameSyncFrozen, setClipIfChanged, syncGlassCaptureClip } from './utils.js';
 // ========== Configuration Parameters ==========
 // Transparent padding outside the glass area.
 // This prevents the shader distortion or rounded corners from being clipped by the actor bounds.
@@ -15,7 +15,9 @@ const SHADER_PADDING = 20;
 // Adaptive text color flags
 const SAMPLE_PER_ELEMENT = false;
 // ==============================================
+const MIN_MENU_SCALE = 0.5;
 export class UIManager {
+    _enableKey;
     extensionPath;
     _settings;
     _logger;
@@ -28,6 +30,8 @@ export class UIManager {
     _windowCloneManager = null;
     _signals;
     _animSignalId = 0;
+    _destroySignalId = 0;
+    _actorDestroyed = false;
     _frameSyncId;
     // [FIX] Set by cleanup() before anything that can throw. Read by the
     // per-frame BEFORE_REDRAW tick so an orphaned chain stops itself even if
@@ -36,6 +40,9 @@ export class UIManager {
     _glassExpand;
     _menuXoffset;
     _menuYoffset;
+    _menuScale = 1.0;
+    _ownsAccentCss = true;
+    _matchQuickSettingsHeight = false;
     _tickId;
     _contrastSampler;
     _adaptiveTimerId;
@@ -74,16 +81,15 @@ export class UIManager {
     _uiSampler = null;
     _lastScreenW;
     _lastScreenH;
-    constructor(extensionPath, settings, logger) {
+    constructor(extensionPath, settings, logger, panelButton = Main.panel.statusArea.dateMenu, ownsAccentCss = true, _enableKey = 'enable-menu-glass') {
+        this._enableKey = _enableKey;
         this.extensionPath = extensionPath;
         this._settings = settings;
         this._logger = logger;
-        // Target the main container of the Date/Calendar menu
-        this.targetActor = Main.panel.statusArea.dateMenu.menu.actor;
-        this.menu = Main.panel.statusArea.dateMenu.menu;
-        // Target for animations and visual offsets (The inner content)
-        // @ts-expect-error
-        this.animActor = Main.panel.statusArea.dateMenu.menu.box;
+        this._ownsAccentCss = ownsAccentCss;
+        this.targetActor = panelButton.menu.actor;
+        this.menu = panelButton.menu;
+        this.animActor = panelButton.menu.box;
         this.bgActor = null;
         this.effect = null;
         this._signals = [];
@@ -109,12 +115,20 @@ export class UIManager {
         this._isEffectActive = false;
         // Listen for the menu opening/closing to trigger our custom physics animation
         this._animSignalId = this.menu.connect('open-state-changed', (menu, isOpen) => {
+            if (!this._isEffectActive)
+                return;
             if (isOpen) {
+                this._applyMenuScale();
                 this._startAnimation(1); // Target scale: 1.0 (fully open)
             }
             else {
                 this._startAnimation(0); // Target scale: 0.0 (closed)
             }
+        });
+        this._destroySignalId = this.targetActor.connect('destroy', () => {
+            this._actorDestroyed = true;
+            this._destroySignalId = 0;
+            this.cleanup();
         });
     }
     setup() {
@@ -122,6 +136,9 @@ export class UIManager {
             return;
         this._bindSettings();
         this._enableAnimation = this._settings.get_boolean('enable-menu-animation');
+        this._menuScale = this._settings.get_double('menu-scale');
+        this._matchQuickSettingsHeight = this._settings.get_boolean('menu-match-quick-settings-height');
+        this._applyMenuScale();
         this._springStiffness = this._settings.get_double('menu-spring-stiffness');
         this._springDamping = this._settings.get_double('menu-spring-damping');
         this._springMass = this._settings.get_double('menu-spring-mass');
@@ -137,12 +154,12 @@ export class UIManager {
         });
         // 初回実行
         this._applySystemAccentColor();
-        if (this._settings.get_boolean('enable-menu-glass')) {
+        if (this._settings.get_boolean(this._enableKey)) {
             this._applyEffect();
         }
     }
     _applySystemAccentColor() {
-        if (!this.targetActor)
+        if (!this._ownsAccentCss || !this.targetActor)
             return;
         // 1. 親要素と子要素を作成して、GNOMEテーマが要求する正しい階層を再現
         const parent = new UnpickableWidget({ style_class: 'calendar' });
@@ -196,12 +213,51 @@ export class UIManager {
         let b = parseInt(hex.slice(5, 7), 16) / 255.0;
         return [r, g, b];
     }
-    _getMenuMonitorGeometry() {
-        let monitorIndex = Main.layoutManager.findIndexForActor(this.targetActor);
-        if (monitorIndex < 0) {
-            monitorIndex = Main.layoutManager.primaryIndex;
+    _naturalHeightOf(actor) {
+        if (!actor || !isActorValid(actor))
+            return 0;
+        try {
+            const [, allocated] = getAllocatedSize(actor);
+            if (allocated > 1)
+                return allocated;
         }
-        return Main.layoutManager.monitors[monitorIndex] || Main.layoutManager.primaryMonitor;
+        catch (e) { /* fall through to the preferred size */ }
+        try {
+            const [, natural] = actor.get_preferred_height(-1);
+            if (natural > 1)
+                return natural;
+        }
+        catch (e) { /* no usable measurement */ }
+        return 0;
+    }
+    _quickSettingsHeightScale() {
+        const quickSettings = Main.panel.statusArea.quickSettings?.menu;
+        if (!quickSettings)
+            return null;
+        const targetHeight = this._naturalHeightOf(quickSettings.actor) || this._naturalHeightOf(quickSettings.box);
+        const ownHeight = this._naturalHeightOf(this.targetActor) || this._naturalHeightOf(this.animActor);
+        if (targetHeight <= 0 || ownHeight <= 0)
+            return null;
+        const ratio = targetHeight / ownHeight;
+        return Number.isFinite(ratio) && ratio > 0 ? ratio : null;
+    }
+    _applyMenuScale() {
+        if (!this.targetActor || !isActorValid(this.targetActor))
+            return;
+        let requested = this._menuScale;
+        if (this._matchQuickSettingsHeight) {
+            const matched = this._quickSettingsHeightScale();
+            if (matched !== null)
+                requested = matched;
+        }
+        const scale = Number.isFinite(requested)
+            ? Math.min(1.0, Math.max(MIN_MENU_SCALE, requested))
+            : 1.0;
+        this.targetActor.set_pivot_point(0.5, 0.0);
+        this.targetActor.set_scale(scale, scale);
+    }
+    _getMenuMonitorGeometry() {
+        return resolveMonitorGeometry([this.menu?.sourceActor, this.targetActor]);
     }
     // 設定の動的反映
     _bindSettings() {
@@ -210,8 +266,8 @@ export class UIManager {
             this._settingsSignals.push(id);
         };
         // ON/OFF切り替え
-        connectSetting('enable-menu-glass', () => {
-            let enabled = this._settings.get_boolean('enable-menu-glass');
+        connectSetting(this._enableKey, () => {
+            let enabled = this._settings.get_boolean(this._enableKey);
             if (enabled && !this._isEffectActive)
                 this._applyEffect();
             else if (!enabled && this._isEffectActive)
@@ -285,6 +341,14 @@ export class UIManager {
                 this._menuXoffset = this._settings.get_int('menu-x-offset');
                 this.animActor.translation_x = this._menuXoffset;
             }
+        });
+        connectSetting('menu-scale', () => {
+            this._menuScale = this._settings.get_double('menu-scale');
+            this._applyMenuScale();
+        });
+        connectSetting('menu-match-quick-settings-height', () => {
+            this._matchQuickSettingsHeight = this._settings.get_boolean('menu-match-quick-settings-height');
+            this._applyMenuScale();
         });
         connectSetting('menu-y-offset', () => {
             if (this.animActor) {
@@ -712,9 +776,11 @@ export class UIManager {
         }
         if (actor._currentTargetColor === color && actor._currentInsensitiveState === isInsensitive)
             return;
+        // Interpolating light to dark passes through the background's own grey.
+        const changesPolarity = actor._currentTargetColor !== color;
         actor._currentTargetColor = color;
         actor._currentInsensitiveState = isInsensitive;
-        this._animateActorColor(actor, color, isInsensitive, 380, skipAnimations);
+        this._animateActorColor(actor, color, isInsensitive, 380, skipAnimations || changesPolarity);
     }
     // Removes all dynamically applied adaptive text color styles and stops related animations
     _clearAdaptiveStyles() {
@@ -736,21 +802,6 @@ export class UIManager {
             }
         }
         this._styledActors.clear();
-        const currentTargets = this._collectAdaptiveTextTargets();
-        for (let actor of currentTargets) {
-            if (actor && typeof actor.set_style === 'function') {
-                if (actor._colorTweenId) {
-                    GLib.source_remove(actor._colorTweenId);
-                    actor._colorTweenId = undefined;
-                }
-                actor._currentTargetColor = undefined;
-                actor._currentInsensitiveState = undefined;
-                try {
-                    actor.set_style(null);
-                }
-                catch (e) { }
-            }
-        }
     }
     // Iterates through the color map and applies the new target colors to the respective actors
     _applyAdaptiveColorMap(colorMap, skipAnimations = false) {
@@ -794,6 +845,8 @@ export class UIManager {
         this._contrastSampler
             .chooseColorsForActors(targets, this._adaptiveConfig)
             .then(colorMap => {
+            if (!this._isEffectActive || this._actorDestroyed)
+                return;
             this._applyAdaptiveColorMap(colorMap, skipAnimations);
         })
             .catch(e => {
@@ -823,6 +876,8 @@ export class UIManager {
             GLib.source_remove(actor._colorTweenId);
             actor._colorTweenId = undefined;
         }
+        const originalStyle = (this._styledActors.get(actor) || '').trim();
+        const stylePrefix = originalStyle ? `${originalStyle.replace(/;$/, '')}; ` : '';
         let themeNode = actor.get_theme_node();
         let startColor = themeNode.get_foreground_color();
         let targetRgb = this._hexToRgb(targetHexColor);
@@ -832,7 +887,7 @@ export class UIManager {
             let alphaStr = targetAlpha.toFixed(3);
             let targetRgba = `rgba(${targetRgb.r}, ${targetRgb.g}, ${targetRgb.b}, ${alphaStr})`;
             try {
-                actor.set_style(`color: ${targetRgba}; -st-icon-foreground-color: ${targetRgba};`);
+                actor.set_style(`${stylePrefix}color: ${targetRgba}; -st-icon-foreground-color: ${targetRgba};`);
             }
             catch (e) { }
             return;
@@ -855,7 +910,7 @@ export class UIManager {
             let alphaStr = a.toFixed(3);
             let currentRgba = `rgba(${r}, ${g}, ${b}, ${alphaStr})`;
             try {
-                actor.set_style(`color: ${currentRgba}; -st-icon-foreground-color: ${currentRgba};`);
+                actor.set_style(`${stylePrefix}color: ${currentRgba}; -st-icon-foreground-color: ${currentRgba};`);
             }
             catch (e) { }
             if (progress >= 1.0) {
@@ -1020,10 +1075,12 @@ export class UIManager {
             this._interfaceSettings = null;
         }
         // Remove transparent CSS overrides
-        this.targetActor.remove_style_class_name('liquid-glass-transparent');
-        if (this.animActor) {
+        if (!this._actorDestroyed)
+            this.targetActor.remove_style_class_name('liquid-glass-transparent');
+        if (!this._actorDestroyed && this.animActor) {
             this.animActor.remove_style_class_name('liquid-glass-transparent');
             this.animActor.remove_style_class_name('liquid-glass-menu-root');
+            this.animActor.translation_x = 0;
             this.animActor.translation_y = 0;
             this.animActor.set_scale(1.0, 1.0);
             this.animActor.opacity = 255;
@@ -1034,10 +1091,12 @@ export class UIManager {
             theme.unload_stylesheet(this._dynamicCssFile);
             this._dynamicCssFile = null;
         }
-        this.targetActor.translation_y = 0;
-        this.targetActor.set_scale(1.0, 1.0);
-        this.targetActor.opacity = 255;
-        if (this.menu.actor) {
+        if (!this._actorDestroyed) {
+            this.targetActor.translation_y = 0;
+            this.targetActor.set_scale(1.0, 1.0);
+            this.targetActor.opacity = 255;
+        }
+        if (!this._actorDestroyed && this.menu.actor) {
             this.menu.actor.opacity = 255;
             if (this.menu.isOpen) {
                 this.menu.close(false);
@@ -1103,6 +1162,23 @@ export class UIManager {
                 catch (e) { }
             }
             this._settingsSignals = [];
+        });
+        // These connections also exist when the global menu effect is disabled,
+        // so they cannot be left to _removeEffect() below.
+        this._teardownStep('menuSignals', () => {
+            if (this._animSignalId) {
+                this.menu.disconnect(this._animSignalId);
+                this._animSignalId = 0;
+            }
+            if (this._destroySignalId) {
+                this.targetActor.disconnect(this._destroySignalId);
+                this._destroySignalId = 0;
+            }
+            if (this._interfaceSettings && this._accentColorSignalId) {
+                this._interfaceSettings.disconnect(this._accentColorSignalId);
+                this._accentColorSignalId = 0;
+                this._interfaceSettings = null;
+            }
         });
         // [FIX] This used to be `if (!this.targetActor) return;`, which skipped
         // _removeEffect() entirely whenever the date menu had gone away —

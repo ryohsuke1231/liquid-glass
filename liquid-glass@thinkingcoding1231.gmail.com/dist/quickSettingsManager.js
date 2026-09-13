@@ -6,7 +6,7 @@ import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import { LiquidEffect } from './liquidEffect.js';
 import { StageContrastSampler, AdaptiveContrastConfig } from './contrastSampler.js';
-import { UnpickableActor, UILayerSampler, WindowCloneManager, reportFrameLoopError, ensureGlassAllocated, isActorValid, LayoutOpaqueActor, UnpickableStyledWidget, getAllocatedSize, getTransformedRect, isFrameSyncFrozen, setClipIfChanged, syncGlassCaptureClip } from './utils.js';
+import { UnpickableActor, UILayerSampler, WindowCloneManager, reportFrameLoopError, ensureGlassAllocated, isActorValid, resolveMonitorGeometry, LayoutOpaqueActor, UnpickableStyledWidget, getAllocatedSize, getTransformedRect, isFrameSyncFrozen, setClipIfChanged, syncGlassCaptureClip } from './utils.js';
 // ========== Configuration Parameters ==========
 // Transparent padding outside the glass area.
 // This prevents the shader distortion or rounded corners from being clipped by the actor bounds.
@@ -238,10 +238,7 @@ export class QuickSettingsManager {
         return [r, g, b];
     }
     _getMenuMonitorGeometry() {
-        let monitorIndex = Main.layoutManager.findIndexForActor(this.targetActor);
-        if (monitorIndex < 0)
-            monitorIndex = Main.layoutManager.primaryIndex;
-        return Main.layoutManager.monitors[monitorIndex] || Main.layoutManager.primaryMonitor;
+        return resolveMonitorGeometry([this.menu?.sourceActor, this.targetActor]);
     }
     _applyMenuOffsets() {
         if (!this.targetActor)
@@ -2239,9 +2236,11 @@ export class QuickSettingsManager {
         }
         if (actor._currentTargetColor === color && actor._currentInsensitiveState === isInsensitive)
             return;
+        // Interpolating light to dark passes through the background's own grey.
+        const changesPolarity = actor._currentTargetColor !== color;
         actor._currentTargetColor = color;
         actor._currentInsensitiveState = isInsensitive;
-        this._animateActorColor(actor, color, isInsensitive, 380, skipAnimations);
+        this._animateActorColor(actor, color, isInsensitive, 380, skipAnimations || changesPolarity);
     }
     _clearAdaptiveStyles() {
         for (const [actor, originalStyle] of this._styledActors.entries()) {
@@ -2259,18 +2258,6 @@ export class QuickSettingsManager {
             }
         }
         this._styledActors.clear();
-        const currentTargets = this._collectAdaptiveTextTargets();
-        for (let actor of currentTargets) {
-            if (actor && typeof actor.set_style === 'function') {
-                if (actor._colorTweenId) {
-                    GLib.source_remove(actor._colorTweenId);
-                    actor._colorTweenId = undefined;
-                }
-                actor._currentTargetColor = undefined;
-                actor._currentInsensitiveState = undefined;
-                actor.set_style(null);
-            }
-        }
     }
     // Iterates through the color map and applies the new target colors to the respective actors
     _applyAdaptiveColorMap(colorMap, skipAnimations = false) {
@@ -2337,6 +2324,8 @@ export class QuickSettingsManager {
             GLib.source_remove(actor._colorTweenId);
             actor._colorTweenId = undefined;
         }
+        const originalStyle = (this._styledActors.get(actor) || '').trim();
+        const stylePrefix = originalStyle ? `${originalStyle.replace(/;$/, '')}; ` : '';
         let themeNode = actor.get_theme_node();
         let startColor = themeNode.get_foreground_color();
         let targetRgb = this._hexToRgb(targetHexColor);
@@ -2345,7 +2334,7 @@ export class QuickSettingsManager {
         if (skipAnimations) {
             let alphaStr = targetAlpha.toFixed(3);
             let targetRgba = `rgba(${targetRgb.r}, ${targetRgb.g}, ${targetRgb.b}, ${alphaStr})`;
-            actor.set_style(`color: ${targetRgba}; -st-icon-foreground-color: ${targetRgba};`);
+            actor.set_style(`${stylePrefix}color: ${targetRgba}; -st-icon-foreground-color: ${targetRgba};`);
             return;
         }
         let startTime = GLib.get_monotonic_time();
@@ -2369,7 +2358,7 @@ export class QuickSettingsManager {
             // Up to 3 decimal places for CSS
             let currentRgba = `rgba(${r}, ${g}, ${b}, ${a.toFixed(3)})`;
             // Override text color and icon foreground color directly using inline CSS
-            actor.set_style(`color: ${currentRgba}; -st-icon-foreground-color: ${currentRgba};`);
+            actor.set_style(`${stylePrefix}color: ${currentRgba}; -st-icon-foreground-color: ${currentRgba};`);
             if (progress >= 1.0) {
                 actor._colorTweenId = undefined;
                 return GLib.SOURCE_REMOVE;

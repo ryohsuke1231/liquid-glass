@@ -159,6 +159,10 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
     const menuBlurRow = this._addSliderRow(menuGroup, settings, 'menu-blur-radius', 'Blur Radius', '', 0, 30, 1);
     blurRadiusRows.push(menuBlurRow);
     this._addSliderRow(menuGroup, settings, 'menu-corner-radius', 'Corner Radius', 'Roundness of the corners', 0, 200, 1);
+    this._addSwitchRow(menuGroup, settings, 'menu-match-quick-settings-height', 'Match Quick Settings Height', 'Scale the menu so both panel dropdowns open to the same height');
+
+    const menuScaleRow = this._addSliderRow(menuGroup, settings, 'menu-scale', 'Menu Scale', 'Shrink or grow the whole menu, glass included', 0.5, 1.0, 0.01);
+    settings.bind('menu-match-quick-settings-height', menuScaleRow, 'sensitive', Gio.SettingsBindFlags.GET | Gio.SettingsBindFlags.INVERT_BOOLEAN);
 
     // Advancedグループ (開閉可能) - Spring関連とカラー調整をここに集約
     const menuAdvanced = new Adw.ExpanderRow({
@@ -185,7 +189,77 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
     this._addSliderRow(menuAdvanced, settings, 'menu-saturation', 'Saturation', 'Adjusts saturation', 0.0, 2.0, 0.01);
 
 
-    // --- Notifications タブ ---
+    // --- Additional top panel menus ---
+    const panelPage = new Adw.PreferencesPage({
+      title: 'Panel Extensions',
+      icon_name: 'application-x-addon-symbolic',
+    });
+    window.add(panelPage);
+    const panelGroup = new Adw.PreferencesGroup({
+      title: 'Top Bar Dropdowns',
+      description: 'Automatically detect menus added to the top bar. Appearance follows the Menu tab; Calendar and Quick Settings keep their own controls.',
+    });
+    panelPage.add(panelGroup);
+    this._addSwitchRow(panelGroup, settings, 'enable-extra-menu-glass', 'Enable Glass for Panel Menus', 'Include newly detected menus automatically');
+    const detectedGroup = new Adw.PreferencesGroup({ title: 'Detected Menus' });
+    panelPage.add(detectedGroup);
+    settings.bind('enable-extra-menu-glass', detectedGroup, 'sensitive', Gio.SettingsBindFlags.GET);
+    const emptyRow = new Adw.ActionRow({
+      title: 'No additional menus detected',
+      subtitle: 'Enable a top bar extension to show its menu here.',
+    });
+    detectedGroup.add(emptyRow);
+    const menuRows = new Map();
+    const legacyMenus = {
+      keyboard: { key: 'enable-keyboard-menu-glass', title: 'Keyboard Layout' },
+      vitalsMenu: { key: 'enable-vitals-menu-glass', title: 'Vitals' },
+    };
+    let syncingMenus = false;
+    const refreshMenus = () => {
+      syncingMenus = true;
+      try {
+        const names = settings.get_strv('detected-extra-menus');
+        const disabled = new Set(settings.get_strv('disabled-extra-menus'));
+        for (const [name, row] of menuRows) {
+          if (names.includes(name)) continue;
+          detectedGroup.remove(row);
+          menuRows.delete(name);
+        }
+        for (const name of names) {
+          let row = menuRows.get(name);
+          if (!row) {
+            const legacy = legacyMenus[name];
+            const title = legacy?.title ?? name.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[-_]+/g, ' ');
+            row = new Adw.SwitchRow({ title, use_markup: false });
+            detectedGroup.add(row);
+            menuRows.set(name, row);
+            if (legacy) {
+              settings.bind(legacy.key, row, 'active', Gio.SettingsBindFlags.DEFAULT);
+            } else {
+              row.connect('notify::active', () => {
+                if (syncingMenus) return;
+                const excluded = new Set(settings.get_strv('disabled-extra-menus'));
+                if (row.active) excluded.delete(name);
+                else excluded.add(name);
+                settings.set_strv('disabled-extra-menus', [...excluded].sort());
+              });
+            }
+          }
+          if (!legacyMenus[name]) row.active = !disabled.has(name);
+        }
+        emptyRow.visible = names.length === 0;
+      } finally {
+        syncingMenus = false;
+      }
+    };
+    const menuWatchIds = ['detected-extra-menus', 'disabled-extra-menus'].map(key =>
+      settings.connect(`changed::${key}`, refreshMenus));
+    window.connect('close-request', () => {
+      for (const id of menuWatchIds) settings.disconnect(id);
+      return false;
+    });
+    refreshMenus();
+
     const notifPage = new Adw.PreferencesPage({
       title: 'Notifications',
       icon_name: 'preferences-system-notifications-symbolic',

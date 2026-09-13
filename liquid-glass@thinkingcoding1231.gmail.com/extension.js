@@ -1,6 +1,7 @@
 import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { UIManager } from './dist/uiManager.js';
+import { PanelMenuManager } from './dist/panelMenuManager.js';
 import { DashManager } from './dist/dockManager.js';
 import { NotificationManager } from './dist/notificationManager.js';
 import { QuickSettingsManager } from './dist/quickSettingsManager.js';
@@ -10,6 +11,9 @@ import { WindowListService } from './dist/windowListService.js';
 import { Logger } from './dist/logger.js';
 import { setUtilsLogger } from './dist/utils.js';
 import GLib from 'gi://GLib';
+
+const DASH_RESCAN_IDLE_TICKS = 2;
+const DASH_RESCAN_INTERVAL_MS = 2000;
 
 export default class LiquidGlassExtension extends Extension {
   // [FIX] enable() must never throw, and enable/disable must be strictly paired.
@@ -61,6 +65,7 @@ export default class LiquidGlassExtension extends Extension {
     // got.
     console.log('[Liquid Glass] Enabling...');
 
+    this._dashDocks = [];
     this._settings = this.getSettings("org.gnome.shell.extensions.liquid-glass@thinkingcoding1231.gmail.com");
 
     // Initialize the logger
@@ -92,6 +97,11 @@ export default class LiquidGlassExtension extends Extension {
     start('uiManager', () => {
       this._uiManager = new UIManager(this.dir.get_path(), this._settings, this._logger);
       this._uiManager.setup();
+    });
+
+    start('panelMenuManager', () => {
+      this._panelMenuManager = new PanelMenuManager(this.dir.get_path(), this._settings, this._logger);
+      this._panelMenuManager.setup();
     });
 
     // Initialize the notification manager to apply effects to notifications
@@ -132,88 +142,122 @@ export default class LiquidGlassExtension extends Extension {
     // Variable to store the timeout ID so we can cancel it if the extension is disabled quickly
     this._timeoutId = 0;
 
-    this._reconnectTimeoutId = 0; // Timeout ID for reconnecting to Dash to Dock signals if it's not found immediately
-    this._dashDestroyId = 0;      // ID for the Dash to Dock destroy signal connection, so we can clean it up properly
+    this._reconnectTimeoutId = 0;
+    this._monitorsChangedId = Main.layoutManager.connect('monitors-changed', () => {
+      this._scheduleDashRescan();
+    });
 
     // Dash to Dock might not be fully loaded when this extension is enabled at startup.
     // We set a 2-second (2000ms) delay before searching for its UI container.
     this._timeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 2000, () => {
-      this._findDashToDock();
+      try {
+        this._findDashToDock();
+        this._scheduleDashRescan();
+      } finally {
+        this._timeoutId = 0;
+      }
 
-      // Reset the ID after execution
-      this._timeoutId = 0;
-
-      // Return SOURCE_REMOVE to ensure this timer only runs exactly once
       return GLib.SOURCE_REMOVE;
     });
   }
 
-  _findDashToDock() {
-    // A helper function to recursively search the GNOME UI tree for a specific actor name
-    const findActorByName = (actor, name) => {
-      if (actor.get_name && actor.get_name() === name) {
-        return actor;
+  _collectDashContainers() {
+    const found = [];
+    const skip = global.window_group;
+    const walk = (actor) => {
+      if (actor === skip)
+        return;
+      if (actor.get_name && actor.get_name() === 'dashtodockDashContainer') {
+        found.push(actor);
+        return;
       }
-
-      // Traverse through all children elements
-      let children = actor.get_children();
-      for (let i = 0; i < children.length; i++) {
-        let found = findActorByName(children[i], name);
-        if (found) return found;
-      }
-      return null;
+      for (const child of actor.get_children())
+        walk(child);
     };
+    walk(Main.layoutManager.uiGroup);
+    return found;
+  }
 
-    // Search the entire GNOME UI group for the main Dash to Dock container
-    let dashContainer = findActorByName(Main.layoutManager.uiGroup, 'dashtodockDashContainer');
+  _findDashToDock() {
+    const containers = this._collectDashContainers();
 
-    if (dashContainer) {
-      this._logger.log("[Liquid Glass] Found Dash to Dock container!", dashContainer);
+    if (containers.length === 0)
+      return false;
 
-      // Initialize the dock manager and apply the liquid glass effect
-      this._dashManager = new DashManager(this.dir.get_path(), dashContainer, this._settings, this._logger);
-      this._dashManager.setup();
+    let added = 0;
+    for (const container of containers) {
+      if (this._dashDocks.some(entry => entry.container === container))
+        continue;
 
-      this._dashDestroyId = dashContainer.connect('destroy', () => {
-        this._logger.log("[Liquid Glass] Dash to Dock container destroyed (settings changed?). Restarting search...");
-        this._dashDestroyId = 0; // Reset the destroy signal ID since the container is gone
+      const entry = { container, manager: null, destroyId: 0 };
+      this._dashDocks.push(entry);
 
-        // Cleanup the existing Dash manager to avoid memory leaks or orphaned actors
-        if (this._dashManager) {
-          this._dashManager.cleanup();
-          this._dashManager = null;
-        }
-
-        // Clear any existing reconnect timeout to prevent multiple timers from stacking up
-        if (this._reconnectTimeoutId !== 0) {
-          GLib.Source.remove(this._reconnectTimeoutId);
-        }
-
-        // Set a short delay before trying to find Dash to Dock again, as it might be reloaded shortly after being destroyed
-        this._reconnectTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 2000, () => {
-          // Try to find Dash to Dock again after the delay. If it's found, the timer will be removed. If not, it will continue to check every 2 seconds until it is found.
-          let isFound = this._findDashToDock();
-
-          if (isFound) {
-            // If found, reset the timeout ID and remove the timer
-            this._reconnectTimeoutId = 0;
-            return GLib.SOURCE_REMOVE;
+      try {
+        entry.manager = new DashManager(this.dir.get_path(), container, this._settings, this._logger);
+        entry.manager.setup();
+        entry.destroyId = container.connect('destroy', () => {
+          entry.destroyId = 0;
+          try {
+            this._releaseDashDock(entry);
+          } finally {
+            this._scheduleDashRescan();
           }
-
-          // If not found, continue the loop and check again in 2 seconds
-          return GLib.SOURCE_CONTINUE;
         });
-
-        return true; // Return true to indicate that the signal was handled
-      });
-      return true;
-
-    } else {
-      // Note: If it's still not found, the user might not have Dash to Dock installed,
-      // or it requires a more complex monitoring system to detect late loads.
-      this._logger.log("[Liquid Glass] Dash to Dock was not found.");
-      return false; // Return false to indicate that Dash to Dock was not found
+        added++;
+      } catch (e) {
+        this._logger.log(`[Liquid Glass] Failed to attach glass to a dock: ${e}`);
+        try {
+          this._releaseDashDock(entry);
+        } catch (releaseError) {
+          this._logger.log(`[Liquid Glass] Failed to release a dock: ${releaseError}`);
+        }
+      }
     }
+
+    if (added > 0)
+      this._logger.log(`[Liquid Glass] Dash to Dock containers with glass: ${this._dashDocks.length}`);
+
+    return added > 0;
+  }
+
+  _releaseDashDock(entry) {
+    const index = this._dashDocks.indexOf(entry);
+    if (index >= 0)
+      this._dashDocks.splice(index, 1);
+
+    if (entry.destroyId !== 0) {
+      try {
+        entry.container.disconnect(entry.destroyId);
+      } catch (e) { }
+      entry.destroyId = 0;
+    }
+
+    if (entry.manager) {
+      entry.manager.cleanup();
+      entry.manager = null;
+    }
+  }
+
+  _scheduleDashRescan() {
+    if (this._reconnectTimeoutId !== 0)
+      GLib.Source.remove(this._reconnectTimeoutId);
+
+    let idleTicks = 0;
+    let sourceId = 0;
+
+    sourceId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, DASH_RESCAN_INTERVAL_MS, () => {
+      let keepGoing = false;
+      try {
+        idleTicks = this._findDashToDock() ? 0 : idleTicks + 1;
+        keepGoing = idleTicks < DASH_RESCAN_IDLE_TICKS;
+      } finally {
+        if (!keepGoing && this._reconnectTimeoutId === sourceId)
+          this._reconnectTimeoutId = 0;
+      }
+      return keepGoing ? GLib.SOURCE_CONTINUE : GLib.SOURCE_REMOVE;
+    });
+
+    this._reconnectTimeoutId = sourceId;
   }
 
   disable() {
@@ -236,6 +280,11 @@ export default class LiquidGlassExtension extends Extension {
     }
 
     // Clear any pending timeouts to prevent them from executing after the extension is disabled
+    if (this._monitorsChangedId) {
+      Main.layoutManager.disconnect(this._monitorsChangedId);
+      this._monitorsChangedId = 0;
+    }
+
     if (this._timeoutId !== 0) {
       GLib.Source.remove(this._timeoutId);
       this._timeoutId = 0;
@@ -273,6 +322,11 @@ export default class LiquidGlassExtension extends Extension {
       }
     };
 
+    teardown('panelMenuManager', () => {
+      this._panelMenuManager?.cleanup();
+      this._panelMenuManager = null;
+    });
+
     teardown('uiManager', () => {
       if (this._uiManager) {
         this._uiManager.cleanup();
@@ -287,19 +341,11 @@ export default class LiquidGlassExtension extends Extension {
       }
     });
 
-    teardown('dashManager', () => {
-      if (this._dashManager) {
-        // Disconnect the destroy signal if it was connected
-        if (this._dashDestroyId !== 0 && this._dashManager.targetActor) {
-          try {
-            this._dashManager.targetActor.disconnect(this._dashDestroyId);
-          } catch (e) { }
-          this._dashDestroyId = 0;
-        }
-        this._dashManager.cleanup();
-        this._dashManager = null;
-      }
-    });
+    // One teardown per dock: a dock that throws must not strand the others.
+    for (const entry of [...(this._dashDocks ?? [])]) {
+      teardown('dashDock', () => this._releaseDashDock(entry));
+    }
+    this._dashDocks = [];
 
     teardown('notificationManager', () => {
       if (this._notificationManager) {
@@ -333,9 +379,10 @@ export default class LiquidGlassExtension extends Extension {
     // not keep the shell's settings object or the module-level logger hook
     // alive, or the next enable() starts from a polluted state.
     this._settings = null;
+    this._panelMenuManager = null;
     this._uiManager = null;
     this._quickSettingsManager = null;
-    this._dashManager = null;
+    this._dashDocks = [];
     this._notificationManager = null;
     this._osdManager = null;
     this._applicationManager = null;

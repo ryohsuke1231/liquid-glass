@@ -661,10 +661,21 @@ export class OsdManager {
     _setActorColor(actor, color, skipAnimations = false) {
         if (!actor || typeof actor.set_style !== 'function')
             return;
+        if (!this._styledActors.has(actor)) {
+            this._styledActors.set(actor, actor.get_style() || '');
+            actor.connect('destroy', () => {
+                if (actor._colorTweenId)
+                    GLib.source_remove(actor._colorTweenId);
+                actor._colorTweenId = undefined;
+                this._styledActors.delete(actor);
+            });
+        }
         if (actor._currentTargetColor === color)
             return;
+        // Interpolating light to dark passes through the background's own grey.
+        const changesPolarity = actor._currentTargetColor !== color;
         actor._currentTargetColor = color;
-        this._animateActorColor(actor, color, 380, skipAnimations);
+        this._animateActorColor(actor, color, 380, skipAnimations || changesPolarity);
     }
     _clearAdaptiveStyles() {
         for (const [actor, style] of this._styledActors.entries()) {
@@ -743,6 +754,8 @@ export class OsdManager {
             GLib.source_remove(actor._colorTweenId);
             actor._colorTweenId = undefined;
         }
+        const originalStyle = (this._styledActors.get(actor) || '').trim();
+        const stylePrefix = originalStyle ? `${originalStyle.replace(/;$/, '')}; ` : '';
         let themeNode = actor.get_theme_node();
         let startColor = themeNode.get_foreground_color();
         let startBgColor = themeNode.get_background_color();
@@ -766,10 +779,10 @@ export class OsdManager {
             let finalHex = this._rgbToHex(targetRgb.r, targetRgb.g, targetRgb.b);
             if (isProgressBar) {
                 let finalBgHex = this._rgbToHex(trackTargetRgb.r, trackTargetRgb.g, trackTargetRgb.b);
-                actor.set_style(`-barlevel-active-background-color: ${finalHex}; -barlevel-background-color: ${finalBgHex};`);
+                actor.set_style(`${stylePrefix}-barlevel-active-background-color: ${finalHex}; -barlevel-background-color: ${finalBgHex};`);
             }
             else {
-                actor.set_style(`color: ${finalHex}; -st-icon-foreground-color: ${finalHex};`);
+                actor.set_style(`${stylePrefix}color: ${finalHex}; -st-icon-foreground-color: ${finalHex};`);
             }
             return;
         }
@@ -791,10 +804,10 @@ export class OsdManager {
                 let bgR = Math.round(startBgColor.red + (trackTargetRgb.r - startBgColor.red) * ease);
                 let bgG = Math.round(startBgColor.green + (trackTargetRgb.g - startBgColor.green) * ease);
                 let bgB = Math.round(startBgColor.blue + (trackTargetRgb.b - startBgColor.blue) * ease);
-                actor.set_style(`-barlevel-active-background-color: ${currentHex}; -barlevel-background-color: ${this._rgbToHex(bgR, bgG, bgB)};`);
+                actor.set_style(`${stylePrefix}-barlevel-active-background-color: ${currentHex}; -barlevel-background-color: ${this._rgbToHex(bgR, bgG, bgB)};`);
             }
             else {
-                actor.set_style(`color: ${currentHex}; -st-icon-foreground-color: ${currentHex};`);
+                actor.set_style(`${stylePrefix}color: ${currentHex}; -st-icon-foreground-color: ${currentHex};`);
             }
             if (progress >= 1.0) {
                 actor._colorTweenId = undefined;
