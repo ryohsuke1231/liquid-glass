@@ -131,6 +131,88 @@
       <summary>Detected optional panel menus</summary>
       <description>Written by the shell at runtime so the preferences window can offer a toggle only for menus that actually exist.</description>
     </key>
+    <!-- Appearance for the detected top bar dropdowns. Its own namespace so
+         these can be tuned without moving the Calendar menu, exactly as
+         quick-settings-*, notification-*, osd-* and dock-* already are.
+         Defaults mirror the menu-* values these menus used to borrow. -->
+    <key name="enable-panel-menu-animation" type="b">
+      <default>true</default>
+      <summary>Enable panel menu animation</summary>
+    </key>
+    <key name="panel-menu-spring-stiffness" type="d">
+      <default>120.0</default>
+      <summary>Spring stiffness</summary>
+    </key>
+    <key name="panel-menu-spring-damping" type="d">
+      <default>8.0</default>
+      <summary>Spring damping</summary>
+    </key>
+    <key name="panel-menu-spring-mass" type="d">
+      <default>1.0</default>
+      <summary>Spring mass</summary>
+    </key>
+    <key name="panel-menu-animation-interval-ms" type="i">
+      <default>16</default>
+      <summary>Animation interval (ms)</summary>
+    </key>
+    <key name="panel-menu-tint-color" type="s">
+      <default>"#ffffff"</default>
+      <summary>Tint color (Hex)</summary>
+    </key>
+    <key name="panel-menu-tint-strength" type="d">
+      <default>0.20</default>
+      <summary>Tint strength</summary>
+    </key>
+    <key name="panel-menu-blur-radius" type="i">
+      <default>8</default>
+      <summary>Blur radius</summary>
+    </key>
+    <key name="panel-menu-brightness" type="d">
+      <default>1.0</default>
+      <summary>Brightness</summary>
+    </key>
+    <key name="panel-menu-contrast" type="d">
+      <default>1.0</default>
+      <summary>Contrast</summary>
+    </key>
+    <key name="panel-menu-saturation" type="d">
+      <default>1.0</default>
+      <summary>Saturation</summary>
+    </key>
+    <key name="panel-menu-corner-radius" type="d">
+      <default>60.0</default>
+      <summary>Corner radius</summary>
+    </key>
+    <key name="panel-menu-glass-expand" type="i">
+      <default>12</default>
+      <summary>Glass expand pixels</summary>
+    </key>
+    <key name="panel-menu-x-offset" type="i">
+      <default>0</default>
+      <summary>X offset</summary>
+    </key>
+    <key name="panel-menu-y-offset" type="i">
+      <default>17</default>
+      <summary>Y offset</summary>
+    </key>
+    <key name="panel-menu-scale" type="d">
+      <default>1.0</default>
+      <summary>Menu scale</summary>
+      <description>Scales the whole panel menu, including its glass, like zooming a window. 1.0 is the size GNOME renders.</description>
+    </key>
+    <key name="panel-menu-match-quick-settings-height" type="b">
+      <default>false</default>
+      <summary>Match Quick Settings height</summary>
+      <description>Scales the panel menu so its opened height matches the Quick Settings menu, so the two panel dropdowns line up. Overrides the manual scale.</description>
+    </key>
+    <key name="panel-menu-enable-adaptive-text-color" type="b">
+      <default>true</default>
+      <summary>Enable adaptive text color</summary>
+    </key>
+    <key name="panel-menu-sample-interval-ms" type="i">
+      <default>400</default>
+      <summary>Sample interval (ms)</summary>
+    </key>
     <key name="menu-match-quick-settings-height" type="b">
       <default>false</default>
       <summary>Match Quick Settings height</summary>

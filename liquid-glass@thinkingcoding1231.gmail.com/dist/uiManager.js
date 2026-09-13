@@ -18,6 +18,8 @@ const SAMPLE_PER_ELEMENT = false;
 const MIN_MENU_SCALE = 0.5;
 export class UIManager {
     _enableKey;
+    _keyPrefix;
+    _label;
     extensionPath;
     _settings;
     _logger;
@@ -81,8 +83,27 @@ export class UIManager {
     _uiSampler = null;
     _lastScreenW;
     _lastScreenH;
-    constructor(extensionPath, settings, logger, panelButton = Main.panel.statusArea.dateMenu, ownsAccentCss = true, _enableKey = 'enable-menu-glass') {
+    // The uiGroup-direct ancestor of this menu. Kept so the glass can be put
+    // back directly beneath it whenever the menu opens — see _restackGlass().
+    _menuRoot = null;
+    constructor(extensionPath, settings, logger, panelButton = Main.panel.statusArea.dateMenu, ownsAccentCss = true, _enableKey = 'enable-menu-glass', 
+    /**
+     * GSettings namespace this instance reads its appearance from.
+     * The date menu keeps `menu-*`; PanelMenuManager passes
+     * `panel-menu` so detected top-bar dropdowns are tuned
+     * independently, the way every other surface already is.
+     */
+    _keyPrefix = 'menu', 
+    /**
+     * Diagnostic tag. Reaches LiquidEffect's owner, UILayerSampler's
+     * log prefix and every clone actor's name, so a journal from a
+     * session with several panel menus says which one it is talking
+     * about instead of five lines that all read "menu".
+     */
+    _label = 'menu') {
         this._enableKey = _enableKey;
+        this._keyPrefix = _keyPrefix;
+        this._label = _label;
         this.extensionPath = extensionPath;
         this._settings = settings;
         this._logger = logger;
@@ -135,13 +156,13 @@ export class UIManager {
         if (!this._settings)
             return;
         this._bindSettings();
-        this._enableAnimation = this._settings.get_boolean('enable-menu-animation');
-        this._menuScale = this._settings.get_double('menu-scale');
-        this._matchQuickSettingsHeight = this._settings.get_boolean('menu-match-quick-settings-height');
+        this._enableAnimation = this._settings.get_boolean(this._animationKey());
+        this._menuScale = this._settings.get_double(this._key('scale'));
+        this._matchQuickSettingsHeight = this._settings.get_boolean(this._key('match-quick-settings-height'));
         this._applyMenuScale();
-        this._springStiffness = this._settings.get_double('menu-spring-stiffness');
-        this._springDamping = this._settings.get_double('menu-spring-damping');
-        this._springMass = this._settings.get_double('menu-spring-mass');
+        this._springStiffness = this._settings.get_double(this._key('spring-stiffness'));
+        this._springDamping = this._settings.get_double(this._key('spring-damping'));
+        this._springMass = this._settings.get_double(this._key('spring-mass'));
         this._springScale.updateParams(this._springStiffness, this._springDamping, this._springMass);
         this._springPos.updateParams(this._springStiffness, this._springDamping, this._springMass);
         this._interfaceSettings = new Gio.Settings({ schema_id: 'org.gnome.desktop.interface' });
@@ -259,6 +280,48 @@ export class UIManager {
     _getMenuMonitorGeometry() {
         return resolveMonitorGeometry([this.menu?.sourceActor, this.targetActor]);
     }
+    /**
+     * Keeps the glass directly beneath the menu it backs.
+     *
+     * [FIX] This used to pin bgActor just above Main.layoutManager.panelBox,
+     * near the BOTTOM of uiGroup, while the menu's own actor sits near the top.
+     * Anything added to uiGroup in between therefore painted over the glass but
+     * under the menu — most visibly a Dash to Dock container and its own glass,
+     * which produced a dropdown whose text and highlights were above the dock
+     * while its backdrop was below it. GNOME stacks a panel dropdown above the
+     * dock as one piece, and every other manager here already places its glass
+     * immediately below its own root; this now matches them.
+     *
+     * Re-asserted on open because uiGroup's child order is not ours to keep: an
+     * indicator, an extension or a dock rebuild that lands after setup() moves
+     * relative to us. set_child_below_sibling() is a list splice, and the
+     * index check below skips even that whenever the order is already right.
+     */
+    _restackGlass() {
+        const uiGroup = Main.layoutManager.uiGroup;
+        const root = this._menuRoot;
+        if (!this.bgActor || !root)
+            return;
+        if (!isActorValid(root) || root.get_parent() !== uiGroup)
+            return;
+        if (this.bgActor.get_parent() !== uiGroup)
+            return;
+        const children = uiGroup.get_children();
+        const rootIndex = children.indexOf(root);
+        if (rootIndex < 0)
+            return;
+        if (children.indexOf(this.bgActor) === rootIndex - 1)
+            return;
+        uiGroup.set_child_below_sibling(this.bgActor, root);
+    }
+    /** Appearance key in this instance's namespace — see _keyPrefix. */
+    _key(suffix) {
+        return `${this._keyPrefix}-${suffix}`;
+    }
+    /** The odd one out: the animation switch is named `enable-<surface>-animation`. */
+    _animationKey() {
+        return `enable-${this._keyPrefix}-animation`;
+    }
     // 設定の動的反映
     _bindSettings() {
         const connectSetting = (key, callback) => {
@@ -273,94 +336,94 @@ export class UIManager {
             else if (!enabled && this._isEffectActive)
                 this._removeEffect();
         });
-        connectSetting('enable-menu-animation', () => {
-            this._enableAnimation = this._settings.get_boolean('enable-menu-animation');
+        connectSetting(this._animationKey(), () => {
+            this._enableAnimation = this._settings.get_boolean(this._animationKey());
         });
-        connectSetting('menu-spring-stiffness', () => {
-            this._springStiffness = this._settings.get_double('menu-spring-stiffness');
+        connectSetting(this._key('spring-stiffness'), () => {
+            this._springStiffness = this._settings.get_double(this._key('spring-stiffness'));
             if (this._springScale)
                 this._springScale.updateParams(this._springStiffness, this._springDamping, this._springMass);
         });
-        connectSetting('menu-spring-damping', () => {
-            this._springDamping = this._settings.get_double('menu-spring-damping');
+        connectSetting(this._key('spring-damping'), () => {
+            this._springDamping = this._settings.get_double(this._key('spring-damping'));
             if (this._springScale)
                 this._springScale.updateParams(this._springStiffness, this._springDamping, this._springMass);
         });
-        connectSetting('menu-spring-mass', () => {
-            this._springMass = this._settings.get_double('menu-spring-mass');
+        connectSetting(this._key('spring-mass'), () => {
+            this._springMass = this._settings.get_double(this._key('spring-mass'));
             if (this._springScale)
                 this._springScale.updateParams(this._springStiffness, this._springDamping, this._springMass);
         });
-        connectSetting('menu-animation-interval-ms', () => {
-            this._animationInterval = this._settings.get_int('menu-animation-interval-ms');
+        connectSetting(this._key('animation-interval-ms'), () => {
+            this._animationInterval = this._settings.get_int(this._key('animation-interval-ms'));
         });
-        connectSetting('menu-tint-color', () => {
+        connectSetting(this._key('tint-color'), () => {
             if (this.effect) {
-                let colorArray = this._hexToColorArray(this._settings.get_string('menu-tint-color'));
+                let colorArray = this._hexToColorArray(this._settings.get_string(this._key('tint-color')));
                 this.effect.setTintColor(...colorArray);
             }
         });
-        connectSetting('menu-tint-strength', () => {
+        connectSetting(this._key('tint-strength'), () => {
             if (this.effect) {
-                this.effect.setTintStrength(this._settings.get_double('menu-tint-strength'));
+                this.effect.setTintStrength(this._settings.get_double(this._key('tint-strength')));
             }
         });
-        connectSetting('menu-blur-radius', () => {
+        connectSetting(this._key('blur-radius'), () => {
             if (this.effect) {
-                this.effect.setBlurRadius(this._settings.get_int('menu-blur-radius'));
+                this.effect.setBlurRadius(this._settings.get_int(this._key('blur-radius')));
             }
         });
-        connectSetting('menu-brightness', () => {
+        connectSetting(this._key('brightness'), () => {
             if (this.effect) {
-                this.effect.setBrightness(this._settings.get_double('menu-brightness'));
+                this.effect.setBrightness(this._settings.get_double(this._key('brightness')));
             }
         });
-        connectSetting('menu-contrast', () => {
+        connectSetting(this._key('contrast'), () => {
             if (this.effect) {
-                this.effect.setContrast(this._settings.get_double('menu-contrast'));
+                this.effect.setContrast(this._settings.get_double(this._key('contrast')));
             }
         });
-        connectSetting('menu-saturation', () => {
+        connectSetting(this._key('saturation'), () => {
             if (this.effect) {
-                this.effect.setSaturation(this._settings.get_double('menu-saturation'));
+                this.effect.setSaturation(this._settings.get_double(this._key('saturation')));
             }
         });
-        connectSetting('menu-corner-radius', () => {
+        connectSetting(this._key('corner-radius'), () => {
             if (this.effect) {
-                this._cornerRadius = this._settings.get_double('menu-corner-radius');
+                this._cornerRadius = this._settings.get_double(this._key('corner-radius'));
                 this.effect.setCornerRadius(this._cornerRadius);
             }
         });
-        connectSetting('menu-glass-expand', () => {
+        connectSetting(this._key('glass-expand'), () => {
             if (this.effect) {
-                this._glassExpand = this._settings.get_int('menu-glass-expand');
+                this._glassExpand = this._settings.get_int(this._key('glass-expand'));
             }
         });
-        connectSetting('menu-x-offset', () => {
+        connectSetting(this._key('x-offset'), () => {
             if (this.animActor) {
-                this._menuXoffset = this._settings.get_int('menu-x-offset');
+                this._menuXoffset = this._settings.get_int(this._key('x-offset'));
                 this.animActor.translation_x = this._menuXoffset;
             }
         });
-        connectSetting('menu-scale', () => {
-            this._menuScale = this._settings.get_double('menu-scale');
+        connectSetting(this._key('scale'), () => {
+            this._menuScale = this._settings.get_double(this._key('scale'));
             this._applyMenuScale();
         });
-        connectSetting('menu-match-quick-settings-height', () => {
-            this._matchQuickSettingsHeight = this._settings.get_boolean('menu-match-quick-settings-height');
+        connectSetting(this._key('match-quick-settings-height'), () => {
+            this._matchQuickSettingsHeight = this._settings.get_boolean(this._key('match-quick-settings-height'));
             this._applyMenuScale();
         });
-        connectSetting('menu-y-offset', () => {
+        connectSetting(this._key('y-offset'), () => {
             if (this.animActor) {
-                this._menuYoffset = this._settings.get_int('menu-y-offset');
+                this._menuYoffset = this._settings.get_int(this._key('y-offset'));
                 this.animActor.translation_y = this._menuYoffset;
             }
         });
-        connectSetting('menu-enable-adaptive-text-color', () => {
-            this._adaptiveConfig.enabled = this._settings.get_boolean('menu-enable-adaptive-text-color');
+        connectSetting(this._key('enable-adaptive-text-color'), () => {
+            this._adaptiveConfig.enabled = this._settings.get_boolean(this._key('enable-adaptive-text-color'));
         });
-        connectSetting('menu-sample-interval-ms', () => {
-            this._adaptiveConfig.sampleIntervalMs = this._settings.get_int('menu-sample-interval-ms');
+        connectSetting(this._key('sample-interval-ms'), () => {
+            this._adaptiveConfig.sampleIntervalMs = this._settings.get_int(this._key('sample-interval-ms'));
         });
     }
     _applyEffect() {
@@ -374,17 +437,17 @@ export class UIManager {
         this.animActor.add_style_class_name('liquid-glass-transparent');
         this.animActor.add_style_class_name('liquid-glass-menu-root');
         // Shift the menu to apply user offsets
-        this._menuXoffset = this._settings.get_int('menu-x-offset');
-        this._menuYoffset = this._settings.get_int('menu-y-offset');
+        this._menuXoffset = this._settings.get_int(this._key('x-offset'));
+        this._menuYoffset = this._settings.get_int(this._key('y-offset'));
         this.animActor.translation_x = this._menuXoffset;
         this.animActor.translation_y = this._menuYoffset;
-        this._glassExpand = this._settings.get_int('menu-glass-expand');
-        this._animationInterval = this._settings.get_int('menu-animation-interval-ms');
+        this._glassExpand = this._settings.get_int(this._key('glass-expand'));
+        this._animationInterval = this._settings.get_int(this._key('animation-interval-ms'));
         this._adaptiveConfig = {
             ...AdaptiveContrastConfig,
-            enabled: this._settings.get_boolean('menu-enable-adaptive-text-color'),
+            enabled: this._settings.get_boolean(this._key('enable-adaptive-text-color')),
             samplePerElement: SAMPLE_PER_ELEMENT,
-            sampleIntervalMs: this._settings.get_int('menu-sample-interval-ms'),
+            sampleIntervalMs: this._settings.get_int(this._key('sample-interval-ms')),
         };
         // 1. bgActor: full monitor, no effect — starts 1×1, _syncGeometry expands it immediately
         this.bgActor = new UnpickableActor();
@@ -421,27 +484,27 @@ export class UIManager {
             menuRoot = p;
         }
         // Insert bgActor below menuRoot in uiGroup to prevent recursive clone loops
+        this._menuRoot = menuRoot;
         if (menuRoot.get_parent() === Main.layoutManager.uiGroup) {
-            // Main.layoutManager.uiGroup.insert_child_below(this.bgActor, menuRoot);
-            Main.layoutManager.uiGroup.insert_child_above(this.bgActor, Main.layoutManager.panelBox);
+            Main.layoutManager.uiGroup.insert_child_below(this.bgActor, menuRoot);
         }
         else {
             Main.layoutManager.uiGroup.add_child(this.bgActor);
         }
         // 4. WindowCloneManager: handles wallpaper clone + window actor clones
-        this._windowCloneManager = new WindowCloneManager(this.liquidBox, this._cloneContainer, 'lg-menu');
+        this._windowCloneManager = new WindowCloneManager(this.liquidBox, this._cloneContainer, `lg-${this._label}`);
         // 5. UILayerSampler: handles uiGroup child clones (panels, notifications, overview, etc.)
         //    Exclude menuRoot and window groups to prevent recursive cloning and BMS loops.
-        this._uiSampler = new UILayerSampler(this.bgActor, this.liquidBox, [menuRoot, global.windowGroup, global.window_group], this._cloneContainer, 'menu');
-        let blurRadius = this._settings.get_int('menu-blur-radius');
-        let tintColorStr = this._settings.get_string('menu-tint-color');
-        let tintStrength = this._settings.get_double('menu-tint-strength');
-        let brightness = this._settings.get_double('menu-brightness');
-        let contrast = this._settings.get_double('menu-contrast');
-        let saturation = this._settings.get_double('menu-saturation');
-        this._cornerRadius = this._settings.get_double('menu-corner-radius');
+        this._uiSampler = new UILayerSampler(this.bgActor, this.liquidBox, [menuRoot, global.windowGroup, global.window_group], this._cloneContainer, this._label);
+        let blurRadius = this._settings.get_int(this._key('blur-radius'));
+        let tintColorStr = this._settings.get_string(this._key('tint-color'));
+        let tintStrength = this._settings.get_double(this._key('tint-strength'));
+        let brightness = this._settings.get_double(this._key('brightness'));
+        let contrast = this._settings.get_double(this._key('contrast'));
+        let saturation = this._settings.get_double(this._key('saturation'));
+        this._cornerRadius = this._settings.get_double(this._key('corner-radius'));
         // Apply our custom GLSL liquid shader to liquidBox (includes built-in dual-Kawase blur)
-        this.effect = new LiquidEffect({ extensionPath: this.extensionPath, settings: this._settings, owner: 'menu' });
+        this.effect = new LiquidEffect({ extensionPath: this.extensionPath, settings: this._settings, owner: this._label });
         this.effect.setPadding(SHADER_PADDING);
         this.effect.setTintColor(...this._hexToColorArray(tintColorStr));
         this.effect.setTintStrength(tintStrength);
@@ -483,6 +546,8 @@ export class UIManager {
                     }
                 }
             }
+            // Before the clones, so this frame's capture already sees the final order.
+            this._restackGlass();
             this._windowCloneManager?.rebuildClones();
             this._uiSampler?.rebindSelf();
             this._uiSampler?.refresh();
@@ -1116,6 +1181,7 @@ export class UIManager {
         }
         this.liquidBox = null;
         this._cloneContainer = null;
+        this._menuRoot = null;
         // Clean up managers (try-catch in their destroy() handles already-destroyed actors)
         this._uiSampler?.destroy();
         this._uiSampler = null;

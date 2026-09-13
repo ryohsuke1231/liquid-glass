@@ -197,7 +197,7 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
     window.add(panelPage);
     const panelGroup = new Adw.PreferencesGroup({
       title: 'Top Bar Dropdowns',
-      description: 'Automatically detect menus added to the top bar. Appearance follows the Menu tab; Calendar and Quick Settings keep their own controls.',
+      description: 'Automatically detect menus added to the top bar. These menus have their own appearance settings below; Calendar and Quick Settings keep theirs.',
     });
     panelPage.add(panelGroup);
     this._addSwitchRow(panelGroup, settings, 'enable-extra-menu-glass', 'Enable Glass for Panel Menus', 'Include newly detected menus automatically');
@@ -252,6 +252,55 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
         syncingMenus = false;
       }
     };
+    // Appearance for the detected dropdowns. Own keys, not the Menu tab's —
+    // see the panel-menu-* block in the schema.
+    const panelAppearance = new Adw.PreferencesGroup({
+      title: 'Appearance',
+      description: 'Applies to every detected panel menu. Independent of the Calendar menu.',
+    });
+    panelPage.add(panelAppearance);
+    settings.bind('enable-extra-menu-glass', panelAppearance, 'sensitive', Gio.SettingsBindFlags.GET);
+
+    this._addSwitchRow(panelAppearance, settings, 'enable-panel-menu-animation', 'Enable Menu Animation', 'Animate menu transitions using spring physics');
+
+    this._addSliderRow(panelAppearance, settings, 'panel-menu-glass-expand', 'Glass Expand', 'Extra area for the effect', 0, 50, 1);
+    this._addSliderRow(panelAppearance, settings, 'panel-menu-x-offset', 'X Offset', 'Horizontal offset adjustment', -200, 200, 1);
+    this._addSliderRow(panelAppearance, settings, 'panel-menu-y-offset', 'Y Offset', 'Vertical offset adjustment', -50, 100, 1);
+
+    this._addSwitchRow(panelAppearance, settings, 'panel-menu-enable-adaptive-text-color', 'Adaptive Text Color', 'Adjust text contrast automatically');
+    const panelSampleIntervalRow = this._addSliderRow(panelAppearance, settings, 'panel-menu-sample-interval-ms', 'Sample Interval (ms)', 'Contrast update frequency', 100, 2000, 50);
+    settings.bind('panel-menu-enable-adaptive-text-color', panelSampleIntervalRow, 'visible', Gio.SettingsBindFlags.GET);
+
+    this._addColorRow(panelAppearance, settings, 'panel-menu-tint-color', 'Tint Color', 'Color of the glass tint');
+    this._addSliderRow(panelAppearance, settings, 'panel-menu-tint-strength', 'Tint Strength', 'Intensity of the color tint', 0.0, 1.0, 0.01);
+    const panelBlurRow = this._addSliderRow(panelAppearance, settings, 'panel-menu-blur-radius', 'Blur Radius', '', 0, 30, 1);
+    blurRadiusRows.push(panelBlurRow);
+    this._addSliderRow(panelAppearance, settings, 'panel-menu-corner-radius', 'Corner Radius', 'Roundness of the corners', 0, 200, 1);
+    this._addSwitchRow(panelAppearance, settings, 'panel-menu-match-quick-settings-height', 'Match Quick Settings Height', 'Scale the menu so both panel dropdowns open to the same height');
+
+    const panelScaleRow = this._addSliderRow(panelAppearance, settings, 'panel-menu-scale', 'Menu Scale', 'Shrink or grow the whole menu, glass included', 0.5, 1.0, 0.01);
+    settings.bind('panel-menu-match-quick-settings-height', panelScaleRow, 'sensitive', Gio.SettingsBindFlags.GET | Gio.SettingsBindFlags.INVERT_BOOLEAN);
+
+    const panelAdvanced = new Adw.ExpanderRow({
+      title: 'Advanced',
+      subtitle: 'Spring physics, color adjustments (Brightness, Contrast, Saturation)'
+    });
+    panelAppearance.add(panelAdvanced);
+
+    const panelStiffnessRow = this._addSliderRow(panelAdvanced, settings, 'panel-menu-spring-stiffness', 'Spring Stiffness', 'Spring stiffness', 0.0, 1000.0, 0.1);
+    const panelDampingRow = this._addSliderRow(panelAdvanced, settings, 'panel-menu-spring-damping', 'Spring Damping', 'Spring damping', 0.0, 1000.0, 0.1);
+    const panelMassRow = this._addSliderRow(panelAdvanced, settings, 'panel-menu-spring-mass', 'Spring Mass', 'Spring mass', 0.0, 1.0, 0.1);
+    const panelIntervalRow = this._addSliderRow(panelAdvanced, settings, 'panel-menu-animation-interval-ms', 'Animation Interval (ms)', 'Animation interval', 0, 1000, 1);
+
+    settings.bind('enable-panel-menu-animation', panelStiffnessRow, 'visible', Gio.SettingsBindFlags.GET);
+    settings.bind('enable-panel-menu-animation', panelDampingRow, 'visible', Gio.SettingsBindFlags.GET);
+    settings.bind('enable-panel-menu-animation', panelMassRow, 'visible', Gio.SettingsBindFlags.GET);
+    settings.bind('enable-panel-menu-animation', panelIntervalRow, 'visible', Gio.SettingsBindFlags.GET);
+
+    this._addSliderRow(panelAdvanced, settings, 'panel-menu-brightness', 'Brightness', 'Adjusts brightness', 0.5, 1.5, 0.01);
+    this._addSliderRow(panelAdvanced, settings, 'panel-menu-contrast', 'Contrast', 'Adjusts contrast', 0.5, 1.5, 0.01);
+    this._addSliderRow(panelAdvanced, settings, 'panel-menu-saturation', 'Saturation', 'Adjusts saturation', 0.0, 2.0, 0.01);
+
     const menuWatchIds = ['detected-extra-menus', 'disabled-extra-menus'].map(key =>
       settings.connect(`changed::${key}`, refreshMenus));
     window.connect('close-request', () => {
