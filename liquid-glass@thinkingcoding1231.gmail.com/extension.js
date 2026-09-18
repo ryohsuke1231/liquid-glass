@@ -9,7 +9,8 @@ import { OsdManager } from './dist/osdManager.js';
 import { ApplicationManager } from './dist/applicationManager.js';
 import { WindowListService } from './dist/windowListService.js';
 import { Logger } from './dist/logger.js';
-import { setUtilsLogger, adaptiveColorTweener, destroySharedBackgroundSource } from './dist/utils.js';
+import { setUtilsLogger, adaptiveColorTweener, destroySharedBackgroundSource,
+  releaseAllClonedWindowActors } from './dist/utils.js';
 import GLib from 'gi://GLib';
 
 const DASH_RESCAN_IDLE_TICKS = 2;
@@ -282,6 +283,9 @@ export default class LiquidGlassExtension extends Extension {
     // [black-frame] The shared wallpaper mirror is parented to uiGroup and is
     // not owned by any manager, so nothing else would take it down.
     try { destroySharedBackgroundSource(); } catch (e) { }
+    // [window-clone-clip] These effects sit on Mutter's own window actors,
+    // which outlive the extension.
+    try { releaseAllClonedWindowActors(); } catch (e) { }
 
     if (this._quickSettingsTimeoutId && this._quickSettingsTimeoutId !== 0) {
       GLib.Source.remove(this._quickSettingsTimeoutId);

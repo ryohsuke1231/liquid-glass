@@ -11,7 +11,8 @@ import { UnpickableClone, UnpickableActor, InverseCornerEffect, getWindowActors,
   getNestedGlassFix, innerGlassEffectOf, isFocusDebugEnabled,
   setTranslationIfChanged, setSizeIfChanged, setScaleIfChanged, setOpacityIfChanged,
   isCullSiteEnabled, rectsIntersect, setCloneCulled,
-  createBackgroundMirror, setBackgroundMirrorEnabled, isBackgroundMirrorEnabled } from './utils.js';
+  createBackgroundMirror, setBackgroundMirrorEnabled, isBackgroundMirrorEnabled,
+  reportClonedWindowActors, releaseClonedWindowActors } from './utils.js';
 
 import { Logger } from './logger.js';
 
@@ -2035,6 +2036,11 @@ export class ApplicationManager {
       }
     }
 
+    // [window-clone-clip] Keep the cull opt-out in step with what this glass
+    // clones, so mutter stops handing those windows' surface actors a
+    // damage-limited clip region. See CullOptOutEffect in utils.ts.
+    reportClonedWindowActors(state, state.clones.keys());
+
     this._repairNestedGlass(state);
 
     // Sync base clones (unblurred). The map is empty while the base layer is
@@ -2406,6 +2412,7 @@ export class ApplicationManager {
     // which outlive this state. A missed disconnect here keeps the closure —
     // and through it the whole state — alive against a destroyed glass.
     this._releaseDamageHooks(state);
+    releaseClonedWindowActors(state);
 
     // Restore the original opacity of the window's own content layer.
     // Uses the cached surfaceActor reference (see WindowState) rather than

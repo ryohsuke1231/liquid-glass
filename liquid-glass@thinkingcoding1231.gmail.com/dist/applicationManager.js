@@ -5,7 +5,7 @@ import Meta from 'gi://Meta';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { LiquidEffect } from './liquidEffect.js';
 import GLib from 'gi://GLib';
-import { UnpickableClone, UnpickableActor, InverseCornerEffect, getWindowActors, isActorValid, InvertedPositionConstraint, getAllocatedSize, setActorVisible, ensureGlassAllocated, isFrameSyncFrozen, getNestedGlassFix, innerGlassEffectOf, isFocusDebugEnabled, setTranslationIfChanged, setSizeIfChanged, setScaleIfChanged, setOpacityIfChanged, isCullSiteEnabled, rectsIntersect, setCloneCulled, createBackgroundMirror } from './utils.js';
+import { UnpickableClone, UnpickableActor, InverseCornerEffect, getWindowActors, isActorValid, InvertedPositionConstraint, getAllocatedSize, setActorVisible, ensureGlassAllocated, isFrameSyncFrozen, getNestedGlassFix, innerGlassEffectOf, isFocusDebugEnabled, setTranslationIfChanged, setSizeIfChanged, setScaleIfChanged, setOpacityIfChanged, isCullSiteEnabled, rectsIntersect, setCloneCulled, createBackgroundMirror, reportClonedWindowActors, releaseClonedWindowActors } from './utils.js';
 // Padding to allow the shader to draw effects (like refraction and blur) outside the actor's strict bounds.
 // [FIX] How far the glass actor extends beyond the real window bounds, in
 // screen pixels. This is one number with two jobs: it is the sampling
@@ -1813,6 +1813,10 @@ export class ApplicationManager {
                 this._checkCloneAnomaly(clone, src, 'blurred');
             }
         }
+        // [window-clone-clip] Keep the cull opt-out in step with what this glass
+        // clones, so mutter stops handing those windows' surface actors a
+        // damage-limited clip region. See CullOptOutEffect in utils.ts.
+        reportClonedWindowActors(state, state.clones.keys());
         this._repairNestedGlass(state);
         // Sync base clones (unblurred). The map is empty while the base layer is
         // off (they are never built), so this is just skipping the iteration.
@@ -2163,6 +2167,7 @@ export class ApplicationManager {
         // which outlive this state. A missed disconnect here keeps the closure —
         // and through it the whole state — alive against a destroyed glass.
         this._releaseDamageHooks(state);
+        releaseClonedWindowActors(state);
         // Restore the original opacity of the window's own content layer.
         // Uses the cached surfaceActor reference (see WindowState) rather than
         // windowActor.get_first_child(), which no longer points at the real

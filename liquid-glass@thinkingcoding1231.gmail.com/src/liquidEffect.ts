@@ -128,7 +128,8 @@ import { setBmsMode, BMS_MODE, computeCaptureLayout, setFrameSyncFrozen, isFrame
   setAdaptiveColorMode, getAdaptiveColorMode, AdaptiveColorMode,
   setNestedGlassFix, getNestedGlassFix, NestedGlassFix,
   setFocusDebugEnabled, isFocusDebugEnabled,
-  setBackgroundMirrorEnabled, isBackgroundMirrorEnabled } from './utils.js';
+  setBackgroundMirrorEnabled, isBackgroundMirrorEnabled,
+  setCullOptOutEnabled, isCullOptOutEnabled } from './utils.js';
 
 // ─── Looking Glass diagnostics ───────────────────────────────────────────────
 //
@@ -294,6 +295,21 @@ function _registerGlassDebugHooks(): void {
       return msg;
     },
     bgMirrorEnabled: () => isBackgroundMirrorEnabled(),
+
+    // [window-clone-clip] A/B switch for the cloned-window cull opt-out: true
+    // (default) parks a do-nothing ClutterEffect on every window actor a glass
+    // currently clones, which makes meta-cullable.c hand its surface actor a
+    // NULL clip region instead of this frame's damage. false restores mutter's
+    // normal culling — and with it both the damage clipping AND the occlusion
+    // culling that the opt-out gives up, so this is the switch to flip when
+    // comparing idle GPU. Takes effect on the next frame, no rebuild needed.
+    cullOptOut: (on: boolean) => {
+      setCullOptOutEnabled(on);
+      const msg = `[Liquid Glass] cloned-window cull opt-out ${on ? 'ENABLED' : 'disabled'}`;
+      console.log(msg);
+      return msg;
+    },
+    cullOptOutEnabled: () => isCullOptOutEnabled(),
 
     // The clone-placement diagnostic. OFF by default: left armed it wrote
     // ~400 journal lines a second from the compositor's main thread and hung

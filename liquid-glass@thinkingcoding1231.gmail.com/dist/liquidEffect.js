@@ -118,7 +118,7 @@ import Clutter from 'gi://Clutter';
 import Cogl from 'gi://Cogl';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
-import { setBmsMode, BMS_MODE, computeCaptureLayout, setFrameSyncFrozen, isFrameSyncFrozen, setDiffWritesEnabled, isDiffWritesEnabled, setCaptureClipEnabled, isCaptureClipEnabled, setCloneCullEnabled, isCloneCullEnabled, setCullSiteEnabled, isCullSiteEnabled, setAdaptiveColorMode, getAdaptiveColorMode, setNestedGlassFix, getNestedGlassFix, setFocusDebugEnabled, isFocusDebugEnabled, setBackgroundMirrorEnabled, isBackgroundMirrorEnabled } from './utils.js';
+import { setBmsMode, BMS_MODE, computeCaptureLayout, setFrameSyncFrozen, isFrameSyncFrozen, setDiffWritesEnabled, isDiffWritesEnabled, setCaptureClipEnabled, isCaptureClipEnabled, setCloneCullEnabled, isCloneCullEnabled, setCullSiteEnabled, isCullSiteEnabled, setAdaptiveColorMode, getAdaptiveColorMode, setNestedGlassFix, getNestedGlassFix, setFocusDebugEnabled, isFocusDebugEnabled, setBackgroundMirrorEnabled, isBackgroundMirrorEnabled, setCullOptOutEnabled, isCullOptOutEnabled } from './utils.js';
 // ─── Looking Glass diagnostics ───────────────────────────────────────────────
 //
 // Every live LiquidEffect registers itself here so its last resolved frame
@@ -289,6 +289,20 @@ function _registerGlassDebugHooks() {
             return msg;
         },
         bgMirrorEnabled: () => isBackgroundMirrorEnabled(),
+        // [window-clone-clip] A/B switch for the cloned-window cull opt-out: true
+        // (default) parks a do-nothing ClutterEffect on every window actor a glass
+        // currently clones, which makes meta-cullable.c hand its surface actor a
+        // NULL clip region instead of this frame's damage. false restores mutter's
+        // normal culling — and with it both the damage clipping AND the occlusion
+        // culling that the opt-out gives up, so this is the switch to flip when
+        // comparing idle GPU. Takes effect on the next frame, no rebuild needed.
+        cullOptOut: (on) => {
+            setCullOptOutEnabled(on);
+            const msg = `[Liquid Glass] cloned-window cull opt-out ${on ? 'ENABLED' : 'disabled'}`;
+            console.log(msg);
+            return msg;
+        },
+        cullOptOutEnabled: () => isCullOptOutEnabled(),
         // The clone-placement diagnostic. OFF by default: left armed it wrote
         // ~400 journal lines a second from the compositor's main thread and hung
         // the shell (2026-09-17). See setFocusDebugEnabled() in utils.ts.
