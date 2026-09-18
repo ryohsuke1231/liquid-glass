@@ -1334,7 +1334,27 @@ export const BackgroundMirror = GObject.registerClass(class BackgroundMirror ext
         if (!group)
             return;
         this._sourceGroup = group;
-        this._groupHandlers.push(group.connect('child-added', (_g, child) => this._addMirror(child)), group.connect('child-removed', (_g, child) => this._removeMirror(child)));
+        this._groupHandlers.push(group.connect('child-added', (_g, child) => this._addMirror(child)), group.connect('child-removed', (_g, child) => this._removeMirror(child)), 
+        // [wallpaper-ease] Reordering is NOT child-added/child-removed.
+        //
+        // BackgroundManager._createBackgroundActor() (js/ui/background.js)
+        // does add_child() and then, immediately:
+        //
+        //     this._container.set_child_below_sibling(backgroundActor, null);
+        //
+        // and clutter_actor_set_child_below_sibling() re-links the child with
+        // ADD_CHILD_NOTIFY_FIRST_LAST / REMOVE_CHILD_NOTIFY_FIRST_LAST —
+        // single bits that notify first-child/last-child and deliberately do
+        // NOT emit child-added/child-removed. So our restack ran while the new
+        // wallpaper was still on top, and never ran again once the shell moved
+        // it to the bottom.
+        //
+        // That inverted our stacking for the whole cross-fade: the shell fades
+        // the OLD actor 255 -> 0 on top of the new one
+        // (_swapBackgroundActor(), FADE_ANIMATION_TIME), so with our order
+        // flipped the incoming wallpaper sat opaque ON TOP and the glass
+        // simply snapped to it while the desktop faded correctly.
+        group.connect('notify::first-child', () => this._restack()), group.connect('notify::last-child', () => this._restack()));
         this.connect('destroy', () => this._onDestroy());
         for (const child of group.get_children())
             this._addMirror(child);
@@ -1458,6 +1478,12 @@ export const BackgroundMirror = GObject.registerClass(class BackgroundMirror ext
         const watchers = [];
         try {
             watchers.push([child, child.connect('notify::visible', syncVisible)]);
+            // notify::first-child / last-child cannot see a reorder among MIDDLE
+            // children, and the group holds two actors per monitor mid-fade. The
+            // fade itself ticks opacity every frame, so piggyback on it; _restack()
+            // compares before it writes, so the steady state costs one loop over
+            // two or three actors.
+            watchers.push([child, child.connect('notify::opacity', () => this._restack())]);
             if (dstContent)
                 watchers.push([dstContent, dstContent.connect('notify::background', syncVisible)]);
         }
@@ -1508,15 +1534,37 @@ export const BackgroundMirror = GObject.registerClass(class BackgroundMirror ext
         if (isActorValid(mirror))
             mirror.destroy();
     }
+    // Puts our children in the same order as the real background group's.
+    //
+    // Compare-then-write: set_child_at_index() re-links the child and queues a
+    // relayout even when the index does not change, and this runs from the
+    // fade's opacity ticks as well as from the reorder notifications.
     _restack() {
         if (!isActorValid(this._sourceGroup))
             return;
-        let index = 0;
+        const wanted = [];
         for (const child of this._sourceGroup.get_children()) {
             const mirror = this._mirrors.get(child);
             if (mirror && isActorValid(mirror))
-                this.set_child_at_index(mirror, index++);
+                wanted.push(mirror);
         }
+        const current = this.get_children();
+        let ordered = current.length === wanted.length;
+        if (ordered) {
+            for (let i = 0; i < wanted.length; i++) {
+                if (current[i] !== wanted[i]) {
+                    ordered = false;
+                    break;
+                }
+            }
+        }
+        if (ordered)
+            return;
+        for (let i = 0; i < wanted.length; i++)
+            this.set_child_at_index(wanted[i], i);
+        // Only ever logged when the order really moved, which in practice means
+        // a wallpaper cross-fade just started.
+        utilsLog(`[bg-mirror] restacked ${wanted.length} wallpaper mirror(s)`);
     }
     _onDestroy() {
         if (isActorValid(this._sourceGroup)) {
