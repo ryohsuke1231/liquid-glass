@@ -8,8 +8,10 @@ import { LiquidEffect } from './liquidEffect.js';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import { UnpickableClone, UnpickableActor, InverseCornerEffect, getWindowActors, isActorValid, InvertedPositionConstraint, getAllocatedSize, setActorVisible, ensureGlassAllocated, isFrameSyncFrozen,
+  getNestedGlassFix, innerGlassEffectOf, isFocusDebugEnabled,
   setTranslationIfChanged, setSizeIfChanged, setScaleIfChanged, setOpacityIfChanged,
-  isCullSiteEnabled, rectsIntersect, setCloneCulled } from './utils.js';
+  isCullSiteEnabled, rectsIntersect, setCloneCulled,
+  createBackgroundMirror, setBackgroundMirrorEnabled, isBackgroundMirrorEnabled } from './utils.js';
 
 import { Logger } from './logger.js';
 
@@ -145,6 +147,37 @@ const WINDOW_ACTOR_STRANDED_FRAMES = 10;
 // it; not hiding it costs the session.
 const MAX_ANCHOR_DISPLACEMENT = 256;
 
+// Pre-emptive twin of MAX_ANCHOR_DISPLACEMENT.
+//
+// That guard is correct but reactive: the anchor it reads is what the PREVIOUS
+// relayout left behind, so the frame that first writes the runaway transform
+// is painted — and handed to mutter as a damage rectangle — before the guard
+// can refuse it. One such frame is enough: the journal for the "black frame
+// around the window behind" report has
+//
+//     *** BUG *** In pixman_region32_init_rect: Invalid rectangle passed
+//
+// landing in the same second as the symptom, and once a damage rectangle has
+// been rejected mutter's idea of what still needs repainting is wrong, which
+// is why the black stays put until something forces a full repaint (opening
+// the screenshot UI is one, which is why the capture shows the region filled
+// black rather than showing what is on screen).
+//
+// The test taken BEFORE the write is: is the counter-scale about to be large,
+// and did the container fail to pick up the last relayout? `_frameTick()` runs
+// as a BEFORE_REDRAW later, i.e. before `clutter_stage_maybe_relayout()`, so
+// the previous tick's writes have already been serviced by the time this runs
+// — `has_allocation()` here is false only for a subtree that really is
+// stranded, which is the same freshness the anchor read has.
+//
+// Both halves are required. A large counter-scale on a healthy subtree is an
+// ordinary minimise animation and must keep its glass; a stranded subtree at
+// scale 1 cannot displace anything far enough to overflow a damage rectangle
+// and is left to ensureGlassAllocated() to repair. 4x is where the frozen
+// origin (about -1200px for baseActor) starts producing coordinates outside
+// any plausible stage, and is far below the ~24x the journal caught.
+const MAX_STRANDED_COUNTER_SCALE = 4;
+
 /**
  * Which settings namespace a window's glass reads from.
  *
@@ -171,6 +204,13 @@ const MENU_WINDOW_TYPES = [
 const MAX_TRANSIENT_DEPTH = 8;
 
 interface WindowState {
+  // [nested-glass] Last seen _recaptureSerial of each behind-cloned window's
+  // own glass, for the 'propagate' repair. See NestedGlassFix in utils.ts.
+  nestedSerials?: Map<any, number>;
+  // [nested-glass] MetaWindowActor::damaged handlers on the behind-cloned
+  // windows that own a glass, for the 'damage' repair.
+  damageHooks?: Map<any, number>;
+
   // [PERF ①b] Screen rect of this window's glass box, recorded by
   // _syncStateInner() so _syncClones() can cull behind-window clones that
   // cannot contribute a single pixel to the capture. undefined until the
@@ -189,13 +229,15 @@ interface WindowState {
   surfaceActor: Clutter.Actor;
   bgActor: St.Widget;
   clipBox: St.Widget;
-  bgClone: InstanceType<typeof UnpickableClone>;
+  // [black-frame] A BackgroundMirror, or (A/B off) an UnpickableClone of
+  // _backgroundGroup; typed as the common base so either fits.
+  bgClone: Clutter.Actor;
   windowsContainer: Clutter.Actor;
   clones: Map<Meta.WindowActor, Clutter.Actor>;
   effect: LiquidEffect;
   // Unblurred base background, used to reveal the true corners (see InverseCornerEffect below).
   baseActor: St.Widget;
-  baseClone: InstanceType<typeof UnpickableClone>;
+  baseClone: Clutter.Actor;
   baseWindowsContainer: Clutter.Actor;
   baseClones: Map<Meta.WindowActor, Clutter.Actor>;
   // To cut window corners
@@ -269,6 +311,9 @@ export class ApplicationManager {
   // Logged on entry and exit only, so a persistent fault costs two lines
   // rather than 60 per second.
   private _displacedContainers: Set<Clutter.Actor> = new Set();
+  // Windows currently refused by the MAX_STRANDED_COUNTER_SCALE guard, so the
+  // entry and exit are logged once each instead of once a frame.
+  private _strandedScaleWindows: Set<Clutter.Actor> = new Set();
 
   // [FIX] Standing (not debug-window-gated) anomaly detector for 3-2 ("behind
   // window disappears — not necessarily tied to a restacked event, and not
@@ -396,6 +441,7 @@ export class ApplicationManager {
       }
       this._debugArmSignals = [];
       this._displacedContainers.clear();
+      this._strandedScaleWindows.clear();
     });
 
     this._teardownStep('settingsSignals', () => {
@@ -1009,10 +1055,11 @@ export class ApplicationManager {
     // Size the clones to cover the full monitor so the wallpaper fills correctly.
     let monitor = Main.layoutManager.primaryMonitor;
 
-    let baseClone = new UnpickableClone({
-      source: Main.layoutManager._backgroundGroup,
-    });
-    baseClone.set_name('lgw-base-wallpaper-clone');
+    // [black-frame] Deliberately NOT a Clone of _backgroundGroup. Cloning it
+    // made the wallpaper inherit the real background actor's per-frame
+    // culling state, so it only painted inside the current frame's damage
+    // region — see BackgroundMirror in utils.ts for the full mechanism.
+    let baseClone = createBackgroundMirror('lgw-base-wallpaper-clone');
     if (monitor) {
       baseClone.set_size(monitor.width, monitor.height);
     }
@@ -1022,10 +1069,7 @@ export class ApplicationManager {
     baseWindowsContainer.set_name('lgw-base-windows');
     baseActor.add_child(baseWindowsContainer);
 
-    let bgClone = new UnpickableClone({
-      source: Main.layoutManager._backgroundGroup,
-    });
-    bgClone.set_name('lgw-bg-wallpaper-clone');
+    let bgClone = createBackgroundMirror('lgw-bg-wallpaper-clone');
     if (monitor) {
       bgClone.set_size(monitor.width, monitor.height);
     }
@@ -1611,6 +1655,20 @@ export class ApplicationManager {
 
     const anchorOffByEarly = this._checkContainerAnchor(state);
 
+    // [FIX] Refuse the frame BEFORE writing a runaway transform, not after —
+    // see MAX_STRANDED_COUNTER_SCALE. Returns early rather than falling
+    // through to the write half, because the whole point is that none of
+    // _applyCounterScale()'s set_scale()/set_position() calls happen. Dropping
+    // the geometry signature is what lets the next healthy frame take the full
+    // path and show the glass again.
+    if (this._counterScaleWouldStrand(state)) {
+      setActorVisible(state.bgActor, false);
+      setActorVisible(state.baseActor, false);
+      setActorVisible(state.cornerOverlay, false);
+      state.geomSig = undefined;
+      return;
+    }
+
     const GEOM_SIG_LEN = 16;
     let sig = state.geomSig;
     if (!sig || sig.length !== GEOM_SIG_LEN) {
@@ -1803,6 +1861,125 @@ export class ApplicationManager {
    * a clone left at a stale position is the failure mode this file has
    * regressed into most often. Body is unchanged from when it was inline.
    */
+  /**
+   * Keeps a glass whose capture contains another glass from latching to black.
+   *
+   * The failure: painting a behind-clone paints its source, and for a window
+   * that owns a glass that means an inner ClutterOffscreenEffect. At the
+   * moment that inner effect RE-RENDERS its own offscreen — not when it
+   * simply blits its cached one — the outer capture comes out empty, and it
+   * stays empty because nothing afterwards marks the outer actor dirty.
+   * Measured 2026-09-16: a static inner glass never triggers it (0/14 black
+   * frames), one that keeps re-rendering does (11/14), and forcing
+   * bgActor.queue_redraw() clears it for exactly as long as it takes to
+   * happen again.
+   *
+   * Two repairs, switchable so they can be compared on the same desktop —
+   * see NestedGlassFix in utils.ts for why neither is obviously right.
+   */
+  _repairNestedGlass(state: WindowState): void {
+    const mode = getNestedGlassFix();
+    if (mode === 'off') return;
+    const bg = state.bgActor;
+    if (!bg || !isActorValid(bg) || !bg.mapped || !bg.visible) return;
+
+    // (D) The one that is both correct and free when nothing is happening.
+    // MetaWindowActor::damaged fires while damage is being processed, which
+    // is BEFORE the frame clock paints — so marking the outer dirty from it
+    // lands on the very frame the inner will re-render, not the one after.
+    if (mode === 'damage') {
+      this._syncDamageHooks(state);
+      return;
+    }
+
+    // (B) Never reuse the capture. Correct by construction, and exactly the
+    // unconditional repaint phase 3's A2 removed — so this costs back what
+    // A2 bought, for every window, whether or not anything is nested.
+    if (mode === 'recapture') {
+      bg.queue_redraw();
+      return;
+    }
+
+    // (C) Only after an inner glass we clone actually re-rendered. Cheap, but
+    // the serial can only be read on the frame AFTER the re-render, so the
+    // repair is one frame late by construction: the black becomes a flicker
+    // rather than going away.
+    let seen = state.nestedSerials;
+    if (!seen) { seen = new Map(); state.nestedSerials = seen; }
+
+    let stale = false;
+    for (const [src, clone] of state.clones.entries()) {
+      if (!isActorValid(clone) || !clone.visible) continue;
+      const inner = innerGlassEffectOf(src);
+      if (!inner) continue;
+      const serial = inner._recaptureSerial;
+      if (seen.get(src) !== serial) { seen.set(src, serial); stale = true; }
+    }
+    // Drop entries for clones this glass no longer has, so the map cannot grow
+    // with every window that has ever been behind this one.
+    if (seen.size > state.clones.size) {
+      for (const src of [...seen.keys()]) if (!state.clones.has(src)) seen.delete(src);
+    }
+
+    if (stale) bg.queue_redraw();
+  }
+
+  /**
+   * Keeps one MetaWindowActor::damaged handler per behind-cloned window that
+   * owns a glass, and nothing else.
+   *
+   * Why this beats both of the other repairs: the handler runs during damage
+   * processing, i.e. before the frame clock dispatches its paint, so the
+   * queue_redraw() lands on the SAME frame the inner glass will re-render.
+   * 'propagate' can only read the inner's serial on the frame after, which is
+   * why it turns the black into a flicker instead of removing it; 'recapture'
+   * removes it but pays a repaint per frame per window forever. This pays
+   * exactly one extra repaint per actual content change of a glassed window
+   * behind, and nothing at all while the desktop sits still.
+   *
+   * Measured 2026-09-17 with a live prototype of this hook, maximized window
+   * with Resources (glassed, 4Hz) behind: 0/26 black frames against 4/26 with
+   * no repair, for 298 extra repaints over the whole run.
+   *
+   * Only glassed sources are hooked: a behind-window with no glass of its own
+   * adds no nested offscreen and has never been seen to trigger this.
+   */
+  _syncDamageHooks(state: WindowState): void {
+    let hooks = state.damageHooks;
+    if (!hooks) { hooks = new Map(); state.damageHooks = hooks; }
+
+    for (const src of state.clones.keys()) {
+      if (hooks.has(src)) continue;
+      if (!isActorValid(src) || !innerGlassEffectOf(src)) continue;
+      try {
+        const id = src.connect('damaged', () => {
+          const bg = state.bgActor;
+          if (bg && isActorValid(bg) && bg.mapped && bg.visible) bg.queue_redraw();
+        });
+        hooks.set(src, id);
+      } catch (_) { /* a source that cannot be connected simply goes unhooked */ }
+    }
+
+    // Drop handlers for windows this glass no longer clones, so the map cannot
+    // grow with every window that has ever been behind this one.
+    if (hooks.size > state.clones.size) {
+      for (const [src, id] of [...hooks]) {
+        if (state.clones.has(src)) continue;
+        try { if (isActorValid(src)) src.disconnect(id); } catch (_) { }
+        hooks.delete(src);
+      }
+    }
+  }
+
+  _releaseDamageHooks(state: WindowState): void {
+    if (!state.damageHooks) return;
+    for (const [src, id] of state.damageHooks) {
+      try { if (isActorValid(src)) src.disconnect(id); } catch (_) { }
+    }
+    state.damageHooks.clear();
+    state.damageHooks = undefined;
+  }
+
   _syncClones(state: WindowState): void {
     // [PERF ①b] Cull behind-window clones that fall outside this glass's own
     // box. See state.glassScreenRect.
@@ -1857,6 +2034,8 @@ export class ApplicationManager {
         this._checkCloneAnomaly(clone, src, 'blurred');
       }
     }
+
+    this._repairNestedGlass(state);
 
     // Sync base clones (unblurred). The map is empty while the base layer is
     // off (they are never built), so this is just skipping the iteration.
@@ -2064,6 +2243,12 @@ export class ApplicationManager {
   // whether that assumption itself ever diverges) and the position that
   // will actually be applied to the clone this frame.
   _armFocusDebug(reason: string) {
+    // Off by default — see isFocusDebugEnabled(). Checked HERE, not at the
+    // log calls, so that with the diagnostic off _debugFocusLogFrames stays 0
+    // and none of the per-window / per-clone template strings are built
+    // either. Formatting them and throwing the result away was most of the
+    // cost even when `output-logs` was off.
+    if (!isFocusDebugEnabled()) return;
     this._debugFocusLogFrames = ApplicationManager.DEBUG_FOCUS_LOG_FRAME_COUNT;
     this._logger.log(`[Liquid Glass][focus-debug] ---- ${reason} event ----`);
   }
@@ -2085,6 +2270,44 @@ export class ApplicationManager {
   // Returns how far the anchor is off, in screen pixels (Infinity when it is
   // not a finite position at all), so the caller can refuse to draw glass
   // that is grossly displaced — see MAX_ANCHOR_DISPLACEMENT.
+  /**
+   * True when this frame is about to counter-scale a subtree that did not pick
+   * up the last relayout — the combination that turns a legitimate 1/scale
+   * transform into a damage rectangle tens of thousands of pixels wide. See
+   * MAX_STRANDED_COUNTER_SCALE for why both halves are needed and why this can
+   * be trusted at the top of a BEFORE_REDRAW tick.
+   */
+  _counterScaleWouldStrand(state: WindowState): boolean {
+    const container = state.windowsContainer;
+    if (!isActorValid(container)) return false;
+
+    const [sx, sy] = this._animationScale(state.windowActor);
+    const counterScale = Math.max(1 / sx, 1 / sy);
+
+    let stranded = false;
+    if (counterScale > MAX_STRANDED_COUNTER_SCALE) {
+      try { stranded = !container.has_allocation(); } catch (_) { stranded = false; }
+    }
+
+    const known = this._strandedScaleWindows.has(container);
+    if (stranded && !known) {
+      this._strandedScaleWindows.add(container);
+      const metaWin = state.windowActor.get_meta_window();
+      const title = metaWin ? (metaWin.get_title() || '(untitled)') : '(?)';
+      this._logger.log(
+        `[Liquid Glass][anchor] REFUSED window="${title}" ` +
+        `counterScale=${counterScale.toFixed(1)}x scale=(${sx.toFixed(4)},${sy.toFixed(4)}) ` +
+        `container.hasAlloc=false — glass hidden for this frame rather than ` +
+        `written with a transform the stale allocation cannot cancel`
+      );
+    } else if (!stranded && known) {
+      this._strandedScaleWindows.delete(container);
+      this._logger.log('[Liquid Glass][anchor] REFUSED cleared');
+    }
+
+    return stranded;
+  }
+
   _checkContainerAnchor(state: WindowState): number {
     const container = state.windowsContainer;
     if (!isActorValid(container)) return 0;
@@ -2178,6 +2401,11 @@ export class ApplicationManager {
 
   _cleanupState(state: WindowState) {
     if (!state) return;
+
+    // Before anything else: these are handlers on Mutter's own window actors,
+    // which outlive this state. A missed disconnect here keeps the closure —
+    // and through it the whole state — alive against a destroyed glass.
+    this._releaseDamageHooks(state);
 
     // Restore the original opacity of the window's own content layer.
     // Uses the cached surfaceActor reference (see WindowState) rather than

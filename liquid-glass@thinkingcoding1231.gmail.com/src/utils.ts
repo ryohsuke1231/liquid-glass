@@ -12,6 +12,8 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import St from 'gi://St';
 import Shell from 'gi://Shell';
 import Mtk from 'gi://Mtk';
+import GLib from 'gi://GLib';
+import Meta from 'gi://Meta';
 
 /**
  * Diagnostic sink for this module. utils.ts has no Gio.Settings of its own,
@@ -557,6 +559,337 @@ export function reportFrameLoopError(tag: string, e: unknown): void {
 }
 
 
+// ─── Adaptive text colour: polarity cross-fade ──────────────────────────────
+//
+// The adaptive text colour only ever flips between the configured light and
+// dark colours (white <-> black by default). Interpolating those two in RGB
+// walks the text straight through mid-grey, and mid-grey text is exactly what
+// sits on top of a background whose luminance just crossed the threshold that
+// triggered the flip — so the label vanishes for the middle third of the
+// tween. That is why the polarity case used to be snapped instead of animated
+// (`skipAnimations || changesPolarity`, commit 5df9084), which is the hard cut
+// this replaces.
+//
+// A cross-dissolve avoids the grey entirely: fade the OLD colour out, swap the
+// colour at the bottom of the dip where nothing is drawn anyway, fade the NEW
+// colour in. easeIn on the way out and easeOut on the way in, so the two
+// halves meet with matching slope and read as one motion.
+//
+// `progress` is 0..1. Alpha is scaled between the two endpoint alphas so an
+// actor that also becomes insensitive mid-flip still lands on 0.5.
+export interface RgbColor { r: number; g: number; b: number; }
+
+export function crossFadeColorAt(
+  start: RgbColor, startAlpha: number,
+  target: RgbColor, targetAlpha: number,
+  progress: number
+): { r: number; g: number; b: number; a: number } {
+  const p = Math.max(0, Math.min(1, progress));
+  if (p < 0.5) {
+    const local = p / 0.5;
+    // easeInQuad on the fade-out: holds the readable colour a little longer.
+    const a = startAlpha * (1 - local * local);
+    return { r: start.r, g: start.g, b: start.b, a };
+  }
+  const local = (p - 0.5) / 0.5;
+  // easeOutQuad on the fade-in: mirrors the curve above.
+  const e = 1 - (1 - local) * (1 - local);
+  return { r: target.r, g: target.g, b: target.b, a: targetAlpha * e };
+}
+
+// Only a real light<->dark flip earns the dissolve. A small nudge (the theme's
+// own off-white to pure white, say) has no grey to walk through, and dipping
+// the alpha for it would invent a flicker where a plain lerp is invisible.
+// Rec. 709 luma, 0..1; the threshold is far below a white/black flip (1.0) and
+// far above any within-palette adjustment.
+const CROSS_FADE_LUMA_DELTA = 0.4;
+
+export function shouldCrossFadeColors(start: RgbColor, target: RgbColor): boolean {
+  const luma = (c: RgbColor) =>
+    (0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b) / 255;
+  return Math.abs(luma(target) - luma(start)) > CROSS_FADE_LUMA_DELTA;
+}
+
+/**
+ * The plain channel-by-channel interpolation, kept as the A/B alternative to
+ * the dissolve. easeInOutQuad, exactly what every manager used to run inline.
+ * It walks white->black through mid-grey, which is the legibility problem the
+ * dissolve exists to avoid — that is the trade being switched between.
+ */
+export function lerpColorAt(
+  start: RgbColor, startAlpha: number,
+  target: RgbColor, targetAlpha: number,
+  progress: number
+): { r: number; g: number; b: number; a: number } {
+  const p = Math.max(0, Math.min(1, progress));
+  const e = p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
+  return {
+    r: Math.round(start.r + (target.r - start.r) * e),
+    g: Math.round(start.g + (target.g - start.g) * e),
+    b: Math.round(start.b + (target.b - start.b) * e),
+    a: startAlpha + (targetAlpha - startAlpha) * e,
+  };
+}
+
+// ─── Adaptive text colour: which interpolation runs ─────────────────────────
+//
+// 'cross-fade' (default) is the dissolve above. 'rgb-lerp' is the plain
+// interpolation, i.e. the pre-5df9084 behaviour with the polarity snap taken
+// out, so a white<->black flip really does walk through grey. Switchable so
+// the two can be compared side by side on the same background:
+// global._lgGlass.textColorMode('rgb-lerp') / ('cross-fade').
+export type AdaptiveColorMode = 'cross-fade' | 'rgb-lerp';
+
+let _adaptiveColorMode: AdaptiveColorMode = 'cross-fade';
+
+export function setAdaptiveColorMode(mode: AdaptiveColorMode): void {
+  _adaptiveColorMode = mode === 'rgb-lerp' ? 'rgb-lerp' : 'cross-fade';
+}
+
+export function getAdaptiveColorMode(): AdaptiveColorMode {
+  return _adaptiveColorMode;
+}
+
+/**
+ * True when this particular change should dissolve rather than lerp: only in
+ * 'cross-fade' mode, and only for a real light<->dark flip.
+ */
+export function resolveCrossFade(start: RgbColor, target: RgbColor): boolean {
+  return _adaptiveColorMode === 'cross-fade' && shouldCrossFadeColors(start, target);
+}
+
+// ─── Adaptive text colour: the shared tween clock ───────────────────────────
+//
+// Every manager used to give each actor its own GLib.timeout_add(16). Two
+// things went wrong with that, both of them visible:
+//
+//   * **Out of sync.** N actors meant N independent GLib sources. They are not
+//     tied to the frame clock, so each actor's set_style() landed in whichever
+//     frame its own source happened to fire in, and a row of labels flipped
+//     raggedly instead of together.
+//   * **Judder.** A 16ms source against a 16.67ms frame beats: most frames get
+//     one update, every ~25th gets two (or none). The colour ramp therefore
+//     advanced in uneven steps — the "カクカク" — even though the easing curve
+//     itself is smooth.
+//
+// One driver fixes both. Every actor is stepped from the SAME timestamp, in
+// the SAME pass, and the pass is a Meta.LaterType.BEFORE_REDRAW later, so it
+// runs exactly once per frame, immediately before the frame that will show its
+// result. Actors queued in one turn also share a start time (see `batchStart`)
+// so a batch that flips together stays together for the whole tween.
+//
+// The chain only exists while something is animating: the tick re-arms itself
+// only if entries remain, so this is not another always-on per-frame poll.
+interface ColorTweenEntry {
+  startRgb: RgbColor;
+  startAlpha: number;
+  targetRgb: RgbColor;
+  targetAlpha: number;
+  crossFade: boolean;
+  durationMs: number;
+  startTime: number;               // GLib monotonic microseconds
+  // `progress` is handed through for the one caller that has a second colour
+  // riding on the same clock (the OSD level bar's track).
+  apply: (r: number, g: number, b: number, a: number, progress: number) => void;
+  // False when `apply` writes something the (r,g,b,a) tuple does not fully
+  // describe — the level bar's track colour has its own delta and can move in
+  // a frame where the foreground rounds to the same byte. Such an entry must
+  // not have its repeat writes coalesced away. Defaults to true.
+  coalesce?: boolean;
+  last?: { r: number; g: number; b: number; a: number };
+}
+
+class AdaptiveColorTweener {
+  private _entries: Map<any, ColorTweenEntry> = new Map();
+  private _laterId: number = 0;
+
+  /**
+   * @param batchStart monotonic timestamp shared by every actor updated in the
+   *   same turn. Callers pass one value for a whole colour map so the actors
+   *   move in lockstep; omitted, the actor starts from now.
+   */
+  add(actor: any, entry: Omit<ColorTweenEntry, 'startTime' | 'last'>, batchStart?: number): void {
+    if (!actor) return;
+    const prev = this._entries.get(actor);
+    // Restarting mid-tween: begin from what is actually on screen, not from
+    // the theme node — St has not necessarily re-resolved it yet this frame,
+    // and starting from a stale colour is a visible jump.
+    const startRgb = prev?.last
+      ? { r: prev.last.r, g: prev.last.g, b: prev.last.b }
+      : entry.startRgb;
+    const startAlpha = prev?.last ? prev.last.a : entry.startAlpha;
+
+    this._entries.set(actor, {
+      ...entry,
+      startRgb,
+      startAlpha,
+      crossFade: entry.crossFade && shouldCrossFadeColors(startRgb, entry.targetRgb),
+      startTime: batchStart ?? GLib.get_monotonic_time(),
+    });
+    this._schedule();
+  }
+
+  cancel(actor: any): void {
+    this._entries.delete(actor);
+  }
+
+  stopAll(): void {
+    this._entries.clear();
+    this._unschedule();
+  }
+
+  isAnimating(actor: any): boolean {
+    return this._entries.has(actor);
+  }
+
+  private _schedule(): void {
+    if (this._laterId !== 0) return;
+    try {
+      this._laterId = (global as any).compositor.get_laters().add(
+        Meta.LaterType.BEFORE_REDRAW,
+        () => { this._tick(); return false; }
+      );
+    } catch (_) {
+      this._laterId = 0;
+    }
+  }
+
+  private _unschedule(): void {
+    if (this._laterId === 0) return;
+    try { (global as any).compositor.get_laters().remove(this._laterId); } catch (_) { }
+    this._laterId = 0;
+  }
+
+  private _tick(): void {
+    this._laterId = 0;
+    const now = GLib.get_monotonic_time();
+
+    for (const [actor, e] of [...this._entries]) {
+      if (!isActorValid(actor)) { this._entries.delete(actor); continue; }
+
+      const elapsedMs = (now - e.startTime) / 1000;
+      const progress = e.durationMs > 0 ? Math.min(elapsedMs / e.durationMs, 1) : 1;
+      const c = e.crossFade
+        ? crossFadeColorAt(e.startRgb, e.startAlpha, e.targetRgb, e.targetAlpha, progress)
+        : lerpColorAt(e.startRgb, e.startAlpha, e.targetRgb, e.targetAlpha, progress);
+      const a = Math.max(0, Math.min(1, c.a));
+
+      // set_style() re-parses CSS and dirties the actor's layout, so it is by
+      // far the expensive half of this. Skip it when the frame would write the
+      // value that is already there (the flat ends of the easing curve).
+      const same = e.coalesce !== false && e.last &&
+        e.last.r === c.r && e.last.g === c.g && e.last.b === c.b &&
+        Math.abs(e.last.a - a) < 0.002;
+      if (!same) {
+        e.last = { r: c.r, g: c.g, b: c.b, a };
+        try { e.apply(c.r, c.g, c.b, a, progress); } catch (_) { }
+      }
+
+      if (progress >= 1) this._entries.delete(actor);
+    }
+
+    if (this._entries.size > 0) this._schedule();
+  }
+}
+
+export const adaptiveColorTweener = new AdaptiveColorTweener();
+
+// ─── Nested glass: which repair runs ─────────────────────────────────────────
+//
+// A glass whose capture contains a clone of a window that owns a glass of its
+// own goes black the moment that INNER effect re-renders its offscreen, and
+// stays black until something marks the OUTER actor dirty again. Measured
+// 2026-09-16 on a maximized window with things behind it:
+//
+//   nothing behind                  0/10 black frames
+//   Calculator (glass, static)      0/14
+//   Resources  (glass, 3s updates)  8/14   (latches, never recovers)
+//   Resources  (glass, 0.25s)      11/14
+//
+// The clean fix is not to nest at all (clone the surface, not the window
+// actor), but that costs the inner window its glass inside the backdrop. These
+// two keep the nesting and repair it instead:
+//
+//   'recapture' (B) — mark the outer actor dirty EVERY frame. Always correct
+//       because the capture is never reused, and it gives back the saving
+//       phase 3's A2 bought by removing exactly this unconditional repaint.
+//   'propagate' (C) — mark the outer actor dirty only on the frame after an
+//       inner glass it clones re-rendered. Cheap, but it is one frame late by
+//       construction, so the black turns from permanent into a flicker rather
+//       than disappearing.
+//   'off' — neither; the behaviour that has the bug. Kept for A/B.
+//
+// global._lgGlass.nestedFix('off' | 'recapture' | 'propagate').
+export type NestedGlassFix = 'off' | 'recapture' | 'propagate' | 'damage';
+
+// [black-frame] 'off' is the default again, and all three repairs below are
+// now legacy A/B material.
+//
+// Every one of them is a workaround for the SAME underlying bug, attacked
+// from the wrong end: they force extra full re-captures so that a glass
+// whose FBO captured a partially-painted wallpaper gets a corrected one soon
+// after. The actual cause was that a Clutter.Clone of _backgroundGroup makes
+// the wallpaper inherit the real background actor's per-frame culling state,
+// so it paints ONLY inside the current frame's damage region — see
+// BackgroundMirror above. With the mirror in place the capture is correct
+// the first time, and paying for extra repaints every frame a background
+// window updates is exactly the idle-GPU cost we want back.
+//
+// Historical notes, for anyone re-running the comparison:
+//   'damage'    0/26 black against 4/26 with no repair, ~7 extra repaints/s.
+//   'recapture' also fixed it, but repaints every window every frame forever.
+//   'propagate' cheap, but reads the inner's serial one frame too late, so
+//               the black became a flicker instead of going away.
+let _nestedGlassFix: NestedGlassFix = 'off';
+
+const NESTED_FIX_MODES: NestedGlassFix[] = ['off', 'recapture', 'propagate', 'damage'];
+
+export function setNestedGlassFix(mode: NestedGlassFix): void {
+  _nestedGlassFix = NESTED_FIX_MODES.includes(mode) ? mode : 'off';
+}
+
+export function getNestedGlassFix(): NestedGlassFix {
+  return _nestedGlassFix;
+}
+
+/**
+ * The LiquidEffect sitting on a window actor's own glass root, or null when
+ * that window has no glass. Used to read the inner effect's re-capture
+ * counter; see NestedGlassFix.
+ */
+// ─── Focus-debug: opt-in, because it froze the shell ─────────────────────────
+//
+// _armFocusDebug() used to fire on every 'restacked' / 'grab-op-*' and log,
+// for eight frames, one line per tracked window plus one per behind-clone.
+// Restacks are not rare, so in practice that never stopped: the session of
+// 2026-09-17 06:37 wrote 30,440 focus-debug lines out of 31,692 gnome-shell
+// lines total — 96% — at a sustained 240-476 lines a second, journald
+// answered with "Forwarding to syslog missed 1149 messages", and the shell
+// froze at 07:01:05 and had to be killed. Writing to the journal from the
+// compositor's main thread blocks when journald stops draining, so this is
+// not merely noise; it is a hang.
+//
+// It stays available because it is the only tool for the clone-placement
+// bugs it was written for, but it is now off unless asked for:
+// global._lgGlass.focusDebug(true).
+let _focusDebugEnabled = false;
+
+export function setFocusDebugEnabled(on: boolean): void { _focusDebugEnabled = !!on; }
+export function isFocusDebugEnabled(): boolean { return _focusDebugEnabled; }
+
+export function innerGlassEffectOf(windowActor: any): any | null {
+  try {
+    if (!windowActor || !isActorValid(windowActor)) return null;
+    for (const c of windowActor.get_children()) {
+      if ((c.name || '') !== 'lgw-bg') continue;
+      const fx = c.get_effects()[0];
+      if (fx && typeof fx._recaptureSerial === 'number') return fx;
+    }
+  } catch (_) { /* noop */ }
+  return null;
+}
+
+
 /**
  * Reads an actor's *allocated* size, instead of Clutter.Actor.get_size().
  *
@@ -1036,6 +1369,455 @@ export const UnpickableActor = GObject.registerClass(
     }
   }
 );
+
+/**
+ * [black-frame] Stand-in for
+ *   `new UnpickableClone({ source: Main.layoutManager._backgroundGroup })`
+ * that renders the wallpaper WITHOUT going through Clutter.Clone.
+ *
+ * WHY THIS EXISTS — the "black frame" bug
+ * ---------------------------------------
+ * `MetaBackgroundContent` (the ClutterContent that actually paints the
+ * wallpaper) culls itself against two regions that mutter stores ON THE
+ * CONTENT OBJECT itself — mutter 50.1,
+ * src/compositor/meta-background-content.c:
+ *
+ *   clip_region       the CURRENT FRAME'S DAMAGE REGION. Pushed down by
+ *                     meta_window_group_paint() ->
+ *                     meta_cullable_cull_redraw_clip() immediately before
+ *                     the window group paints its children, and reset to
+ *                     NULL immediately after.
+ *   unobscured_region what is left of the wallpaper after the opaque
+ *                     windows above it subtract themselves.
+ *
+ * meta_background_content_paint_content() applies BOTH unconditionally —
+ * including while it runs inside a Clutter.Clone's paint. It even has an
+ * explicit `clutter_actor_is_in_clone_paint()` branch, and that branch
+ * still intersects with clip_region:
+ *
+ *     if (self->clip_region && mtk_region_is_empty (self->clip_region))
+ *       return;                                      // paints NOTHING
+ *     ...
+ *     if (clutter_actor_is_in_clone_paint (actor))
+ *       untransformed = FALSE;
+ *     ...
+ *     if (self->clip_region) {
+ *       region = mtk_region_copy (self->clip_region);
+ *       mtk_region_intersect_rectangle (region, &rect_within_actor);
+ *     }
+ *     ...
+ *     if (self->unobscured_region)
+ *       mtk_region_intersect (region, self->unobscured_region);
+ *
+ * A Clone paints its SOURCE actor, so it uses the SOURCE's content object —
+ * which means a clone of _backgroundGroup inherits the real wallpaper's
+ * per-frame culling state wholesale. In one sentence:
+ *
+ *   The wallpaper inside our glass only painted where THIS FRAME happened
+ *   to be damaged.
+ *
+ * That is the whole bug. When a window behind the glass repaints on its own
+ * (a system monitor, a terminal, a video), the frame's damage region is just
+ * that window's rectangle. Any glass that re-captures its
+ * ClutterOffscreenEffect FBO on that frame therefore captures the wallpaper
+ * ONLY inside that rectangle and black everywhere else. Because
+ * ClutterOffscreenEffect caches the FBO, the black then LATCHES until
+ * something forces a full re-capture.
+ *
+ * Which is exactly the reported symptom, down to the details:
+ *   - a bright rectangle around the updating background window, the rest of
+ *     the glass filled flat (the tint over black);
+ *   - a ~padding-wide gradient ring, darkening outwards, where the blur
+ *     smears that black inwards from the FBO edge;
+ *   - dump() / queue_redraw() / opening a menu clears it, because they force
+ *     a full-screen damage and therefore a full, correct re-capture;
+ *   - no reproduction steps, because it depends on which rectangle of the
+ *     screen happened to be damaged on the frame the FBO was captured.
+ *
+ * THE FIX — and why it MUST still be painted through a Clone
+ * ----------------------------------------------------------
+ * Own the content, then clone OUR content. Both halves are required.
+ *
+ * Half 1: build our OWN Meta.BackgroundActor for each of the shell's,
+ * sharing the same Meta.Background (no second wallpaper decode, no extra
+ * texture) but carrying its own MetaBackgroundContent. Our actors hang off
+ * a plain Clutter.Actor outside the window group, and
+ * cull_out_children_common() in meta-cullable.c stops at any child that is
+ * not a MetaCullable:
+ *
+ *     if (!META_IS_CULLABLE (child))
+ *       continue;
+ *
+ * so our content's clip_region and unobscured_region stay NULL forever.
+ *
+ * Half 2 — THE PART THE FIRST ATTEMPT MISSED. Killing clip_region is not
+ * enough, because paint_content has a SECOND clip and it reads the damage
+ * region straight off the paint context:
+ *
+ *     if (untransformed) {
+ *         if (self->clip_region) { ... }
+ *         else {
+ *             redraw_clip = clutter_paint_context_get_redraw_clip (paint_context);
+ *             if (redraw_clip) { region = copy (redraw_clip); ... }   // <-- still partial!
+ *         }
+ *     } else {
+ *         if (self->clip_region) { ... }
+ *         else
+ *             region = mtk_region_create_rectangle (&rect_within_actor);  // <-- FULL
+ *     }
+ *
+ * and clutter_paint_context_push_framebuffer() does NOT reset redraw_clip,
+ * so inside a glass's offscreen FBO it is still the frame's stage damage.
+ *
+ * `untransformed` is true exactly when the actor's stage rect equals its own
+ * content box — which is precisely the case for a wallpaper actor parked at
+ * (0,0) at monitor size, i.e. ours. So painting our mirror DIRECTLY lands in
+ * the redraw_clip branch and is clipped to the damage region anyway. That is
+ * what the first attempt did, and it was strictly WORSE than the clone it
+ * replaced: dock / menu / OSD glasses paint from uiGroup, OUTSIDE the window
+ * group, where clip_region has already been reset to NULL — so their clones
+ * used to paint in full. Measured on two screencasts of the same bug:
+ * 8% of frames flat-filled before, 34% after.
+ *
+ * The `else` branch is unconditional and full, and the way into it is
+ * `clutter_actor_is_in_clone_paint()`, which is ancestor-aware:
+ *
+ *     if (self->priv->in_clone_paint) return TRUE;
+ *     ... walks priv->parent while in_cloned_branch != 0 ...
+ *
+ * So: keep ONE shared source actor holding our uncalled background contents,
+ * and give every glass a Clutter.Clone of it. In the clone paint
+ * untransformed is FALSE and clip_region is NULL, which is the one
+ * combination that paints the whole wallpaper unconditionally.
+ *
+ * It also restores the shell's wallpaper cross-fade inside the glass for
+ * free: the glass clones a GROUP holding both the outgoing and incoming
+ * background actors at their live opacities, exactly as cloning
+ * _backgroundGroup used to.
+ */
+export const BackgroundMirror = GObject.registerClass(
+  class BackgroundMirror extends Clutter.Actor {
+    declare _mirrors: Map<any, any>;
+    declare _groupHandlers: number[];
+    declare _sourceGroup: any;
+
+    _init(params: any = {}): void {
+      super._init(params);
+      this._mirrors = new Map();
+      this._groupHandlers = [];
+      this._sourceGroup = null;
+
+      const group = Main.layoutManager?._backgroundGroup ?? null;
+      if (!group) return;
+      this._sourceGroup = group;
+
+      this._groupHandlers.push(
+        group.connect('child-added', (_g: any, child: any) => this._addMirror(child)),
+        group.connect('child-removed', (_g: any, child: any) => this._removeMirror(child))
+      );
+      this.connect('destroy', () => this._onDestroy());
+
+      for (const child of group.get_children()) this._addMirror(child);
+    }
+
+    // Every MetaBackgroundContent property worth mirroring. `background` is
+    // the important one (it carries the wallpaper texture); the rest are what
+    // the shell animates for the overview dim / login vignette, and mirroring
+    // them keeps the glass consistent with the desktop underneath it.
+    _contentProps(): string[] {
+      return [
+        'background',
+        'brightness',
+        'vignette',
+        'vignette-sharpness',
+        'gradient',
+        'gradient-height',
+        'gradient-max-darkness',
+        'rounded-clip-radius',
+      ];
+    }
+
+    _addMirror(child: any): void {
+      try {
+        this._addMirrorUnsafe(child);
+      } catch (e) {
+        // A glass with a stale wallpaper is a cosmetic problem; a glass that
+        // failed to build is a broken window. Never let this path throw into
+        // ApplicationManager's actor construction.
+        utilsLog(`[bg-mirror] _addMirror failed: ${e}`);
+      }
+    }
+
+    _addMirrorUnsafe(child: any): void {
+      if (!child || this._mirrors.has(child)) return;
+      const srcContent = child.content;
+      // Only MetaBackgroundActors carry a MetaBackgroundContent. Anything
+      // else another extension parked in the background group is not ours
+      // to reproduce, and cloning it would reintroduce the very coupling
+      // this class exists to remove.
+      if (!srcContent || !(srcContent instanceof Meta.BackgroundContent)) return;
+
+      let mirror: any;
+      try {
+        mirror = new Meta.BackgroundActor({
+          meta_display: global.display,
+          monitor: child.monitor,
+          reactive: false,
+        });
+      } catch (e) {
+        utilsLog(`[bg-mirror] could not create Meta.BackgroundActor: ${e}`);
+        return;
+      }
+      mirror.set_name('lg-bg-mirror');
+
+      // [CRASH] Start hidden, and stay hidden until the content actually has
+      // a MetaBackground. This is not defensive padding — it is load-bearing.
+      //
+      // meta_background_get_texture() (mutter 50.1,
+      // src/compositor/meta-background.c) reads self->display in its variable
+      // declarations, i.e. BEFORE its own guard:
+      //
+      //     MetaContext *context = meta_display_get_context (self->display);
+      //     ...
+      //     g_return_val_if_fail (META_IS_BACKGROUND (self), NULL);
+      //
+      // so painting a MetaBackgroundContent whose background is NULL
+      // dereferences NULL and takes the whole compositor down with SIGSEGV --
+      // confirmed the hard way, a full session loss to greetd
+      // (2026-09-17 20:42:59, org.gnome.Shell@ubuntu.service status=11/SEGV,
+      // stack: clutter_frame_clock_dispatch -> clutter_stage_paint_view ->
+      // ... -> clutter_actor_continue_paint -> libmutter).
+      //
+      // The shell adds a background actor to the group and assigns its
+      // MetaBackground afterwards, so 'child-added' genuinely can reach us
+      // with background == NULL. A hidden actor is never painted, so gating
+      // visibility on it is what keeps that window closed.
+      mirror.visible = false;
+
+      const dstContent = mirror.content;
+      if (dstContent) {
+        for (const prop of this._contentProps()) {
+          try {
+            srcContent.bind_property(prop, dstContent, prop, GObject.BindingFlags.SYNC_CREATE);
+          } catch (e) {
+            // A property that does not exist on this mutter version is not
+            // fatal — the wallpaper itself ('background') is what matters.
+            utilsLog(`[bg-mirror] skipped content prop '${prop}': ${e}`);
+          }
+        }
+        // Belt and braces: SYNC_CREATE should have carried the background
+        // across already, but the whole class is worthless (and dangerous)
+        // if it did not, so set it outright too.
+        try {
+          if (!dstContent.background && srcContent.background)
+            dstContent.set_background(srcContent.background);
+        } catch (e) {
+          utilsLog(`[bg-mirror] set_background failed: ${e}`);
+        }
+      }
+
+      try {
+        child.bind_property('opacity', mirror, 'opacity', GObject.BindingFlags.SYNC_CREATE);
+      } catch (e) {
+        utilsLog(`[bg-mirror] opacity binding failed: ${e}`);
+      }
+
+      // Visibility is computed rather than bound, because it has to answer to
+      // the background-is-NULL gate above as well as to the real actor.
+      const syncVisible = () => {
+        if (!isActorValid(mirror)) return;
+        let hasBackground = false;
+        try { hasBackground = !!(mirror.content && mirror.content.background); } catch (_) { /* noop */ }
+        const wanted = hasBackground && isActorValid(child) && child.visible;
+        if (mirror.visible !== wanted) mirror.visible = wanted;
+      };
+      const watchers: Array<[any, number]> = [];
+      try {
+        watchers.push([child, child.connect('notify::visible', syncVisible)]);
+        if (dstContent)
+          watchers.push([dstContent, dstContent.connect('notify::background', syncVisible)]);
+      } catch (e) {
+        utilsLog(`[bg-mirror] visibility watchers failed: ${e}`);
+      }
+      mirror.connect('destroy', () => {
+        for (const [obj, id] of watchers) {
+          try { obj.disconnect(id); } catch (_) { /* noop */ }
+        }
+        watchers.length = 0;
+      });
+      syncVisible();
+
+      // Geometry follows the real actor's allocation. Both live at the same
+      // origin (the background group is at 0,0 and so are we), so a straight
+      // BindConstraint is all that is needed — and it keeps tracking through
+      // monitor changes without any signal bookkeeping of our own.
+      mirror.set_position(child.x, child.y);
+      mirror.set_size(child.width, child.height);
+      // Four separate constraints, NOT BindCoordinate.ALL: Clutter 18's
+      // ClutterBindCoordinate enum only defines X, Y, WIDTH and HEIGHT (0-3).
+      // The POSITION/SIZE/ALL members that older Clutter had are gone, so
+      // `Clutter.BindCoordinate.ALL` is undefined here and would have bound
+      // nothing useful — leaving the mirror at 0x0, i.e. a glass with no
+      // wallpaper in it at all.
+      for (const coordinate of [
+        Clutter.BindCoordinate.X,
+        Clutter.BindCoordinate.Y,
+        Clutter.BindCoordinate.WIDTH,
+        Clutter.BindCoordinate.HEIGHT,
+      ]) {
+        mirror.add_constraint(new Clutter.BindConstraint({ source: child, coordinate }));
+      }
+
+      this._mirrors.set(child, mirror);
+      this.add_child(mirror);
+      // Keep our stacking identical to the group's: the shell's cross-fade
+      // relies on the incoming wallpaper sitting ABOVE the outgoing one.
+      this._restack();
+    }
+
+    _removeMirror(child: any): void {
+      const mirror = this._mirrors.get(child);
+      if (!mirror) return;
+      this._mirrors.delete(child);
+      if (isActorValid(mirror)) mirror.destroy();
+    }
+
+    _restack(): void {
+      if (!isActorValid(this._sourceGroup)) return;
+      let index = 0;
+      for (const child of this._sourceGroup.get_children()) {
+        const mirror = this._mirrors.get(child);
+        if (mirror && isActorValid(mirror)) this.set_child_at_index(mirror, index++);
+      }
+    }
+
+    _onDestroy(): void {
+      if (isActorValid(this._sourceGroup)) {
+        for (const id of this._groupHandlers) {
+          try { this._sourceGroup.disconnect(id); } catch (_) { /* noop */ }
+        }
+      }
+      this._groupHandlers = [];
+      this._mirrors.clear();
+      this._sourceGroup = null;
+    }
+
+    vfunc_pick(_pickContext: any): void {
+      // No-op: never respond to picking, exactly like UnpickableClone.
+    }
+  }
+);
+
+// [black-frame] A/B switch for the fix above. `true` clones our own
+// BackgroundMirror (uncalled MetaBackgroundContent, painted through a Clone so
+// paint_content takes its unconditional full-rect branch); `false` restores
+// the historical Clone of _backgroundGroup, which is what produced the black
+// frame. Default on.
+let _backgroundMirrorEnabled = true;
+export function setBackgroundMirrorEnabled(enabled: boolean): void {
+  _backgroundMirrorEnabled = !!enabled;
+}
+export function isBackgroundMirrorEnabled(): boolean {
+  return _backgroundMirrorEnabled;
+}
+
+// The single BackgroundMirror every glass clones.
+//
+// One shared source, not one per glass: the contents are identical, and
+// WindowCloneManager.rebuildClones() throws its wallpaper actor away and
+// builds a new one often enough that creating a MetaBackgroundContent (and
+// its Cogl pipeline) per rebuild was a real cost.
+let _sharedBackgroundSource: any = null;
+
+function ensureSharedBackgroundSource(): any {
+  if (isActorValid(_sharedBackgroundSource)) return _sharedBackgroundSource;
+  _sharedBackgroundSource = null;
+
+  const uiGroup = Main.layoutManager?.uiGroup ?? null;
+  const group = Main.layoutManager?._backgroundGroup ?? null;
+  if (!uiGroup || !group) return null;
+
+  const source: any = new BackgroundMirror();
+  source.set_name('lg-bg-mirror-source');
+  source.set_position(0, 0);
+  source.set_size(group.width, group.height);
+  // Track the group through monitor changes: every caller does
+  // clone.set_size(monitor...), and ClutterClone scales the source into that,
+  // so a stale source size would scale the wallpaper.
+  for (const coordinate of [Clutter.BindCoordinate.WIDTH, Clutter.BindCoordinate.HEIGHT]) {
+    try {
+      source.add_constraint(new Clutter.BindConstraint({ source: group, coordinate }));
+    } catch (e) {
+      utilsLog(`[bg-mirror] source size constraint failed: ${e}`);
+    }
+  }
+
+  // Opacity 0, NOT visible=false. clutter_actor_paint() bails out at the top
+  // on a zero paint opacity:
+  //
+  //     if (!CLUTTER_ACTOR_IS_TOPLEVEL (self) &&
+  //         ((priv->opacity_override >= 0) ? priv->opacity_override : priv->opacity) == 0)
+  //       return;
+  //
+  // so on the real screen this costs one comparison and draws nothing — while
+  // ClutterClone sets opacity_override to ITS OWN paint opacity before
+  // painting the source, so every glass still gets a fully opaque wallpaper.
+  // Hiding it instead would take it out of the mapped/allocated set and make
+  // the clones depend on the has_mapped_clones path, which is a far subtler
+  // contract to rely on.
+  source.opacity = 0;
+  source.reactive = false;
+
+  // uiGroup, deliberately: it is a sibling of global.window_group, so
+  // meta_window_group_paint()'s cull walk can never reach our contents.
+  uiGroup.add_child(source);
+  source.connect('destroy', () => {
+    if (_sharedBackgroundSource === source) _sharedBackgroundSource = null;
+  });
+
+  _sharedBackgroundSource = source;
+  return source;
+}
+
+/** The shared source if one exists; never creates one. */
+export function getSharedBackgroundSource(): any {
+  return isActorValid(_sharedBackgroundSource) ? _sharedBackgroundSource : null;
+}
+
+/** Tears the shared source down; call from the extension's disable(). */
+export function destroySharedBackgroundSource(): void {
+  const source = _sharedBackgroundSource;
+  _sharedBackgroundSource = null;
+  if (isActorValid(source)) {
+    try { source.destroy(); } catch (_) { /* noop */ }
+  }
+}
+
+/**
+ * Builds the wallpaper actor that sits at the back of a glass.
+ *
+ * Always a Clutter.Clone — see BackgroundMirror's comment for why painting
+ * the background content directly would put it back under the frame's damage
+ * region. What changes is WHAT is cloned: our own uncalled mirror normally,
+ * or the shell's _backgroundGroup when the A/B switch is off.
+ */
+export function createBackgroundMirror(name: string): Clutter.Actor {
+  let source: any = null;
+  if (_backgroundMirrorEnabled) {
+    try {
+      source = ensureSharedBackgroundSource();
+    } catch (e) {
+      utilsLog(`[bg-mirror] shared source unavailable, falling back: ${e}`);
+      source = null;
+    }
+  }
+  if (!source) source = Main.layoutManager._backgroundGroup;
+
+  const clone: any = new UnpickableClone({ source });
+  clone.set_name(name);
+  return clone;
+}
+
 
 /**
  * An St.Widget that never responds to picking, used purely to re-paint some
@@ -2013,6 +2795,12 @@ export class UILayerSampler {
         if (!isActorValid(child)) continue;
         if (child === this._selfActor || child === this._selfRoot) continue;
         if (child === Main.layoutManager._backgroundGroup) continue;
+        // [black-frame] Same reasoning as the line above: the shared wallpaper
+        // mirror lives in uiGroup so the window group's cull walk cannot reach
+        // it, but it IS the wallpaper. Every glass already clones it directly
+        // as its own bgClone, so letting the UI-layer sampler clone it too
+        // would paint the wallpaper into the UI layer a second time.
+        if (child === getSharedBackgroundSource()) continue;
         if (this._extraExclusions.has(child)) continue;
         if (dynamicExclusions.has(child)) continue;
         if (!child.visible || !child.mapped) continue;
@@ -2467,7 +3255,12 @@ export class WindowCloneManager {
 
   private windowClonesContainer: Clutter.Actor | null = null;
   private _windowClones: Map<Clutter.Actor, Clutter.Clone>;
-  private bgClone: Clutter.Clone | null = null;
+  // [nested-glass] MetaWindowActor::damaged handlers on the cloned windows
+  // that own a glass. See NestedGlassFix and _syncDamageHooks().
+  private _damageHooks: Map<any, number> = new Map();
+  // [black-frame] A BackgroundMirror, or (A/B off) an UnpickableClone of
+  // _backgroundGroup. Typed as the common base so either fits.
+  private bgClone: Clutter.Actor | null = null;
 
   private container: Clutter.Actor | null = null;
   private cloneContainer: Clutter.Actor | null = null;
@@ -2485,8 +3278,10 @@ export class WindowCloneManager {
     this.label = label;
     this._windowClones = new Map();
 
-    this.bgClone = new UnpickableClone({ source: Main.layoutManager._backgroundGroup });
-    this.bgClone.set_name(`${this.label}-bgclone`);
+    // [black-frame] Not a Clone of _backgroundGroup any more — see
+    // BackgroundMirror for why cloning it made the wallpaper paint only
+    // inside the current frame's damage region.
+    this.bgClone = createBackgroundMirror(`${this.label}-bgclone`);
     this.bgClone.connect('destroy', () => { this.bgClone = null; });
 
     this.windowClonesContainer = new UnpickableActor();
@@ -2520,8 +3315,10 @@ export class WindowCloneManager {
     // outright rather than relying on that.
     this._windowClones.clear();
 
-    this.bgClone = new UnpickableClone({ source: Main.layoutManager._backgroundGroup });
-    this.bgClone.set_name(`${this.label}-bgclone`);
+    // [black-frame] Not a Clone of _backgroundGroup any more — see
+    // BackgroundMirror for why cloning it made the wallpaper paint only
+    // inside the current frame's damage region.
+    this.bgClone = createBackgroundMirror(`${this.label}-bgclone`);
     this.bgClone.connect('destroy', () => { this.bgClone = null; });
 
     this.windowClonesContainer = new UnpickableActor();
@@ -2598,7 +3395,59 @@ export class WindowCloneManager {
     }
   }
 
+  /**
+   * The nested-glass repair, for every glass that is not an application
+   * window's — the dock, the menus, notifications, the OSD, quick settings.
+   *
+   * They clone windows exactly like ApplicationManager does, so they take the
+   * same damage: a cloned window that owns a glass drags its offscreen effect
+   * in, and this glass's capture is blanked the moment that inner effect
+   * re-renders. It shows up as "the area outside the black ring goes black
+   * for an instant whenever a menu or the dock appears".
+   *
+   * MetaWindowActor::damaged runs while damage is being processed, before the
+   * frame clock paints, so marking this glass dirty from it lands on the same
+   * frame the inner effect re-renders — see ApplicationManager's copy for the
+   * measurements behind choosing this over the other two repairs.
+   */
+  private _syncDamageHooks(): void {
+    const container = this.container;
+    if (getNestedGlassFix() !== 'damage' || !container || !isActorValid(container)) {
+      this._releaseDamageHooks();
+      return;
+    }
+
+    for (const src of this._windowClones.keys()) {
+      if (this._damageHooks.has(src)) continue;
+      if (!isActorValid(src) || !innerGlassEffectOf(src)) continue;
+      try {
+        const id = (src as any).connect('damaged', () => {
+          if (isActorValid(container) && container.mapped && container.visible)
+            container.queue_redraw();
+        });
+        this._damageHooks.set(src, id);
+      } catch (_) { /* a source that cannot be connected simply goes unhooked */ }
+    }
+
+    if (this._damageHooks.size > this._windowClones.size) {
+      for (const [src, id] of [...this._damageHooks]) {
+        if (this._windowClones.has(src)) continue;
+        try { if (isActorValid(src)) (src as any).disconnect(id); } catch (_) { }
+        this._damageHooks.delete(src);
+      }
+    }
+  }
+
+  private _releaseDamageHooks(): void {
+    if (this._damageHooks.size === 0) return;
+    for (const [src, id] of this._damageHooks) {
+      try { if (isActorValid(src)) (src as any).disconnect(id); } catch (_) { }
+    }
+    this._damageHooks.clear();
+  }
+
   sync() {
+    this._syncDamageHooks();
     let windows = getWindowActors();
     let activeWindows = new Set();
     let zIndex = 0;
@@ -2788,6 +3637,11 @@ export class WindowCloneManager {
   }
 
   destroy() {
+    // First: these live on Mutter's own window actors, which outlive this
+    // manager. A missed disconnect keeps the closure, and the container with
+    // it, alive against a destroyed glass.
+    this._releaseDamageHooks();
+
     if (isActorValid(this.windowClonesContainer)) {
       try { this.windowClonesContainer!.destroy(); } catch (_) { /* noop */ }
     }

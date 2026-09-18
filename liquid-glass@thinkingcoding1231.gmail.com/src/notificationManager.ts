@@ -18,6 +18,8 @@ import {
   isFrameSyncFrozen,
   setClipIfChanged,
   syncGlassCaptureClip,
+  resolveCrossFade,
+  adaptiveColorTweener,
 } from './utils.js';
 
 import { Logger } from './logger.js';
@@ -653,30 +655,29 @@ export class NotificationManager {
     return this._findAllTextActors(actor);
   }
 
-  _setActorColor(actor: CustomBannerActor, color: string, skipAnimations = false) {
+  _setActorColor(actor: CustomBannerActor, color: string, skipAnimations = false, batchStart?: number) {
     if (!actor || typeof actor.set_style !== 'function') return;
     if (!this._styledActors.has(actor)) {
       this._styledActors.set(actor, actor.get_style() || '');
       actor.connect('destroy', () => {
-        if (actor._colorTweenId) GLib.source_remove(actor._colorTweenId);
-        actor._colorTweenId = undefined;
+        adaptiveColorTweener.cancel(actor);
         this._styledActors.delete(actor);
       });
     }
     if (actor._currentTargetColor === color) return;
-    // Interpolating light to dark passes through the background's own grey.
-    const changesPolarity = actor._currentTargetColor !== color;
+    // A light<->dark flip used to be snapped here, because interpolating the
+    // two in RGB passes through the background's own grey and the label
+    // disappears mid-tween. _animateActorColor() now cross-dissolves that case
+    // instead (see crossFadeColorAt() in utils.ts), so it is animated like any
+    // other change.
     actor._currentTargetColor = color;
-    this._animateActorColor(actor, color, 380, skipAnimations || changesPolarity);
+    this._animateActorColor(actor, color, 380, skipAnimations, batchStart);
   }
 
   _clearAdaptiveStyles() {
     for (const [actor, style] of this._styledActors.entries() as MapIterator<[CustomBannerActor, string]>) {
       if (actor && typeof actor.set_style === 'function') {
-        if (actor._colorTweenId !== undefined) {
-          GLib.source_remove(actor._colorTweenId);
-          actor._colorTweenId = undefined;
-        }
+        adaptiveColorTweener.cancel(actor);
         actor._currentTargetColor = undefined;
         actor.remove_style_class_name('adaptive-text-transition');
         actor.remove_style_class_name('adaptive-color-light');
@@ -689,8 +690,10 @@ export class NotificationManager {
 
   _applyAdaptiveColorMap(colorMap: Map<Clutter.Actor, string>, skipAnimations = false) {
     if (!colorMap || colorMap.size === 0) return;
+    // One timestamp for the whole map, so every label in the banner flips together.
+    const batchStart = GLib.get_monotonic_time();
     for (const [actor, color] of colorMap.entries()) {
-      this._setActorColor(actor as unknown as CustomBannerActor, color, skipAnimations);
+      this._setActorColor(actor as unknown as CustomBannerActor, color, skipAnimations, batchStart);
     }
   }
 
@@ -771,47 +774,43 @@ export class NotificationManager {
     return '#' + (1 << 24 | r << 16 | g << 8 | b).toString(16).slice(1);
   }
 
-  _animateActorColor(actor: CustomBannerActor, targetHexColor: string, durationMs = 380, skipAnimations = false) {
+  _animateActorColor(actor: CustomBannerActor, targetHexColor: string, durationMs = 380,
+    skipAnimations = false, batchStart?: number) {
     if (!actor || Object.keys(actor).length === 0) return;
 
-    if (actor._colorTweenId) {
-      GLib.source_remove(actor._colorTweenId);
-      actor._colorTweenId = undefined;
-    }
-
+    // NOT cancelled here: add() below reads the entry this may already have,
+    // so that an interrupted tween restarts from the colour that is actually
+    // on screen rather than from a theme node St has not re-resolved yet.
+    // The snap path does cancel, because nothing should keep stepping after it.
     const originalStyle = (this._styledActors.get(actor) || '').trim();
     const stylePrefix = originalStyle ? `${originalStyle.replace(/;$/, '')}; ` : '';
     let themeNode = actor.get_theme_node();
     let startColor = themeNode.get_foreground_color();
     let targetRgb = this._hexToRgb(targetHexColor);
-    let startTime = GLib.get_monotonic_time();
+
+    const apply = (r: number, g: number, b: number, a: number) => {
+      const rgba = `rgba(${r}, ${g}, ${b}, ${a.toFixed(3)})`;
+      try { actor.set_style(`${stylePrefix}color: ${rgba}; -st-icon-foreground-color: ${rgba};`); } catch (e) { }
+    };
 
     if (skipAnimations) {
-      actor.set_style(`${stylePrefix}color: ${targetHexColor}; -st-icon-foreground-color: ${targetHexColor};`);
+      adaptiveColorTweener.cancel(actor);
+      try { actor.set_style(`${stylePrefix}color: ${targetHexColor}; -st-icon-foreground-color: ${targetHexColor};`); } catch (e) { }
       return;
     }
 
-    actor._colorTweenId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 16, () => {
-      if (!actor || Object.keys(actor).length === 0) return GLib.SOURCE_REMOVE;
+    const startRgb = { r: startColor.red, g: startColor.green, b: startColor.blue };
+    const startAlpha = startColor.alpha / 255.0;
 
-      let currentTime = GLib.get_monotonic_time();
-      let elapsedMs = (currentTime - startTime) / 1000;
-      let progress = Math.min(elapsedMs / durationMs, 1.0);
-      let ease = progress < 0.5
-        ? 2 * progress * progress
-        : 1 - Math.pow(-2 * progress + 2, 2) / 2;
-
-      let r = Math.round(startColor.red + (targetRgb.r - startColor.red) * ease);
-      let g = Math.round(startColor.green + (targetRgb.g - startColor.green) * ease);
-      let b = Math.round(startColor.blue + (targetRgb.b - startColor.blue) * ease);
-      actor.set_style(`${stylePrefix}color: ${this._rgbToHex(r, g, b)}; -st-icon-foreground-color: ${this._rgbToHex(r, g, b)};`);
-
-      if (progress >= 1.0) {
-        actor._colorTweenId = undefined;
-        return GLib.SOURCE_REMOVE;
-      }
-      return GLib.SOURCE_CONTINUE;
-    });
+    // One shared frame-clock driver, one shared start time per batch — see
+    // AdaptiveColorTweener in utils.ts for why this is not a per-actor timer.
+    adaptiveColorTweener.add(actor, {
+      startRgb, startAlpha,
+      targetRgb, targetAlpha: 1.0,
+      crossFade: resolveCrossFade(startRgb, targetRgb),
+      durationMs,
+      apply,
+    }, batchStart);
   }
 
   _hasStyleClass(actor: St.Widget, className: string) {

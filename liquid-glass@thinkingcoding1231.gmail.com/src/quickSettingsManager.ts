@@ -19,7 +19,8 @@ import {
   LayoutOpaqueActor,
   UnpickableStyledWidget,
   getAllocatedSize,
-  getTransformedRect, isFrameSyncFrozen, setClipIfChanged, syncGlassCaptureClip } from './utils.js';
+  getTransformedRect, isFrameSyncFrozen, setClipIfChanged, syncGlassCaptureClip,
+  resolveCrossFade, adaptiveColorTweener } from './utils.js';
 
 import { Logger } from './logger.js';
 
@@ -2433,7 +2434,7 @@ export class QuickSettingsManager {
   }
 
   // Initiates the color change for a specific actor
-  _setActorColor(actor: CustomBannerActor, color: string, skipAnimations = false) {
+  _setActorColor(actor: CustomBannerActor, color: string, skipAnimations = false, batchStart?: number) {
     if (!actor || typeof actor.set_style !== 'function') return;
 
     if (!this._styledActors.has(actor)) {
@@ -2441,10 +2442,7 @@ export class QuickSettingsManager {
       this._styledActors.set(actor, origStyle || '');
 
       actor.connect('destroy', () => {
-        if (actor._colorTweenId) {
-          GLib.source_remove(actor._colorTweenId);
-          actor._colorTweenId = undefined;
-        }
+        adaptiveColorTweener.cancel(actor);
         this._styledActors.delete(actor);
       });
     }
@@ -2456,21 +2454,21 @@ export class QuickSettingsManager {
     }
 
     if (actor._currentTargetColor === color && actor._currentInsensitiveState === isInsensitive) return;
-    // Interpolating light to dark passes through the background's own grey.
-    const changesPolarity = actor._currentTargetColor !== color;
+    // A light<->dark flip used to be snapped here, because interpolating the
+    // two in RGB passes through the background's own grey and the label
+    // disappears mid-tween. _animateActorColor() now cross-dissolves that case
+    // instead (see crossFadeColorAt() in utils.ts), so it is animated like any
+    // other change.
     actor._currentTargetColor = color;
     actor._currentInsensitiveState = isInsensitive;
 
-    this._animateActorColor(actor, color, isInsensitive, 380, skipAnimations || changesPolarity);
+    this._animateActorColor(actor, color, isInsensitive, 380, skipAnimations, batchStart);
   }
 
   _clearAdaptiveStyles() {
     for (const [actor, originalStyle] of this._styledActors.entries() as MapIterator<[CustomBannerActor, string]>) {
       if (actor && typeof actor.set_style === 'function') {
-        if (actor._colorTweenId) {
-          GLib.source_remove(actor._colorTweenId);
-          actor._colorTweenId = undefined;
-        }
+        adaptiveColorTweener.cancel(actor);
         actor._currentTargetColor = undefined;
         actor._currentInsensitiveState = undefined;
         actor.remove_style_class_name('adaptive-text-transition');
@@ -2486,8 +2484,11 @@ export class QuickSettingsManager {
   // Iterates through the color map and applies the new target colors to the respective actors
   _applyAdaptiveColorMap(colorMap: Map<Clutter.Actor, string>, skipAnimations = false) {
     if (!colorMap || colorMap.size === 0) return;
+    // One timestamp for the whole map, so every actor that flips in this round
+    // runs off the same clock and the toggles move as one.
+    const batchStart = GLib.get_monotonic_time();
     for (const [actor, color] of colorMap.entries()) {
-      this._setActorColor(actor as unknown as CustomBannerActor, color, skipAnimations);
+      this._setActorColor(actor as unknown as CustomBannerActor, color, skipAnimations, batchStart);
     }
   }
 
@@ -2550,14 +2551,14 @@ export class QuickSettingsManager {
     return '#' + (1 << 24 | r << 16 | g << 8 | b).toString(16).slice(1);
   }
 
-  _animateActorColor(actor: CustomBannerActor, targetHexColor: string, isInsensitive: boolean, durationMs = 380, skipAnimations = false) {
+  _animateActorColor(actor: CustomBannerActor, targetHexColor: string, isInsensitive: boolean,
+    durationMs = 380, skipAnimations = false, batchStart?: number) {
     if (!actor || Object.keys(actor).length === 0) return;
 
-    if (actor._colorTweenId) {
-      GLib.source_remove(actor._colorTweenId);
-      actor._colorTweenId = undefined;
-    }
-
+    // NOT cancelled here: add() below reads the entry this may already have,
+    // so that an interrupted tween restarts from the colour that is actually
+    // on screen rather than from a theme node St has not re-resolved yet.
+    // The snap path does cancel, because nothing should keep stepping after it.
     const originalStyle = (this._styledActors.get(actor) || '').trim();
     const stylePrefix = originalStyle ? `${originalStyle.replace(/;$/, '')}; ` : '';
     let themeNode = actor.get_theme_node();
@@ -2566,46 +2567,28 @@ export class QuickSettingsManager {
     let targetAlpha = isInsensitive ? 0.5 : 1.0;
     let startAlpha = startColor.alpha / 255.0;
 
+    // Override text color and icon foreground color directly using inline CSS
+    const apply = (r: number, g: number, b: number, a: number) => {
+      const rgba = `rgba(${r}, ${g}, ${b}, ${a.toFixed(3)})`;
+      try { actor.set_style(`${stylePrefix}color: ${rgba}; -st-icon-foreground-color: ${rgba};`); } catch (e) { }
+    };
+
     if (skipAnimations) {
-      let alphaStr = targetAlpha.toFixed(3);
-      let targetRgba = `rgba(${targetRgb.r}, ${targetRgb.g}, ${targetRgb.b}, ${alphaStr})`;
-      actor.set_style(`${stylePrefix}color: ${targetRgba}; -st-icon-foreground-color: ${targetRgba};`);
+      adaptiveColorTweener.cancel(actor);
+      apply(targetRgb.r, targetRgb.g, targetRgb.b, targetAlpha);
       return;
     }
 
-    let startTime = GLib.get_monotonic_time();
-
-    actor._colorTweenId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 32, () => {
-      if (!actor || Object.keys(actor).length === 0) return GLib.SOURCE_REMOVE;
-
-      let currentTime = GLib.get_monotonic_time();
-      let elapsedMs = (currentTime - startTime) / 1000;
-      let progress = Math.min(elapsedMs / durationMs, 1.0);
-      // Standard ease-in-out easing function
-      let ease = progress < 0.5
-        ? 2 * progress * progress
-        : 1 - Math.pow(-2 * progress + 2, 2) / 2;
-
-      // Linearly interpolate (lerp) each RGB channel individually
-      let r = Math.round(startColor.red + (targetRgb.r - startColor.red) * ease);
-      let g = Math.round(startColor.green + (targetRgb.g - startColor.green) * ease);
-      let b = Math.round(startColor.blue + (targetRgb.b - startColor.blue) * ease);
-
-      // Interpolate the alpha value and generate the rgba() format
-      // Safely clamp between 0.0 and 1.0
-      let a = Math.max(0.0, Math.min(1.0, startAlpha + (targetAlpha - startAlpha) * ease));
-      // Up to 3 decimal places for CSS
-      let currentRgba = `rgba(${r}, ${g}, ${b}, ${a.toFixed(3)})`;
-
-      // Override text color and icon foreground color directly using inline CSS
-      actor.set_style(`${stylePrefix}color: ${currentRgba}; -st-icon-foreground-color: ${currentRgba};`);
-
-      if (progress >= 1.0) {
-        actor._colorTweenId = undefined;
-        return GLib.SOURCE_REMOVE;
-      }
-      return GLib.SOURCE_CONTINUE;
-    });
+    const startRgb = { r: startColor.red, g: startColor.green, b: startColor.blue };
+    // One shared frame-clock driver, one shared start time per batch — see
+    // AdaptiveColorTweener in utils.ts for why this is not a per-actor timer.
+    adaptiveColorTweener.add(actor, {
+      startRgb, startAlpha,
+      targetRgb, targetAlpha,
+      crossFade: resolveCrossFade(startRgb, targetRgb),
+      durationMs,
+      apply,
+    }, batchStart);
   }
 
   // ── Button alpha sampling (QuickSettings-specific) ─────────────────────────

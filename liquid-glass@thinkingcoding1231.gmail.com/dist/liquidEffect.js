@@ -118,7 +118,7 @@ import Clutter from 'gi://Clutter';
 import Cogl from 'gi://Cogl';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
-import { setBmsMode, BMS_MODE, computeCaptureLayout, setFrameSyncFrozen, isFrameSyncFrozen, setDiffWritesEnabled, isDiffWritesEnabled, setCaptureClipEnabled, isCaptureClipEnabled, setCloneCullEnabled, isCloneCullEnabled, setCullSiteEnabled, isCullSiteEnabled } from './utils.js';
+import { setBmsMode, BMS_MODE, computeCaptureLayout, setFrameSyncFrozen, isFrameSyncFrozen, setDiffWritesEnabled, isDiffWritesEnabled, setCaptureClipEnabled, isCaptureClipEnabled, setCloneCullEnabled, isCloneCullEnabled, setCullSiteEnabled, isCullSiteEnabled, setAdaptiveColorMode, getAdaptiveColorMode, setNestedGlassFix, getNestedGlassFix, setFocusDebugEnabled, isFocusDebugEnabled, setBackgroundMirrorEnabled, isBackgroundMirrorEnabled } from './utils.js';
 // ─── Looking Glass diagnostics ───────────────────────────────────────────────
 //
 // Every live LiquidEffect registers itself here so its last resolved frame
@@ -246,6 +246,59 @@ function _registerGlassDebugHooks() {
             return msg;
         },
         syncFrozen: () => isFrameSyncFrozen(),
+        // A/B switch for how the adaptive text colour gets from one colour to the
+        // other. 'cross-fade' (default) dissolves through alpha so a white<->black
+        // flip never sits at mid-grey; 'rgb-lerp' is the plain channel
+        // interpolation, which does. Both run on the same shared frame-clock
+        // driver, so this changes the curve and nothing else.
+        textColorMode: (mode) => {
+            const m = mode === 'rgb-lerp' ? 'rgb-lerp' : 'cross-fade';
+            setAdaptiveColorMode(m);
+            const msg = `[Liquid Glass] adaptive text colour mode = ${m}`;
+            console.log(msg);
+            return msg;
+        },
+        textColorModeName: () => getAdaptiveColorMode(),
+        // A/B switch for the nested-glass repair. 'off' is the behaviour with the
+        // bug (a glass that clones a glassed window latches to black when that
+        // inner glass re-renders); 'recapture' never reuses the outer capture;
+        // 'propagate' repairs only after an inner re-render, one frame late.
+        // See NestedGlassFix in utils.ts for the measurements behind this.
+        nestedFix: (mode) => {
+            const m = mode;
+            setNestedGlassFix(m);
+            const msg = `[Liquid Glass] nested-glass repair = ${m}`;
+            console.log(msg);
+            return msg;
+        },
+        nestedFixMode: () => getNestedGlassFix(),
+        // [black-frame] A/B switch for the actual fix: true (default) gives every
+        // glass its own Meta.BackgroundContent instead of cloning
+        // _backgroundGroup, so the wallpaper no longer inherits the real
+        // background actor's per-frame damage-region culling. false restores the
+        // Clutter.Clone that produced the black frame.
+        //
+        // Only affects glass created AFTER the switch — toggle the extension off
+        // and on (not a re-login; that is only needed for new CODE) to rebuild
+        // the existing ones.
+        bgMirror: (on) => {
+            setBackgroundMirrorEnabled(on);
+            const msg = `[Liquid Glass] background mirror ${on ? 'ENABLED' : 'disabled'} ` +
+                '(toggle the extension off/on to rebuild existing glass)';
+            console.log(msg);
+            return msg;
+        },
+        bgMirrorEnabled: () => isBackgroundMirrorEnabled(),
+        // The clone-placement diagnostic. OFF by default: left armed it wrote
+        // ~400 journal lines a second from the compositor's main thread and hung
+        // the shell (2026-09-17). See setFocusDebugEnabled() in utils.ts.
+        focusDebug: (on) => {
+            setFocusDebugEnabled(on);
+            const msg = `[Liquid Glass] focus-debug logging ${on ? 'ENABLED' : 'disabled'}`;
+            console.log(msg);
+            return msg;
+        },
+        focusDebugEnabled: () => isFocusDebugEnabled(),
         // [PERF] A/B switch for compare-then-write in every per-frame sync loop
         // (the "idle gating" of memo ④). true (default) = a clone property is
         // only written when its value actually changed; false = the old
@@ -588,6 +641,7 @@ export const LiquidEffect = GObject.registerClass({
         this._blurDownscale = 2;
         this._blurRuns = 0;
         this._blurSkips = 0;
+        this._recaptureSerial = 0;
         _ensureFrameSerialHook();
         this._uvMismatchWarned = false;
         this._passPipelines = new Map();
@@ -1190,6 +1244,19 @@ export const LiquidEffect = GObject.registerClass({
      * @param _paintNode   Clutter's paint node (new signature since GNOME 45+)
      * @param paintContext Current paint context, holding a reference to the on-screen framebuffer
      */
+    /**
+     * Overrides Clutter.Effect's paint hook purely to observe the dirty flag.
+     *
+     * ACTOR_DIRTY is the only place the "the offscreen is about to be
+     * re-rendered" fact is visible from JS: vfunc_paint_target() runs on every
+     * paint, cached or not, so it cannot tell the two apart. Everything else is
+     * left to the base class.
+     */
+    vfunc_paint(node, paintContext, flags) {
+        if (flags & Clutter.EffectPaintFlags.ACTOR_DIRTY)
+            this._recaptureSerial++;
+        super.vfunc_paint(node, paintContext, flags);
+    }
     vfunc_paint_target(_paintNode, paintContext) {
         // ── [DIAG] Black-background investigation ──────────────────────────────
         // If Clutter culls/skips this actor entirely (e.g. because it decides

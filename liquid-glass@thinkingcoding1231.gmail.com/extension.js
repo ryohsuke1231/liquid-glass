@@ -9,7 +9,7 @@ import { OsdManager } from './dist/osdManager.js';
 import { ApplicationManager } from './dist/applicationManager.js';
 import { WindowListService } from './dist/windowListService.js';
 import { Logger } from './dist/logger.js';
-import { setUtilsLogger } from './dist/utils.js';
+import { setUtilsLogger, adaptiveColorTweener, destroySharedBackgroundSource } from './dist/utils.js';
 import GLib from 'gi://GLib';
 
 const DASH_RESCAN_IDLE_TICKS = 2;
@@ -273,6 +273,15 @@ export default class LiquidGlassExtension extends Extension {
     // will not turn it back on: that is the "it can no longer be enabled"
     // symptom, and it is reached without a single line of ours in the log.
     this._logger?.log(`[Liquid Glass] Disabling...`);
+
+    // The adaptive-colour tween clock is module state shared by every manager,
+    // so it outlives them. Each manager's _clearAdaptiveStyles() cancels its
+    // own actors, but a manager that never got that far would leave entries
+    // behind holding a BEFORE_REDRAW chain alive against dead actors.
+    try { adaptiveColorTweener.stopAll(); } catch (e) { }
+    // [black-frame] The shared wallpaper mirror is parented to uiGroup and is
+    // not owned by any manager, so nothing else would take it down.
+    try { destroySharedBackgroundSource(); } catch (e) { }
 
     if (this._quickSettingsTimeoutId && this._quickSettingsTimeoutId !== 0) {
       GLib.Source.remove(this._quickSettingsTimeoutId);
