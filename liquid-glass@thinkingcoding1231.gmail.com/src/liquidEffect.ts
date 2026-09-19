@@ -119,12 +119,19 @@ import Clutter from 'gi://Clutter';
 import Cogl from 'gi://Cogl';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
+import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
 import { Logger } from './logger.js';
 import { setBmsMode, BMS_MODE, computeCaptureLayout, setFrameSyncFrozen, isFrameSyncFrozen,
   setDiffWritesEnabled, isDiffWritesEnabled,
   setCaptureClipEnabled, isCaptureClipEnabled, setCloneCullEnabled, isCloneCullEnabled,
-  setCullSiteEnabled, isCullSiteEnabled } from './utils.js';
+  setCullSiteEnabled, isCullSiteEnabled,
+  setAdaptiveColorMode, getAdaptiveColorMode, AdaptiveColorMode,
+  setNestedGlassFix, getNestedGlassFix, NestedGlassFix,
+  setFocusDebugEnabled, isFocusDebugEnabled,
+  setBackgroundMirrorEnabled, isBackgroundMirrorEnabled,
+  setCullOptOutEnabled, isCullOptOutEnabled,
+  setWindowActorRescueMode, getWindowActorRescueMode, WindowActorRescueMode } from './utils.js';
 
 // ─── Looking Glass diagnostics ───────────────────────────────────────────────
 //
@@ -200,6 +207,157 @@ function _releaseFrameSerialHook(): void {
   _frameSerialHandler = 0;
 }
 
+/**
+ * [anim-stall] A rolling in-memory record of what every window glass is doing,
+ * flushed to the journal only when asked.
+ *
+ * The fault this exists for is rare and has no known trigger, and a capture
+ * that starts AFTER it is noticed necessarily misses the one thing worth
+ * seeing: the frames where a perfectly normal animation turns into a stuck
+ * one. Logging continuously to the journal instead is not an option -- an
+ * earlier version of this extension hung the compositor by doing exactly that
+ * (journald backpressure on the main thread).
+ *
+ * So: sample cheaply into a ring buffer, write nothing, and dump the buffer
+ * when the capture key is pressed. Pressing it just after seeing the glitch
+ * then yields the seconds LEADING UP TO it.
+ *
+ * Kept small on purpose:
+ *   - only the fields that separate a healthy animation from a stuck one;
+ *   - a sample is stored only when a window's line actually CHANGED, so an
+ *     idle desktop costs one string compare per window per tick and the
+ *     buffer keeps spanning back to the last thing that moved;
+ *   - RING_MAX caps the memory regardless.
+ */
+const RING_MAX = 4000;
+const _ring: string[] = [];
+let _ringLast: Map<any, string> = new Map();
+
+function _ringSampleOnce(): void {
+  const t = GLib.get_monotonic_time();
+  for (const fx of _liveEffects) {
+    if (fx._owner !== 'application') continue;
+    let line = '';
+    try {
+      const a: any = fx.get_actor();
+      if (!a) continue;
+      const wa: any = a.get_parent();
+      if (!wa) continue;
+      const trOp: any = wa.get_transition ? wa.get_transition('opacity') : null;
+      const mw = wa.get_meta_window ? wa.get_meta_window() : null;
+      line =
+        `${fx._diagOwnerLabel || '?'}|sc=${wa.scale_x.toFixed(3)},${wa.scale_y.toFixed(3)}` +
+        `|op=${wa.opacity}|pos=${Math.round(wa.x)},${Math.round(wa.y)}` +
+        `|map=${wa.mapped ? 1 : 0}|alloc=${wa.has_allocation() ? 1 : 0}` +
+        `|gAlloc=${a.has_allocation() ? 1 : 0}|gPos=${Math.round(a.x)},${Math.round(a.y)}` +
+        `|gSize=${Math.round(a.width)}x${Math.round(a.height)}` +
+        `|min=${mw && mw.minimized ? 1 : 0}` +
+        // [anim-stall] The window GROUP's allocation is the variable the whole
+        // diagnosis turns on -- being stranded means glass, window actor AND
+        // the group all have needs_allocation, and it is the group being in
+        // that state that swallows every repair request raised from inside the
+        // chain. The ring was recording everything except it.
+        `|wgAlloc=${(() => { const wg: any = wa.get_parent();
+          return wg ? (wg.has_allocation() ? 1 : 0) : '-'; })()}` +
+        `|views=${(wa.peek_stage_views() || []).length}` +
+        (trOp
+          ? `|tr=${trOp.is_playing() ? 'play' : 'stop'},${trOp.get_progress().toFixed(3)},` +
+            `${trOp.get_frame_clock() ? 'clk' : 'NOCLK'}`
+          : '|tr=-');
+    } catch (_) {
+      continue;
+    }
+    if (_ringLast.get(fx) === line) continue;
+    _ringLast.set(fx, line);
+    _ring.push(`${t} ${line}`);
+    if (_ring.length > RING_MAX) _ring.shift();
+  }
+}
+
+/**
+ * [anim-stall] Flushes the ring the first few times the stranded state is
+ * ENTERED, without anyone having to press anything.
+ *
+ * The exit fix means the chain now recovers in a few frames, so the user has
+ * nothing to react to -- but the entry still happens tens of times a minute
+ * (35 relayouts and 16 remaps in one healthy 60s capture). Waiting for a
+ * latch that no longer forms would be waiting for the wrong event; the entry
+ * is already abundant, and it is the entry we do not understand.
+ *
+ * Capped, because this writes to the journal: a diagnostic that fires without
+ * a limit is how this extension hung the compositor once before.
+ */
+let _autoCaptures = 0;
+const AUTO_CAPTURE_LIMIT = 6;
+
+export function noteStrandEntry(label: string, detail: string): void {
+  // Disarmed by default: nothing is sampled and nothing is written unless the
+  // recorder was switched on for an investigation.
+  if (!_ringArmed) return;
+  if (_autoCaptures >= AUTO_CAPTURE_LIMIT) return;
+  _autoCaptures++;
+  console.log(`[Liquid Glass][ring] AUTO-CAPTURE ${_autoCaptures}/${AUTO_CAPTURE_LIMIT} ` +
+    `on strand entry for "${label}" — ${detail}`);
+  try { flushGlassRing(); } catch (e) { console.error(`[Liquid Glass][ring] ${e}`); }
+}
+
+// Off unless an investigation switches it on: a 20Hz timer that exists only
+// for a fault which is now mitigated has no business running on every desktop.
+// global._lgGlass.ring(true) arms it; Ctrl+Alt+L then flushes whatever it holds.
+let _ringArmed = false;
+
+export function setGlassRingArmed(armed: boolean): void {
+  _ringArmed = !!armed;
+  if (!_ringArmed) {
+    _ring.length = 0;
+    _ringLast = new Map();
+    _autoCaptures = 0;
+  }
+}
+export function isGlassRingArmed(): boolean {
+  return _ringArmed;
+}
+
+/** Starts the sampler. Returns the GLib source id so disable() can stop it. */
+export function startGlassRingSampler(intervalMs: number = 50): number {
+  return GLib.timeout_add(GLib.PRIORITY_DEFAULT_IDLE, intervalMs, () => {
+    if (!_ringArmed) return GLib.SOURCE_CONTINUE;
+    try { _ringSampleOnce(); } catch (_) { /* never let this kill the source */ }
+    return GLib.SOURCE_CONTINUE;
+  });
+}
+
+/** Writes the ring buffer out and clears it. */
+export function flushGlassRing(): void {
+  if (!_ring.length) {
+    console.log('[Liquid Glass][ring] empty');
+    return;
+  }
+  const t0 = parseInt(_ring[0].split(' ')[0], 10);
+  const tN = parseInt(_ring[_ring.length - 1].split(' ')[0], 10);
+  const lines = _ring.map(r => {
+    const sp = r.indexOf(' ');
+    const ms = Math.round((parseInt(r.slice(0, sp), 10) - t0) / 1000);
+    return `+${String(ms).padStart(6)}ms ${r.slice(sp + 1)}`;
+  });
+
+  // Chunked, NOT one giant message: journald truncates an over-long line, and
+  // a flood of tiny ones is what hung the compositor once before (backpressure
+  // on the main thread). A few dozen medium messages is neither.
+  const CHUNK = 150;
+  const total = Math.ceil(lines.length / CHUNK);
+  console.log(`[Liquid Glass][ring] BEGIN ${lines.length} samples spanning ` +
+    `${Math.round((tN - t0) / 1000)}ms in ${total} chunk(s)`);
+  for (let i = 0; i < total; i++) {
+    console.log(`[Liquid Glass][ring] ${i + 1}/${total}\n` +
+      lines.slice(i * CHUNK, (i + 1) * CHUNK).join('\n'));
+  }
+  console.log('[Liquid Glass][ring] END');
+
+  _ring.length = 0;
+  _ringLast = new Map();
+}
+
 function _registerGlassDebugHooks(): void {
   const g = globalThis as any;
   if (!g.global || g.global._lgGlass) return;
@@ -244,6 +402,107 @@ function _registerGlassDebugHooks(): void {
       return msg;
     },
     syncFrozen: () => isFrameSyncFrozen(),
+
+    // A/B switch for how the adaptive text colour gets from one colour to the
+    // other. 'cross-fade' (default) dissolves through alpha so a white<->black
+    // flip never sits at mid-grey; 'rgb-lerp' is the plain channel
+    // interpolation, which does. Both run on the same shared frame-clock
+    // driver, so this changes the curve and nothing else.
+    textColorMode: (mode: string) => {
+      const m: AdaptiveColorMode = mode === 'rgb-lerp' ? 'rgb-lerp' : 'cross-fade';
+      setAdaptiveColorMode(m);
+      const msg = `[Liquid Glass] adaptive text colour mode = ${m}`;
+      console.log(msg);
+      return msg;
+    },
+    textColorModeName: () => getAdaptiveColorMode(),
+
+    // A/B switch for the nested-glass repair. 'off' is the behaviour with the
+    // bug (a glass that clones a glassed window latches to black when that
+    // inner glass re-renders); 'recapture' never reuses the outer capture;
+    // 'propagate' repairs only after an inner re-render, one frame late.
+    // See NestedGlassFix in utils.ts for the measurements behind this.
+    nestedFix: (mode: string) => {
+      const m = mode as NestedGlassFix;
+      setNestedGlassFix(m);
+      const msg = `[Liquid Glass] nested-glass repair = ${m}`;
+      console.log(msg);
+      return msg;
+    },
+    nestedFixMode: () => getNestedGlassFix(),
+
+    // [black-frame] A/B switch for the actual fix: true (default) gives every
+    // glass its own Meta.BackgroundContent instead of cloning
+    // _backgroundGroup, so the wallpaper no longer inherits the real
+    // background actor's per-frame damage-region culling. false restores the
+    // Clutter.Clone that produced the black frame.
+    //
+    // Only affects glass created AFTER the switch — toggle the extension off
+    // and on (not a re-login; that is only needed for new CODE) to rebuild
+    // the existing ones.
+    bgMirror: (on: boolean) => {
+      setBackgroundMirrorEnabled(on);
+      const msg = `[Liquid Glass] background mirror ${on ? 'ENABLED' : 'disabled'} ` +
+        '(toggle the extension off/on to rebuild existing glass)';
+      console.log(msg);
+      return msg;
+    },
+    bgMirrorEnabled: () => isBackgroundMirrorEnabled(),
+
+    // [window-clone-clip] A/B switch for the cloned-window cull opt-out: true
+    // (default) parks a do-nothing ClutterEffect on every window actor a glass
+    // currently clones, which makes meta-cullable.c hand its surface actor a
+    // NULL clip region instead of this frame's damage. false restores mutter's
+    // normal culling — and with it both the damage clipping AND the occlusion
+    // culling that the opt-out gives up, so this is the switch to flip when
+    // comparing idle GPU. Takes effect on the next frame, no rebuild needed.
+    cullOptOut: (on: boolean) => {
+      setCullOptOutEnabled(on);
+      const msg = `[Liquid Glass] cloned-window cull opt-out ${on ? 'ENABLED' : 'disabled'}`;
+      console.log(msg);
+      return msg;
+    },
+    cullOptOutEnabled: () => isCullOptOutEnabled(),
+
+    // [anim-jitter] A/B switch for the stranded-window-actor rescue.
+    //   'two-stage' (default) ask the window group to relayout first, and only
+    //               fall back to unmapping/remapping mutter's window actor if
+    //               that did not land;
+    //   'remap'     straight to hide()/show(), the historical behaviour that
+    //               the 100ms capture caught firing ~3x a second mid-animation;
+    //   'off'       never touch mutter's window actor -- diagnostic only, the
+    //               clones can then freeze at stale coordinates.
+    // Watch "[strand] relayout via parent" vs "[strand] remapped" in the log
+    // to see which stage is actually doing the work.
+    windowRescue: (mode: string) => {
+      setWindowActorRescueMode(mode as WindowActorRescueMode);
+      const msg = `[Liquid Glass] window-actor rescue = ${getWindowActorRescueMode()}`;
+      console.log(msg);
+      return msg;
+    },
+    windowRescueMode: () => getWindowActorRescueMode(),
+
+    // [diag] The rolling pre-fault recorder. Off by default; arm it only when
+    // chasing something, then press Ctrl+Alt+L to flush what led up to it.
+    ring: (on: boolean) => {
+      setGlassRingArmed(on);
+      const msg = `[Liquid Glass] ring recorder ${on ? 'ARMED (50ms)' : 'disarmed'}`;
+      console.log(msg);
+      return msg;
+    },
+    ringArmed: () => isGlassRingArmed(),
+    ringFlush: () => { flushGlassRing(); return 'flushed'; },
+
+    // The clone-placement diagnostic. OFF by default: left armed it wrote
+    // ~400 journal lines a second from the compositor's main thread and hung
+    // the shell (2026-09-17). See setFocusDebugEnabled() in utils.ts.
+    focusDebug: (on: boolean) => {
+      setFocusDebugEnabled(on);
+      const msg = `[Liquid Glass] focus-debug logging ${on ? 'ENABLED' : 'disabled'}`;
+      console.log(msg);
+      return msg;
+    },
+    focusDebugEnabled: () => isFocusDebugEnabled(),
 
     // [PERF] A/B switch for compare-then-write in every per-frame sync loop
     // (the "idle gating" of memo ④). true (default) = a clone property is
@@ -426,7 +685,7 @@ function _registerGlassDebugHooks(): void {
       const now = GLib.get_monotonic_time();
       for (const fx of _liveEffects) {
         if (!fx._diagLast) {
-          rows.push(`(never painted) owner=${fx._owner ?? '?'}`);
+          rows.push(`(never painted) owner=${fx._owner ?? '?'}${fx._diagOwnerLabel ? ' label=' + fx._diagOwnerLabel : ''}`);
           continue;
         }
         // `paints` and the snapshot's age are read live rather than taken
@@ -434,13 +693,114 @@ function _registerGlassDebugHooks(): void {
         // _diagLast is only refreshed about once a second, and a stale paint
         // counter would break the main use of this dump — sampling it twice
         // to work out how many paints each surface costs per frame.
+        // [anim-diag] Live actor state alongside the snapshot. A frozen
+        // paint counter is ambiguous on its own -- minimised, culled,
+        // unallocated and genuinely stuck all look the same in the numbers --
+        // so record what the actor itself says at dump time.
+        let live: any = {};
+        try {
+          const a: any = fx.get_actor();
+          if (a) {
+            live = {
+              mapped: a.mapped,
+              visible: a.visible,
+              hasAlloc: a.has_allocation(),
+              opacity: a.opacity,
+              pos: `${Math.round(a.x)},${Math.round(a.y)}`,
+            };
+            const wa: any = a.get_parent();
+            if (wa) {
+              live.parentMapped = wa.mapped;
+              live.parentHasAlloc = wa.has_allocation();
+              live.parentOpacity = wa.opacity;
+              live.parentScale = `${wa.scale_x.toFixed(3)},${wa.scale_y.toFixed(3)}`;
+              try {
+                const mw = wa.get_meta_window ? wa.get_meta_window() : null;
+                if (mw) {
+                  live.minimized = mw.minimized;
+                  live.wRect = (() => {
+                    const r = mw.get_frame_rect();
+                    return `${r.x},${r.y},${r.width}x${r.height}`;
+                  })();
+                }
+              } catch (_) { /* not a window actor */ }
+
+              // [anim-stall] Is the shell's own animation still attached and
+              // running on this window actor?
+              //
+              // The capture that motivated this shows a window-close animation
+              // frozen at exactly scale 0.810 / opacity 13 -- GNOME's destroy
+              // animation targets scale 0.8 and opacity 0 -- and staying there
+              // for the rest of the run, window still mapped with a valid
+              // frame rect. Three very different faults look identical from
+              // outside, and only the transition itself tells them apart:
+              //
+              //   playing, progress stuck   the timeline is not being ticked
+              //   present, not playing      it was stopped without completing,
+              //                             so onStopped never ran and the
+              //                             shell never called completed_destroy
+              //   absent                    it finished or was removed, and the
+              //                             leftover values came from elsewhere
+              //
+              // _destroying is the shell's own set of actors whose destroy
+              // animation it believes is still in flight.
+              for (const prop of ['opacity', 'scale-x']) {
+                try {
+                  const tr: any = wa.get_transition(prop);
+                  if (tr) {
+                    // [anim-stall] frameClock is the field that matters.
+                    //
+                    // The capture showed playing=true with progress frozen at
+                    // 0.556 of a 150ms animation for a full minute, so the
+                    // timeline is neither finished nor stopped -- nothing is
+                    // ticking it. A frame clock holding timelines keeps itself
+                    // awake (maybe_reschedule_update() reschedules whenever
+                    // frame_clock->timelines is non-empty), so a live clock
+                    // would have advanced it. That leaves the timeline having
+                    // no clock at all:
+                    //
+                    //     update_frame_clock():
+                    //       frame_clock = clutter_actor_pick_frame_clock (actor, ...);
+                    //       ...
+                    //     out:
+                    //       set_frame_clock_internal (timeline, frame_clock);  // may be NULL
+                    //
+                    //     maybe_add_timeline():
+                    //       if (!priv->frame_clock) return;   // silently never ticked
+                    //
+                    // and pick_frame_clock() returns NULL when the actor -- and
+                    // every ancestor -- has an empty stage_views list, which is
+                    // why the view counts are recorded next to it.
+                    live[`tr_${prop}`] =
+                      `playing=${tr.is_playing()},prog=${tr.get_progress().toFixed(3)}` +
+                      `,dur=${tr.get_duration()}` +
+                      `,clock=${tr.get_frame_clock() ? 'set' : 'NULL'}`;
+                  }
+                } catch (_) { /* no such transition */ }
+              }
+              try {
+                live.waViews = (wa.peek_stage_views() || []).length;
+                const wg: any = wa.get_parent();
+                if (wg) live.wgViews = (wg.peek_stage_views() || []).length;
+                live.glassViews = (a.peek_stage_views() || []).length;
+              } catch (_) { /* noop */ }
+              try {
+                const destroying: any = (Main as any).wm?._destroying;
+                if (destroying) live.shellDestroying = destroying.has(wa);
+              } catch (_) { /* noop */ }
+            }
+          }
+        } catch (_) { /* noop */ }
+
         rows.push(JSON.stringify({
           ...fx._diagLast,
+          label: fx._diagOwnerLabel || undefined,
           paints: fx._diagPaintCount,
           composited: fx._diagCompositedPaintCount,
           blurRuns: fx._blurRuns,
           blurSkips: fx._blurSkips,
           snapshotAgeMs: Math.round((now - fx._diagLastSnapshotAt) / 1000),
+          ...live,
         }));
       }
       const out = rows.length ? rows.join('\n') : '(no live LiquidEffect)';
@@ -511,6 +871,13 @@ export const LiquidEffect = GObject.registerClass({
   declare private _extensionPath: string | undefined;
   // Diagnostic label naming the owning manager; see LiquidEffectParams.owner.
   declare private _owner: string;
+  // [anim-diag] Human-readable identity of what this glass belongs to (a
+  // window title, usually), set by the owning manager. The dump had no way to
+  // tell two glasses apart: five 'application' rows with only a size to go on
+  // meant "is this the same instance resized, or a second one?" could not be
+  // answered from a log, which is exactly the question the animation and
+  // leftover-glass reports turn on.
+  declare _diagOwnerLabel: string;
   declare private _settings: Gio.Settings | undefined;
   declare private _settingsIds: number[];
   declare private _logger: Logger | undefined;
@@ -758,6 +1125,19 @@ export const LiquidEffect = GObject.registerClass({
   declare private _blurRuns: number;
   declare private _blurSkips: number;
 
+  // Bumped every time Clutter re-renders this effect's offscreen, i.e. every
+  // time the capture actually changes rather than being blitted from cache.
+  //
+  // This is the signal the nested-glass repair needs. A glass whose capture
+  // contains a clone of a window that owns a glass of its own gets its
+  // capture blanked at the moment that INNER effect re-renders its own
+  // offscreen — measured 2026-09-16: a static inner glass never triggers it
+  // (0/14 black frames), an inner glass that keeps re-rendering does
+  // (11/14), and once blanked the outer capture stays blank until something
+  // marks the outer actor dirty again. Counting re-renders here is what lets
+  // ApplicationManager notice an inner re-render and repair the outer.
+  declare private _recaptureSerial: number;
+
 
   // Per-pass pipeline copies. See _passPipeline() for why a shared pipeline
   // cannot work now that the passes are deferred paint nodes.
@@ -782,6 +1162,7 @@ export const LiquidEffect = GObject.registerClass({
     super._init(params);
 
     this._owner = owner ?? '?';
+    this._diagOwnerLabel = '';
 
     this._blurTextures = [];
     this._blurFbos = [];
@@ -851,6 +1232,7 @@ export const LiquidEffect = GObject.registerClass({
     this._blurDownscale = 2;
     this._blurRuns = 0;
     this._blurSkips = 0;
+    this._recaptureSerial = 0;
     _ensureFrameSerialHook();
     this._uvMismatchWarned = false;
     this._passPipelines = new Map();
@@ -1530,6 +1912,20 @@ export const LiquidEffect = GObject.registerClass({
    * @param _paintNode   Clutter's paint node (new signature since GNOME 45+)
    * @param paintContext Current paint context, holding a reference to the on-screen framebuffer
    */
+  /**
+   * Overrides Clutter.Effect's paint hook purely to observe the dirty flag.
+   *
+   * ACTOR_DIRTY is the only place the "the offscreen is about to be
+   * re-rendered" fact is visible from JS: vfunc_paint_target() runs on every
+   * paint, cached or not, so it cannot tell the two apart. Everything else is
+   * left to the base class.
+   */
+  vfunc_paint(node: Clutter.PaintNode, paintContext: Clutter.PaintContext,
+    flags: Clutter.EffectPaintFlags): void {
+    if (flags & Clutter.EffectPaintFlags.ACTOR_DIRTY) this._recaptureSerial++;
+    super.vfunc_paint(node, paintContext, flags);
+  }
+
   vfunc_paint_target(_paintNode: Clutter.PaintNode, paintContext: Clutter.PaintContext): void {
     // ── [DIAG] Black-background investigation ──────────────────────────────
     // If Clutter culls/skips this actor entirely (e.g. because it decides

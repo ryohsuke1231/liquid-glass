@@ -3,10 +3,15 @@
 ## 開発環境
 - GNOME 50 / Clutter 18 環境向けの TypeScript 拡張機能開発。
 - メインのソースコードやビルド設定は `liquid-glass@thinkingcoding1231.gmail.com/` 配下にあります。
+- 基本的には`dev`ブランチで作業してください。
 
 ## コマンド実行ルール
 - `npm` やビルド関連のコマンドを実行する際は、`liquid-glass@thinkingcoding1231.gmail.com` ディレクトリ内で実行すること。（例: `cd liquid-glass@thinkingcoding1231.gmail.com && npm run build`）
 - TSファイルを修正・編集した後は、`npm run build` を実行してビルドエラーが出ないかチェックすること。
+
+## ファイル読み取りの許可
+- `memo.md`: 今まで踏んだ地雷や罠、教訓などを示したMarkdownファイル。読み取りや書き込みを自由に許可します。
+- ローカルにある、GNOME関連のソースコードなど: バグ原因特定などで必要ならば許可を取らずに自由に読んで構いません。
 
 ## タスクの進め方
 1. 原因の分析を行う。

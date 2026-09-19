@@ -9,8 +9,12 @@ import { OsdManager } from './dist/osdManager.js';
 import { ApplicationManager } from './dist/applicationManager.js';
 import { WindowListService } from './dist/windowListService.js';
 import { Logger } from './dist/logger.js';
-import { setUtilsLogger } from './dist/utils.js';
+import { setUtilsLogger, adaptiveColorTweener, destroySharedBackgroundSource,
+  releaseAllClonedWindowActors } from './dist/utils.js';
+import { startGlassRingSampler, flushGlassRing } from './dist/liquidEffect.js';
 import GLib from 'gi://GLib';
+import Meta from 'gi://Meta';
+import Shell from 'gi://Shell';
 
 const DASH_RESCAN_IDLE_TICKS = 2;
 const DASH_RESCAN_INTERVAL_MS = 2000;
@@ -43,6 +47,12 @@ export default class LiquidGlassExtension extends Extension {
       return;
     }
     this._active = true;
+
+    try {
+      this._installDumpLoopKeybinding();
+    } catch (e) {
+      console.error(`[Liquid Glass] could not install the dump-loop keybinding: ${e}`);
+    }
 
     try {
       this._enableInner();
@@ -260,8 +270,85 @@ export default class LiquidGlassExtension extends Extension {
     this._reconnectTimeoutId = sourceId;
   }
 
+  // [anim-diag] Ctrl+Alt+L: start or stop a timed dump of every live glass.
+  //
+  // Built into the extension rather than driven through org.gnome.Shell.Eval
+  // because Eval needs unsafe_mode, which resets on every login — exactly when
+  // a capture is most likely to be wanted. Toggling: press once to start,
+  // again to stop early; it also stops by itself after DUMP_LOOP_TICKS.
+  _installDumpLoopKeybinding() {
+    this._dumpLoopId = 0;
+    // [anim-stall] The rolling record starts with the extension and writes
+    // nothing until the capture key is pressed. See startGlassRingSampler().
+    this._ringSamplerId = startGlassRingSampler(50);
+    Main.wm.addKeybinding(
+      'dump-loop-keybinding',
+      this.getSettings('org.gnome.shell.extensions.liquid-glass@thinkingcoding1231.gmail.com'),
+      Meta.KeyBindingFlags.NONE,
+      Shell.ActionMode.NORMAL | Shell.ActionMode.OVERVIEW,
+      () => this._toggleDumpLoop()
+    );
+  }
+
+  _toggleDumpLoop() {
+    if (this._dumpLoopId) {
+      GLib.source_remove(this._dumpLoopId);
+      this._dumpLoopId = 0;
+      console.log('[Liquid Glass][dump-loop] STOPPED early by Ctrl+Alt+L');
+      Main.notify('Liquid Glass', 'Diagnostic dump stopped');
+      return;
+    }
+
+    // Flush the frames LEADING UP TO the key press first -- that is the part a
+    // capture started after the fact can never contain.
+    try {
+      flushGlassRing();
+    } catch (e) {
+      console.error(`[Liquid Glass][ring] flush failed: ${e}`);
+    }
+
+    const INTERVAL_MS = 100;
+    const TICKS = 600;             // 60 seconds
+    let count = 0;
+    const seconds = (TICKS * INTERVAL_MS) / 1000;
+    const endsAt = new Date(Date.now() + seconds * 1000);
+    const hhmmss = d => [d.getHours(), d.getMinutes(), d.getSeconds()]
+      .map(n => String(n).padStart(2, '0')).join(':');
+    // A marker line so the capture can be found in the journal without
+    // guessing at timestamps.
+    console.log(`[Liquid Glass][dump-loop] STARTED ${TICKS} ticks @ ${INTERVAL_MS}ms, ends ${hhmmss(endsAt)}`);
+    Main.notify('Liquid Glass',
+      `Diagnostic dump running ${seconds}s — ends at ${hhmmss(endsAt)} (Ctrl+Alt+L to stop)`);
+
+    this._dumpLoopId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, INTERVAL_MS, () => {
+      try {
+        global._lgGlass?.dump();
+      } catch (e) {
+        console.error(`[Liquid Glass][dump-loop] dump failed: ${e}`);
+      }
+      if (++count < TICKS) return GLib.SOURCE_CONTINUE;
+      this._dumpLoopId = 0;
+      console.log('[Liquid Glass][dump-loop] FINISHED');
+      return GLib.SOURCE_REMOVE;
+    });
+  }
+
+  _removeDumpLoopKeybinding() {
+    if (this._ringSamplerId) {
+      try { GLib.source_remove(this._ringSamplerId); } catch (e) { }
+      this._ringSamplerId = 0;
+    }
+    if (this._dumpLoopId) {
+      try { GLib.source_remove(this._dumpLoopId); } catch (e) { }
+      this._dumpLoopId = 0;
+    }
+    try { Main.wm.removeKeybinding('dump-loop-keybinding'); } catch (e) { }
+  }
+
   disable() {
     this._active = false;
+
+    try { this._removeDumpLoopKeybinding(); } catch (e) { }
 
     // [FIX] disable() must be idempotent and must never throw.
     //
@@ -273,6 +360,18 @@ export default class LiquidGlassExtension extends Extension {
     // will not turn it back on: that is the "it can no longer be enabled"
     // symptom, and it is reached without a single line of ours in the log.
     this._logger?.log(`[Liquid Glass] Disabling...`);
+
+    // The adaptive-colour tween clock is module state shared by every manager,
+    // so it outlives them. Each manager's _clearAdaptiveStyles() cancels its
+    // own actors, but a manager that never got that far would leave entries
+    // behind holding a BEFORE_REDRAW chain alive against dead actors.
+    try { adaptiveColorTweener.stopAll(); } catch (e) { }
+    // [black-frame] The shared wallpaper mirror is parented to uiGroup and is
+    // not owned by any manager, so nothing else would take it down.
+    try { destroySharedBackgroundSource(); } catch (e) { }
+    // [window-clone-clip] These effects sit on Mutter's own window actors,
+    // which outlive the extension.
+    try { releaseAllClonedWindowActors(); } catch (e) { }
 
     if (this._quickSettingsTimeoutId && this._quickSettingsTimeoutId !== 0) {
       GLib.Source.remove(this._quickSettingsTimeoutId);

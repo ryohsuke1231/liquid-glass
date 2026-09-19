@@ -7,7 +7,7 @@ import Meta from 'gi://Meta';
 import Gio from 'gi://Gio';
 import { LiquidEffect } from './liquidEffect.js';
 import { StageContrastSampler, AdaptiveContrastConfig } from './contrastSampler.js';
-import { UnpickableActor, UILayerSampler, UnpickableWidget, WindowCloneManager, reportFrameLoopError, ensureGlassAllocated, resolveMonitorGeometry, isActorValid, getAllocatedSize, isFrameSyncFrozen, setClipIfChanged, syncGlassCaptureClip } from './utils.js';
+import { UnpickableActor, UILayerSampler, UnpickableWidget, WindowCloneManager, reportFrameLoopError, ensureGlassAllocated, resolveMonitorGeometry, isActorValid, getAllocatedSize, isFrameSyncFrozen, setClipIfChanged, syncGlassCaptureClip, resolveCrossFade, adaptiveColorTweener } from './utils.js';
 // ========== Configuration Parameters ==========
 // Transparent padding outside the glass area.
 // This prevents the shader distortion or rounded corners from being clipped by the actor bounds.
@@ -821,17 +821,14 @@ export class UIManager {
         return foundActors;
     }
     // Initiates the color change for a specific actor
-    _setActorColor(actor, color, skipAnimations = false) {
+    _setActorColor(actor, color, skipAnimations = false, batchStart) {
         if (!actor || typeof actor.set_style !== 'function')
             return;
         if (!this._styledActors.has(actor)) {
             let origStyle = typeof actor.get_style === 'function' ? actor.get_style() : null;
             this._styledActors.set(actor, origStyle || '');
             actor.connect('destroy', () => {
-                if (actor._colorTweenId) {
-                    GLib.source_remove(actor._colorTweenId);
-                    actor._colorTweenId = undefined;
-                }
+                adaptiveColorTweener.cancel(actor);
                 this._styledActors.delete(actor);
             });
         }
@@ -841,20 +838,20 @@ export class UIManager {
         }
         if (actor._currentTargetColor === color && actor._currentInsensitiveState === isInsensitive)
             return;
-        // Interpolating light to dark passes through the background's own grey.
-        const changesPolarity = actor._currentTargetColor !== color;
+        // A light<->dark flip used to be snapped here, because interpolating the
+        // two in RGB passes through the background's own grey and the label
+        // disappears mid-tween. _animateActorColor() now cross-dissolves that case
+        // instead (see crossFadeColorAt() in utils.ts), so it is animated like any
+        // other change.
         actor._currentTargetColor = color;
         actor._currentInsensitiveState = isInsensitive;
-        this._animateActorColor(actor, color, isInsensitive, 380, skipAnimations || changesPolarity);
+        this._animateActorColor(actor, color, isInsensitive, 380, skipAnimations, batchStart);
     }
     // Removes all dynamically applied adaptive text color styles and stops related animations
     _clearAdaptiveStyles() {
         for (const [actor, originalStyle] of this._styledActors.entries()) {
             if (actor && typeof actor.set_style === 'function') {
-                if (actor._colorTweenId) {
-                    GLib.source_remove(actor._colorTweenId);
-                    actor._colorTweenId = undefined;
-                }
+                adaptiveColorTweener.cancel(actor);
                 actor._currentTargetColor = undefined;
                 actor._currentInsensitiveState = undefined;
                 try {
@@ -872,8 +869,12 @@ export class UIManager {
     _applyAdaptiveColorMap(colorMap, skipAnimations = false) {
         if (!colorMap || colorMap.size === 0)
             return;
+        // One timestamp for the whole map. Every actor that flips in this round
+        // then runs off the same clock, so a row of labels moves as one instead of
+        // each starting whenever its own source first fired.
+        const batchStart = GLib.get_monotonic_time();
         for (const [actor, color] of colorMap.entries()) {
-            this._setActorColor(actor, color, skipAnimations);
+            this._setActorColor(actor, color, skipAnimations, batchStart);
         }
     }
     // Starts the timer for periodically sampling contrast and updating adaptive text colors
@@ -934,13 +935,13 @@ export class UIManager {
     _rgbToHex(r, g, b) {
         return "#" + (1 << 24 | r << 16 | g << 8 | b).toString(16).slice(1);
     }
-    _animateActorColor(actor, targetHexColor, isInsensitive, durationMs = 380, skipAnimations = false) {
+    _animateActorColor(actor, targetHexColor, isInsensitive, durationMs = 380, skipAnimations = false, batchStart) {
         if (!actor || Object.keys(actor).length === 0)
             return;
-        if (actor._colorTweenId) {
-            GLib.source_remove(actor._colorTweenId);
-            actor._colorTweenId = undefined;
-        }
+        // NOT cancelled here: add() below reads the entry this may already have,
+        // so that an interrupted tween restarts from the colour that is actually
+        // on screen rather than from a theme node St has not re-resolved yet.
+        // The snap path does cancel, because nothing should keep stepping after it.
         const originalStyle = (this._styledActors.get(actor) || '').trim();
         const stylePrefix = originalStyle ? `${originalStyle.replace(/;$/, '')}; ` : '';
         let themeNode = actor.get_theme_node();
@@ -948,42 +949,28 @@ export class UIManager {
         let targetRgb = this._hexToRgb(targetHexColor);
         let targetAlpha = isInsensitive ? 0.5 : 1.0;
         let startAlpha = startColor.alpha / 255.0;
-        if (skipAnimations) {
-            let alphaStr = targetAlpha.toFixed(3);
-            let targetRgba = `rgba(${targetRgb.r}, ${targetRgb.g}, ${targetRgb.b}, ${alphaStr})`;
+        const apply = (r, g, b, a) => {
+            const rgba = `rgba(${r}, ${g}, ${b}, ${a.toFixed(3)})`;
             try {
-                actor.set_style(`${stylePrefix}color: ${targetRgba}; -st-icon-foreground-color: ${targetRgba};`);
+                actor.set_style(`${stylePrefix}color: ${rgba}; -st-icon-foreground-color: ${rgba};`);
             }
             catch (e) { }
+        };
+        if (skipAnimations) {
+            adaptiveColorTweener.cancel(actor);
+            apply(targetRgb.r, targetRgb.g, targetRgb.b, targetAlpha);
             return;
         }
-        let startTime = GLib.get_monotonic_time();
-        actor._colorTweenId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 32, () => {
-            if (!actor || Object.keys(actor).length === 0)
-                return GLib.SOURCE_REMOVE;
-            let currentTime = GLib.get_monotonic_time();
-            let elapsedMs = (currentTime - startTime) / 1000;
-            let progress = Math.min(elapsedMs / durationMs, 1.0);
-            let easeProgress = progress < 0.5
-                ? 2 * progress * progress
-                : 1 - Math.pow(-2 * progress + 2, 2) / 2;
-            let r = Math.round(startColor.red + (targetRgb.r - startColor.red) * easeProgress);
-            let g = Math.round(startColor.green + (targetRgb.g - startColor.green) * easeProgress);
-            let b = Math.round(startColor.blue + (targetRgb.b - startColor.blue) * easeProgress);
-            let a = startAlpha + (targetAlpha - startAlpha) * easeProgress;
-            a = Math.max(0.0, Math.min(1.0, a));
-            let alphaStr = a.toFixed(3);
-            let currentRgba = `rgba(${r}, ${g}, ${b}, ${alphaStr})`;
-            try {
-                actor.set_style(`${stylePrefix}color: ${currentRgba}; -st-icon-foreground-color: ${currentRgba};`);
-            }
-            catch (e) { }
-            if (progress >= 1.0) {
-                actor._colorTweenId = undefined;
-                return GLib.SOURCE_REMOVE;
-            }
-            return GLib.SOURCE_CONTINUE;
-        });
+        const startRgb = { r: startColor.red, g: startColor.green, b: startColor.blue };
+        // One shared frame-clock driver, one shared start time per batch — see
+        // AdaptiveColorTweener in utils.ts for why this is not a per-actor timer.
+        adaptiveColorTweener.add(actor, {
+            startRgb, startAlpha,
+            targetRgb, targetAlpha,
+            crossFade: resolveCrossFade(startRgb, targetRgb),
+            durationMs,
+            apply,
+        }, batchStart);
     }
     // Handles the custom bounce/spring physics when the menu opens or closes
     _startAnimation(targetValue) {
