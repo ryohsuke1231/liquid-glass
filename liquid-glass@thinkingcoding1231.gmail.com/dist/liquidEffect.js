@@ -118,6 +118,7 @@ import Clutter from 'gi://Clutter';
 import Cogl from 'gi://Cogl';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
+import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { setBmsMode, BMS_MODE, computeCaptureLayout, setFrameSyncFrozen, isFrameSyncFrozen, setDiffWritesEnabled, isDiffWritesEnabled, setCaptureClipEnabled, isCaptureClipEnabled, setCloneCullEnabled, isCloneCullEnabled, setCullSiteEnabled, isCullSiteEnabled, setAdaptiveColorMode, getAdaptiveColorMode, setNestedGlassFix, getNestedGlassFix, setFocusDebugEnabled, isFocusDebugEnabled, setBackgroundMirrorEnabled, isBackgroundMirrorEnabled, setCullOptOutEnabled, isCullOptOutEnabled, setWindowActorRescueMode, getWindowActorRescueMode } from './utils.js';
 // ─── Looking Glass diagnostics ───────────────────────────────────────────────
 //
@@ -607,6 +608,42 @@ function _registerGlassDebugHooks() {
                                 }
                             }
                             catch (_) { /* not a window actor */ }
+                            // [anim-stall] Is the shell's own animation still attached and
+                            // running on this window actor?
+                            //
+                            // The capture that motivated this shows a window-close animation
+                            // frozen at exactly scale 0.810 / opacity 13 -- GNOME's destroy
+                            // animation targets scale 0.8 and opacity 0 -- and staying there
+                            // for the rest of the run, window still mapped with a valid
+                            // frame rect. Three very different faults look identical from
+                            // outside, and only the transition itself tells them apart:
+                            //
+                            //   playing, progress stuck   the timeline is not being ticked
+                            //   present, not playing      it was stopped without completing,
+                            //                             so onStopped never ran and the
+                            //                             shell never called completed_destroy
+                            //   absent                    it finished or was removed, and the
+                            //                             leftover values came from elsewhere
+                            //
+                            // _destroying is the shell's own set of actors whose destroy
+                            // animation it believes is still in flight.
+                            for (const prop of ['opacity', 'scale-x']) {
+                                try {
+                                    const tr = wa.get_transition(prop);
+                                    if (tr) {
+                                        live[`tr_${prop}`] =
+                                            `playing=${tr.is_playing()},prog=${tr.get_progress().toFixed(3)}` +
+                                                `,dur=${tr.get_duration()}`;
+                                    }
+                                }
+                                catch (_) { /* no such transition */ }
+                            }
+                            try {
+                                const destroying = Main.wm?._destroying;
+                                if (destroying)
+                                    live.shellDestroying = destroying.has(wa);
+                            }
+                            catch (_) { /* noop */ }
                         }
                     }
                 }
