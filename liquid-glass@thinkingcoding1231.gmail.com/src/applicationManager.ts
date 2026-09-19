@@ -12,7 +12,8 @@ import { UnpickableClone, UnpickableActor, InverseCornerEffect, getWindowActors,
   setTranslationIfChanged, setSizeIfChanged, setScaleIfChanged, setOpacityIfChanged,
   isCullSiteEnabled, rectsIntersect, setCloneCulled,
   createBackgroundMirror, setBackgroundMirrorEnabled, isBackgroundMirrorEnabled,
-  reportClonedWindowActors, releaseClonedWindowActors } from './utils.js';
+  reportClonedWindowActors, releaseClonedWindowActors,
+  ensureWindowActorAllocated } from './utils.js';
 
 import { Logger } from './logger.js';
 
@@ -124,7 +125,14 @@ const BASE_LAYER_ENABLED = false;
 // far longer than any legitimate pending relayout, and short enough that the
 // glass under it is only wrong for a fraction of a second. See the comment
 // at the call site.
-const WINDOW_ACTOR_STRANDED_FRAMES = 10;
+// Stage 2 of the window-actor rescue: how many consecutive stranded frames
+// before mutter's own window actor is unmapped and remapped. Raised from 10 so
+// the gentler stage below gets room to land first.
+const WINDOW_ACTOR_STRANDED_FRAMES = 14;
+
+// Stage 1: ask the window GROUP to relayout. Early, because it is cheap and
+// not swallowed -- see ensureWindowActorAllocated().
+const WINDOW_ACTOR_RELAYOUT_FRAMES = 4;
 
 // How far the clone containers' screen origin may be from (0,0) before the
 // glass is treated as unrenderable and hidden for that frame.
@@ -2209,11 +2217,22 @@ export class ApplicationManager {
         // longer stranded streak than our own actors get: this one is
         // Mutter's, and a live window must never be remapped just because a
         // legitimate relayout took a few frames.
-        if (ensureGlassAllocated(state.windowActor, WINDOW_ACTOR_STRANDED_FRAMES)) {
+        // [anim-jitter] Two stages now; see ensureWindowActorAllocated(). The
+        // remap below is mutter's own window actor being unmapped and remapped
+        // mid-animation, which the 100ms capture caught happening ~3 times a
+        // second across five windows. Stage 1 asks the window group to
+        // relayout instead, which is not swallowed by the window actor's own
+        // short-circuit and costs one relayout.
+        const rescue = ensureWindowActorAllocated(
+          state.windowActor, WINDOW_ACTOR_RELAYOUT_FRAMES, WINDOW_ACTOR_STRANDED_FRAMES);
+        if (rescue) {
           const title = metaWin.get_title() || '(untitled)';
           this._logger.log(
-            `[Liquid Glass][strand] remapped stranded window actor for "${title}" ` +
-            `(its glass subtree could not be re-allocated while it stayed stranded)`
+            rescue === 'relayout'
+              ? `[Liquid Glass][strand] relayout via parent for "${title}" ` +
+                `(stage 1: glass subtree stranded, window group asked to re-allocate)`
+              : `[Liquid Glass][strand] remapped stranded window actor for "${title}" ` +
+                `(stage 2: parent relayout did not land, subtree still stranded)`
           );
         }
         ensureGlassAllocated(state.bgActor);

@@ -118,7 +118,7 @@ import Clutter from 'gi://Clutter';
 import Cogl from 'gi://Cogl';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
-import { setBmsMode, BMS_MODE, computeCaptureLayout, setFrameSyncFrozen, isFrameSyncFrozen, setDiffWritesEnabled, isDiffWritesEnabled, setCaptureClipEnabled, isCaptureClipEnabled, setCloneCullEnabled, isCloneCullEnabled, setCullSiteEnabled, isCullSiteEnabled, setAdaptiveColorMode, getAdaptiveColorMode, setNestedGlassFix, getNestedGlassFix, setFocusDebugEnabled, isFocusDebugEnabled, setBackgroundMirrorEnabled, isBackgroundMirrorEnabled, setCullOptOutEnabled, isCullOptOutEnabled } from './utils.js';
+import { setBmsMode, BMS_MODE, computeCaptureLayout, setFrameSyncFrozen, isFrameSyncFrozen, setDiffWritesEnabled, isDiffWritesEnabled, setCaptureClipEnabled, isCaptureClipEnabled, setCloneCullEnabled, isCloneCullEnabled, setCullSiteEnabled, isCullSiteEnabled, setAdaptiveColorMode, getAdaptiveColorMode, setNestedGlassFix, getNestedGlassFix, setFocusDebugEnabled, isFocusDebugEnabled, setBackgroundMirrorEnabled, isBackgroundMirrorEnabled, setCullOptOutEnabled, isCullOptOutEnabled, setWindowActorRescueMode, getWindowActorRescueMode } from './utils.js';
 // ─── Looking Glass diagnostics ───────────────────────────────────────────────
 //
 // Every live LiquidEffect registers itself here so its last resolved frame
@@ -303,6 +303,23 @@ function _registerGlassDebugHooks() {
             return msg;
         },
         cullOptOutEnabled: () => isCullOptOutEnabled(),
+        // [anim-jitter] A/B switch for the stranded-window-actor rescue.
+        //   'two-stage' (default) ask the window group to relayout first, and only
+        //               fall back to unmapping/remapping mutter's window actor if
+        //               that did not land;
+        //   'remap'     straight to hide()/show(), the historical behaviour that
+        //               the 100ms capture caught firing ~3x a second mid-animation;
+        //   'off'       never touch mutter's window actor -- diagnostic only, the
+        //               clones can then freeze at stale coordinates.
+        // Watch "[strand] relayout via parent" vs "[strand] remapped" in the log
+        // to see which stage is actually doing the work.
+        windowRescue: (mode) => {
+            setWindowActorRescueMode(mode);
+            const msg = `[Liquid Glass] window-actor rescue = ${getWindowActorRescueMode()}`;
+            console.log(msg);
+            return msg;
+        },
+        windowRescueMode: () => getWindowActorRescueMode(),
         // The clone-placement diagnostic. OFF by default: left armed it wrote
         // ~400 journal lines a second from the compositor's main thread and hung
         // the shell (2026-09-17). See setFocusDebugEnabled() in utils.ts.

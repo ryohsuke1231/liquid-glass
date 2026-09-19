@@ -112,6 +112,80 @@ const STRANDED_FRAMES_BEFORE_RESCUE = 3;
  *   stage) — should ask for a longer streak, so a live window is never
  *   remapped for a relayout that was merely slow.
  */
+/**
+ * [anim-jitter] Rescue for a stranded MetaWindowActor, gentlest option first.
+ *
+ * ensureGlassAllocated()'s rescue is hide() + show(). On OUR actors that is
+ * fine. On mutter's own window actor it is not something to do lightly, and
+ * the 100ms-interval capture of a stuttering minimise shows how often it was
+ * happening: 171 remaps across 70 seconds, over five different windows, ~3 a
+ * second, every one of them landing in the middle of a window animation.
+ *
+ * Why it was reached for at all: a glass root's queue_relayout() dies inside
+ *
+ *     _clutter_actor_queue_only_relayout (windowActor)
+ *       if (needs_width_request && needs_height_request && needs_allocation)
+ *         return;  // save some cpu cycles
+ *
+ * whenever the window actor itself is stranded, so the request never reaches
+ * the stage and the subtree stays unallocated.
+ *
+ * But that short-circuit is tested against THAT actor's own flags, and
+ * neither MetaWindowGroup nor MetaWindowActor implements an allocate vfunc or
+ * sets CLUTTER_ACTOR_NO_LAYOUT — their children go through Clutter's default
+ * allocate, which recurses. So asking the PARENT to relayout is not swallowed:
+ * the window group is normally allocated, the request reaches the stage, and
+ * the next relayout allocates the window actor (needs_allocation is set) and
+ * with it the whole glass subtree.
+ *
+ * Two stages, so the proven repair is still there as a backstop:
+ *   relayoutFrames  ask the parent to relayout — costs one relayout
+ *   remapFrames     hide()/show() the window actor, as before
+ *
+ * Returns which stage ran, '' for none, so the caller can log them apart and
+ * the next capture says outright whether stage 1 is doing the work.
+ */
+export function ensureWindowActorAllocated(actor, relayoutFrames, remapFrames) {
+    try {
+        if (!actor)
+            return '';
+        if (_windowActorRescueMode === 'off')
+            return '';
+        if (!actor.visible || !actor.mapped || actor.has_allocation()) {
+            _windowActorStrandedFrames.delete(actor);
+            return '';
+        }
+        const strandedFor = (_windowActorStrandedFrames.get(actor) ?? 0) + 1;
+        _windowActorStrandedFrames.set(actor, strandedFor);
+        if (_windowActorRescueMode !== 'remap' && strandedFor === relayoutFrames) {
+            const parent = actor.get_parent();
+            if (parent && isActorValid(parent)) {
+                parent.queue_relayout();
+                return 'relayout';
+            }
+        }
+        if (strandedFor >= remapFrames) {
+            _windowActorStrandedFrames.delete(actor);
+            actor.hide();
+            actor.show();
+            return 'remap';
+        }
+        return '';
+    }
+    catch (_) {
+        return '';
+    }
+}
+const _windowActorStrandedFrames = new Map();
+let _windowActorRescueMode = 'two-stage';
+const WINDOW_ACTOR_RESCUE_MODES = ['two-stage', 'remap', 'off'];
+export function setWindowActorRescueMode(mode) {
+    _windowActorRescueMode =
+        WINDOW_ACTOR_RESCUE_MODES.includes(mode) ? mode : 'two-stage';
+}
+export function getWindowActorRescueMode() {
+    return _windowActorRescueMode;
+}
 export function ensureGlassAllocated(actor, framesBeforeRescue = STRANDED_FRAMES_BEFORE_RESCUE) {
     try {
         if (!actor)
@@ -2890,6 +2964,7 @@ export class UILayerSampler {
             }
         }
         this._reportClonedSet();
+        this._reportClonedWindowGroups();
     }
     static _stageToLocal(actor, stageX, stageY) {
         try {
@@ -3183,6 +3258,35 @@ export class UILayerSampler {
      * backdrop, with nothing in the log to say why. The dock cloning ITSELF is
      * the case this was written for.
      */
+    /**
+     * [window-clone-clip] Holds the cull opt-out for the windows this sampler
+     * reaches THROUGH a cloned window group.
+     *
+     * The sampler clones uiGroup's children wholesale, and two of those children
+     * are global.window_group and global.top_window_group — so every window
+     * actor inside them is painted through a Clutter.Clone here too, and takes
+     * the same damage-region clip from MetaShapedTexture that CullOptOutEffect
+     * exists to defeat. (The UI actors themselves are St widgets: not
+     * MetaCullable, no clip state, nothing to fix.)
+     *
+     * In practice those windows are usually already covered, because whichever
+     * glass owns this sampler also runs a WindowCloneManager that clones the
+     * same actors individually and holds the opt-out for them. That is luck,
+     * not design: a window the manager skips (no allocation yet, hidden behind
+     * a cull) would still be reached through the group clone.
+     */
+    _reportClonedWindowGroups() {
+        let clonesAWindowGroup = false;
+        for (const child of this._clones.keys()) {
+            if (child === global.window_group || child === global.top_window_group) {
+                clonesAWindowGroup = true;
+                break;
+            }
+        }
+        // reportClonedWindowActors() diffs before it does any work, so the common
+        // case is one comparison over the window list.
+        reportClonedWindowActors(this, clonesAWindowGroup ? getWindowActors() : []);
+    }
     _reportClonedSet() {
         let names = '';
         for (const actor of this._clones.keys()) {
@@ -3200,6 +3304,7 @@ export class UILayerSampler {
     }
     destroy() {
         _liveSamplers.delete(this);
+        releaseClonedWindowActors(this);
         this._bmsStateAtClone.clear();
         if (this._uiClonesContainer) {
             try {
