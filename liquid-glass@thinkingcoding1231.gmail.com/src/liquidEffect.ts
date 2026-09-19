@@ -131,8 +131,7 @@ import { setBmsMode, BMS_MODE, computeCaptureLayout, setFrameSyncFrozen, isFrame
   setFocusDebugEnabled, isFocusDebugEnabled,
   setBackgroundMirrorEnabled, isBackgroundMirrorEnabled,
   setCullOptOutEnabled, isCullOptOutEnabled,
-  setWindowActorRescueMode, getWindowActorRescueMode, WindowActorRescueMode,
-  setStrandExitEnabled, isStrandExitEnabled } from './utils.js';
+  setWindowActorRescueMode, getWindowActorRescueMode, WindowActorRescueMode } from './utils.js';
 
 // ─── Looking Glass diagnostics ───────────────────────────────────────────────
 //
@@ -292,6 +291,9 @@ let _autoCaptures = 0;
 const AUTO_CAPTURE_LIMIT = 6;
 
 export function noteStrandEntry(label: string, detail: string): void {
+  // Disarmed by default: nothing is sampled and nothing is written unless the
+  // recorder was switched on for an investigation.
+  if (!_ringArmed) return;
   if (_autoCaptures >= AUTO_CAPTURE_LIMIT) return;
   _autoCaptures++;
   console.log(`[Liquid Glass][ring] AUTO-CAPTURE ${_autoCaptures}/${AUTO_CAPTURE_LIMIT} ` +
@@ -299,9 +301,27 @@ export function noteStrandEntry(label: string, detail: string): void {
   try { flushGlassRing(); } catch (e) { console.error(`[Liquid Glass][ring] ${e}`); }
 }
 
+// Off unless an investigation switches it on: a 20Hz timer that exists only
+// for a fault which is now mitigated has no business running on every desktop.
+// global._lgGlass.ring(true) arms it; Ctrl+Alt+L then flushes whatever it holds.
+let _ringArmed = false;
+
+export function setGlassRingArmed(armed: boolean): void {
+  _ringArmed = !!armed;
+  if (!_ringArmed) {
+    _ring.length = 0;
+    _ringLast = new Map();
+    _autoCaptures = 0;
+  }
+}
+export function isGlassRingArmed(): boolean {
+  return _ringArmed;
+}
+
 /** Starts the sampler. Returns the GLib source id so disable() can stop it. */
 export function startGlassRingSampler(intervalMs: number = 50): number {
   return GLib.timeout_add(GLib.PRIORITY_DEFAULT_IDLE, intervalMs, () => {
+    if (!_ringArmed) return GLib.SOURCE_CONTINUE;
     try { _ringSampleOnce(); } catch (_) { /* never let this kill the source */ }
     return GLib.SOURCE_CONTINUE;
   });
@@ -462,17 +482,15 @@ function _registerGlassDebugHooks(): void {
     },
     windowRescueMode: () => getWindowActorRescueMode(),
 
-    // [anim-stall] Blocks the only exit a stranded chain has, on purpose, so
-    // the fault latches again and a capture can be taken against the real
-    // thing. Default true — see setStrandExitEnabled() for why the entry data
-    // does not require this.
-    strandExit: (on: boolean) => {
-      setStrandExitEnabled(on);
-      const msg = `[Liquid Glass] strand exit ${on ? 'ENABLED' : 'BLOCKED (latch will form)'}`;
+    // [diag] The rolling pre-fault recorder. Off by default; arm it only when
+    // chasing something, then press Ctrl+Alt+L to flush what led up to it.
+    ring: (on: boolean) => {
+      setGlassRingArmed(on);
+      const msg = `[Liquid Glass] ring recorder ${on ? 'ARMED (50ms)' : 'disarmed'}`;
       console.log(msg);
       return msg;
     },
-    strandExitEnabled: () => isStrandExitEnabled(),
+    ringArmed: () => isGlassRingArmed(),
     ringFlush: () => { flushGlassRing(); return 'flushed'; },
 
     // The clone-placement diagnostic. OFF by default: left armed it wrote

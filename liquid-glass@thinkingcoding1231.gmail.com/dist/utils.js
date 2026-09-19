@@ -181,10 +181,6 @@ export function ensureWindowActorAllocated(actor, relayoutFrames, remapFrames) {
             // An ancestor that still HAS an allocation is not in that state, so its
             // queue_relayout() propagates to the stage and the whole subtree is
             // allocated on the next pass.
-            if (!_strandExitEnabled) {
-                // The exit is deliberately blocked. See setStrandExitEnabled().
-                return '';
-            }
             let ancestor = actor.get_parent();
             while (ancestor && isActorValid(ancestor) && !ancestor.has_allocation())
                 ancestor = ancestor.get_parent();
@@ -206,31 +202,6 @@ export function ensureWindowActorAllocated(actor, relayoutFrames, remapFrames) {
     }
 }
 const _windowActorStrandedFrames = new Map();
-// A/B switch for the rescue above.
-//   'two-stage' (default) parent relayout first, hide()/show() as a backstop
-//   'remap'               straight to hide()/show(), the historical behaviour
-//   'off'                 never touch mutter's window actor
-// [anim-stall] Lets the latch form again on purpose.
-//
-// The ancestor walk above is the only exit a stranded chain has: every actor
-// in it has needs_allocation set, and clutter_actor_queue_relayout() returns
-// immediately for exactly that state, so a request raised from inside the
-// chain is swallowed. With this false the chain cannot recover, the fault
-// latches the way it used to, and the ring buffer can be flushed against a
-// fully-formed latch rather than a two-frame excursion.
-//
-// Default TRUE: the entry is what is still unexplained, and the entry already
-// happens tens of times a minute WITH the exit in place (35 relayouts and 16
-// remaps in one healthy 60s capture), so the data can be had without giving
-// up a working desktop. Flip it if the excursions turn out not to resemble
-// the latch: global._lgGlass.strandExit(false).
-let _strandExitEnabled = true;
-export function setStrandExitEnabled(enabled) {
-    _strandExitEnabled = !!enabled;
-}
-export function isStrandExitEnabled() {
-    return _strandExitEnabled;
-}
 let _windowActorRescueMode = 'two-stage';
 const WINDOW_ACTOR_RESCUE_MODES = ['two-stage', 'remap', 'off'];
 export function setWindowActorRescueMode(mode) {
