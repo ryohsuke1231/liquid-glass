@@ -586,12 +586,42 @@ function _registerGlassDebugHooks(): void {
                 try {
                   const tr: any = wa.get_transition(prop);
                   if (tr) {
+                    // [anim-stall] frameClock is the field that matters.
+                    //
+                    // The capture showed playing=true with progress frozen at
+                    // 0.556 of a 150ms animation for a full minute, so the
+                    // timeline is neither finished nor stopped -- nothing is
+                    // ticking it. A frame clock holding timelines keeps itself
+                    // awake (maybe_reschedule_update() reschedules whenever
+                    // frame_clock->timelines is non-empty), so a live clock
+                    // would have advanced it. That leaves the timeline having
+                    // no clock at all:
+                    //
+                    //     update_frame_clock():
+                    //       frame_clock = clutter_actor_pick_frame_clock (actor, ...);
+                    //       ...
+                    //     out:
+                    //       set_frame_clock_internal (timeline, frame_clock);  // may be NULL
+                    //
+                    //     maybe_add_timeline():
+                    //       if (!priv->frame_clock) return;   // silently never ticked
+                    //
+                    // and pick_frame_clock() returns NULL when the actor -- and
+                    // every ancestor -- has an empty stage_views list, which is
+                    // why the view counts are recorded next to it.
                     live[`tr_${prop}`] =
                       `playing=${tr.is_playing()},prog=${tr.get_progress().toFixed(3)}` +
-                      `,dur=${tr.get_duration()}`;
+                      `,dur=${tr.get_duration()}` +
+                      `,clock=${tr.get_frame_clock() ? 'set' : 'NULL'}`;
                   }
                 } catch (_) { /* no such transition */ }
               }
+              try {
+                live.waViews = (wa.peek_stage_views() || []).length;
+                const wg: any = wa.get_parent();
+                if (wg) live.wgViews = (wg.peek_stage_views() || []).length;
+                live.glassViews = (a.peek_stage_views() || []).length;
+              } catch (_) { /* noop */ }
               try {
                 const destroying: any = (Main as any).wm?._destroying;
                 if (destroying) live.shellDestroying = destroying.has(wa);
