@@ -4,7 +4,7 @@ import St from 'gi://St';
 import Meta from 'gi://Meta';
 import Mtk from 'gi://Mtk';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
-import { LiquidEffect } from './liquidEffect.js';
+import { LiquidEffect, noteStrandEntry } from './liquidEffect.js';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import { UnpickableClone, UnpickableActor, InverseCornerEffect, getWindowActors, isActorValid, InvertedPositionConstraint, getAllocatedSize, setActorVisible, ensureGlassAllocated, isFrameSyncFrozen,
@@ -2273,6 +2273,13 @@ export class ApplicationManager {
           state.windowActor, WINDOW_ACTOR_RELAYOUT_FRAMES, WINDOW_ACTOR_STRANDED_FRAMES);
         if (rescue) {
           const title = metaWin.get_title() || '(untitled)';
+          // [anim-stall] First few entries only — see noteStrandEntry().
+          noteStrandEntry(title,
+            `wa.alloc=${state.windowActor.has_allocation()} ` +
+            `wg.alloc=${(() => { const p: any = state.windowActor.get_parent();
+              return p ? p.has_allocation() : '-'; })()} ` +
+            `scale=${state.windowActor.scale_x.toFixed(3)} op=${state.windowActor.opacity} ` +
+            `min=${metaWin.minimized} stage=${rescue}`);
           // The whole chain, because "needs an allocation" alone never said
           // WHY. clutter_actor_allocate() refuses outright for an actor that
           // is not mapped and has no mapped clones, and a parent whose own

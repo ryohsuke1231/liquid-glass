@@ -119,7 +119,7 @@ import Cogl from 'gi://Cogl';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
-import { setBmsMode, BMS_MODE, computeCaptureLayout, setFrameSyncFrozen, isFrameSyncFrozen, setDiffWritesEnabled, isDiffWritesEnabled, setCaptureClipEnabled, isCaptureClipEnabled, setCloneCullEnabled, isCloneCullEnabled, setCullSiteEnabled, isCullSiteEnabled, setAdaptiveColorMode, getAdaptiveColorMode, setNestedGlassFix, getNestedGlassFix, setFocusDebugEnabled, isFocusDebugEnabled, setBackgroundMirrorEnabled, isBackgroundMirrorEnabled, setCullOptOutEnabled, isCullOptOutEnabled, setWindowActorRescueMode, getWindowActorRescueMode } from './utils.js';
+import { setBmsMode, BMS_MODE, computeCaptureLayout, setFrameSyncFrozen, isFrameSyncFrozen, setDiffWritesEnabled, isDiffWritesEnabled, setCaptureClipEnabled, isCaptureClipEnabled, setCloneCullEnabled, isCloneCullEnabled, setCullSiteEnabled, isCullSiteEnabled, setAdaptiveColorMode, getAdaptiveColorMode, setNestedGlassFix, getNestedGlassFix, setFocusDebugEnabled, isFocusDebugEnabled, setBackgroundMirrorEnabled, isBackgroundMirrorEnabled, setCullOptOutEnabled, isCullOptOutEnabled, setWindowActorRescueMode, getWindowActorRescueMode, setStrandExitEnabled, isStrandExitEnabled } from './utils.js';
 // ─── Looking Glass diagnostics ───────────────────────────────────────────────
 //
 // Every live LiquidEffect registers itself here so its last resolved frame
@@ -243,6 +243,15 @@ function _ringSampleOnce() {
                     `|gAlloc=${a.has_allocation() ? 1 : 0}|gPos=${Math.round(a.x)},${Math.round(a.y)}` +
                     `|gSize=${Math.round(a.width)}x${Math.round(a.height)}` +
                     `|min=${mw && mw.minimized ? 1 : 0}` +
+                    // [anim-stall] The window GROUP's allocation is the variable the whole
+                    // diagnosis turns on -- being stranded means glass, window actor AND
+                    // the group all have needs_allocation, and it is the group being in
+                    // that state that swallows every repair request raised from inside the
+                    // chain. The ring was recording everything except it.
+                    `|wgAlloc=${(() => {
+                        const wg = wa.get_parent();
+                        return wg ? (wg.has_allocation() ? 1 : 0) : '-';
+                    })()}` +
                     `|views=${(wa.peek_stage_views() || []).length}` +
                     (trOp
                         ? `|tr=${trOp.is_playing() ? 'play' : 'stop'},${trOp.get_progress().toFixed(3)},` +
@@ -258,6 +267,34 @@ function _ringSampleOnce() {
         _ring.push(`${t} ${line}`);
         if (_ring.length > RING_MAX)
             _ring.shift();
+    }
+}
+/**
+ * [anim-stall] Flushes the ring the first few times the stranded state is
+ * ENTERED, without anyone having to press anything.
+ *
+ * The exit fix means the chain now recovers in a few frames, so the user has
+ * nothing to react to -- but the entry still happens tens of times a minute
+ * (35 relayouts and 16 remaps in one healthy 60s capture). Waiting for a
+ * latch that no longer forms would be waiting for the wrong event; the entry
+ * is already abundant, and it is the entry we do not understand.
+ *
+ * Capped, because this writes to the journal: a diagnostic that fires without
+ * a limit is how this extension hung the compositor once before.
+ */
+let _autoCaptures = 0;
+const AUTO_CAPTURE_LIMIT = 6;
+export function noteStrandEntry(label, detail) {
+    if (_autoCaptures >= AUTO_CAPTURE_LIMIT)
+        return;
+    _autoCaptures++;
+    console.log(`[Liquid Glass][ring] AUTO-CAPTURE ${_autoCaptures}/${AUTO_CAPTURE_LIMIT} ` +
+        `on strand entry for "${label}" — ${detail}`);
+    try {
+        flushGlassRing();
+    }
+    catch (e) {
+        console.error(`[Liquid Glass][ring] ${e}`);
     }
 }
 /** Starts the sampler. Returns the GLib source id so disable() can stop it. */
@@ -423,6 +460,18 @@ function _registerGlassDebugHooks() {
             return msg;
         },
         windowRescueMode: () => getWindowActorRescueMode(),
+        // [anim-stall] Blocks the only exit a stranded chain has, on purpose, so
+        // the fault latches again and a capture can be taken against the real
+        // thing. Default true — see setStrandExitEnabled() for why the entry data
+        // does not require this.
+        strandExit: (on) => {
+            setStrandExitEnabled(on);
+            const msg = `[Liquid Glass] strand exit ${on ? 'ENABLED' : 'BLOCKED (latch will form)'}`;
+            console.log(msg);
+            return msg;
+        },
+        strandExitEnabled: () => isStrandExitEnabled(),
+        ringFlush: () => { flushGlassRing(); return 'flushed'; },
         // The clone-placement diagnostic. OFF by default: left armed it wrote
         // ~400 journal lines a second from the compositor's main thread and hung
         // the shell (2026-09-17). See setFocusDebugEnabled() in utils.ts.
