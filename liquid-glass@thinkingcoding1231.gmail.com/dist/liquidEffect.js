@@ -567,7 +567,7 @@ function _registerGlassDebugHooks() {
             const now = GLib.get_monotonic_time();
             for (const fx of _liveEffects) {
                 if (!fx._diagLast) {
-                    rows.push(`(never painted) owner=${fx._owner ?? '?'}`);
+                    rows.push(`(never painted) owner=${fx._owner ?? '?'}${fx._diagOwnerLabel ? ' label=' + fx._diagOwnerLabel : ''}`);
                     continue;
                 }
                 // `paints` and the snapshot's age are read live rather than taken
@@ -575,13 +575,51 @@ function _registerGlassDebugHooks() {
                 // _diagLast is only refreshed about once a second, and a stale paint
                 // counter would break the main use of this dump — sampling it twice
                 // to work out how many paints each surface costs per frame.
+                // [anim-diag] Live actor state alongside the snapshot. A frozen
+                // paint counter is ambiguous on its own -- minimised, culled,
+                // unallocated and genuinely stuck all look the same in the numbers --
+                // so record what the actor itself says at dump time.
+                let live = {};
+                try {
+                    const a = fx.get_actor();
+                    if (a) {
+                        live = {
+                            mapped: a.mapped,
+                            visible: a.visible,
+                            hasAlloc: a.has_allocation(),
+                            opacity: a.opacity,
+                            pos: `${Math.round(a.x)},${Math.round(a.y)}`,
+                        };
+                        const wa = a.get_parent();
+                        if (wa) {
+                            live.parentMapped = wa.mapped;
+                            live.parentHasAlloc = wa.has_allocation();
+                            live.parentOpacity = wa.opacity;
+                            live.parentScale = `${wa.scale_x.toFixed(3)},${wa.scale_y.toFixed(3)}`;
+                            try {
+                                const mw = wa.get_meta_window ? wa.get_meta_window() : null;
+                                if (mw) {
+                                    live.minimized = mw.minimized;
+                                    live.wRect = (() => {
+                                        const r = mw.get_frame_rect();
+                                        return `${r.x},${r.y},${r.width}x${r.height}`;
+                                    })();
+                                }
+                            }
+                            catch (_) { /* not a window actor */ }
+                        }
+                    }
+                }
+                catch (_) { /* noop */ }
                 rows.push(JSON.stringify({
                     ...fx._diagLast,
+                    label: fx._diagOwnerLabel || undefined,
                     paints: fx._diagPaintCount,
                     composited: fx._diagCompositedPaintCount,
                     blurRuns: fx._blurRuns,
                     blurSkips: fx._blurSkips,
                     snapshotAgeMs: Math.round((now - fx._diagLastSnapshotAt) / 1000),
+                    ...live,
                 }));
             }
             const out = rows.length ? rows.join('\n') : '(no live LiquidEffect)';
@@ -608,6 +646,7 @@ export const LiquidEffect = GObject.registerClass({
         delete params.owner;
         super._init(params);
         this._owner = owner ?? '?';
+        this._diagOwnerLabel = '';
         this._blurTextures = [];
         this._blurFbos = [];
         this._gaussianTempTextures = [];

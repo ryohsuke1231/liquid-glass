@@ -121,6 +121,15 @@
       <summary>Glass for additional top panel menus</summary>
       <description>Automatically apply glass to detected panel dropdowns. Calendar and Quick Settings have separate controls.</description>
     </key>
+    <!-- [anim-diag] Starts/stops a timed global._lgGlass.dump() loop, so a
+         capture of a misbehaving animation can be taken the moment it happens
+         without Looking Glass or unsafe_mode. Press once to start, again to
+         stop early; it stops on its own after DUMP_LOOP_TICKS. -->
+    <key name="dump-loop-keybinding" type="as">
+      <default><![CDATA[['<Control><Alt>l']]]></default>
+      <summary>Toggle the periodic diagnostic dump</summary>
+      <description>Starts a 100 ms interval dump of every live glass into the journal for 60 seconds, or stops one already running.</description>
+    </key>
     <key name="disabled-extra-menus" type="as">
       <default>[]</default>
       <summary>Panel menus excluded from glass</summary>

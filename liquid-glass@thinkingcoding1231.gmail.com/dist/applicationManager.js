@@ -1983,14 +1983,33 @@ export class ApplicationManager {
                 // second across five windows. Stage 1 asks the window group to
                 // relayout instead, which is not swallowed by the window actor's own
                 // short-circuit and costs one relayout.
+                // [anim-diag] Keep the dump able to say WHICH window this glass is.
+                try {
+                    const label = metaWin.get_title() || '(untitled)';
+                    if (state.effect._diagOwnerLabel !== label)
+                        state.effect._diagOwnerLabel = label;
+                }
+                catch (_) { /* noop */ }
                 const rescue = ensureWindowActorAllocated(state.windowActor, WINDOW_ACTOR_RELAYOUT_FRAMES, WINDOW_ACTOR_STRANDED_FRAMES);
                 if (rescue) {
                     const title = metaWin.get_title() || '(untitled)';
-                    this._logger.log(rescue === 'relayout'
-                        ? `[Liquid Glass][strand] relayout via parent for "${title}" ` +
-                            `(stage 1: glass subtree stranded, window group asked to re-allocate)`
-                        : `[Liquid Glass][strand] remapped stranded window actor for "${title}" ` +
-                            `(stage 2: parent relayout did not land, subtree still stranded)`);
+                    // The whole chain, because "needs an allocation" alone never said
+                    // WHY. clutter_actor_allocate() refuses outright for an actor that
+                    // is not mapped and has no mapped clones, and a parent whose own
+                    // box did not change never re-runs its layout manager -- so the
+                    // answer is in the map/alloc flags of the actor AND its parent, not
+                    // in the glass.
+                    this._logger.log(`[Liquid Glass][strand] ${rescue} for "${title}" — ` +
+                        `wa(mapped=${state.windowActor.mapped},vis=${state.windowActor.visible},` +
+                        `alloc=${state.windowActor.has_allocation()},op=${state.windowActor.opacity},` +
+                        `scale=${state.windowActor.scale_x.toFixed(3)}) ` +
+                        `parent(${(() => {
+                            const p = state.windowActor.get_parent();
+                            return p ? `${p.constructor?.name},mapped=${p.mapped},alloc=${p.has_allocation()}` : 'none';
+                        })()}) ` +
+                        `bg(mapped=${state.bgActor.mapped},vis=${state.bgActor.visible},` +
+                        `alloc=${state.bgActor.has_allocation()}) ` +
+                        `min=${metaWin.minimized}`);
                 }
                 ensureGlassAllocated(state.bgActor);
                 ensureGlassAllocated(state.baseActor);

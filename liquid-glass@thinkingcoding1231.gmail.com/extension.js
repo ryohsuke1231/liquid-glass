@@ -12,6 +12,8 @@ import { Logger } from './dist/logger.js';
 import { setUtilsLogger, adaptiveColorTweener, destroySharedBackgroundSource,
   releaseAllClonedWindowActors } from './dist/utils.js';
 import GLib from 'gi://GLib';
+import Meta from 'gi://Meta';
+import Shell from 'gi://Shell';
 
 const DASH_RESCAN_IDLE_TICKS = 2;
 const DASH_RESCAN_INTERVAL_MS = 2000;
@@ -44,6 +46,12 @@ export default class LiquidGlassExtension extends Extension {
       return;
     }
     this._active = true;
+
+    try {
+      this._installDumpLoopKeybinding();
+    } catch (e) {
+      console.error(`[Liquid Glass] could not install the dump-loop keybinding: ${e}`);
+    }
 
     try {
       this._enableInner();
@@ -261,8 +269,65 @@ export default class LiquidGlassExtension extends Extension {
     this._reconnectTimeoutId = sourceId;
   }
 
+  // [anim-diag] Ctrl+Alt+L: start or stop a timed dump of every live glass.
+  //
+  // Built into the extension rather than driven through org.gnome.Shell.Eval
+  // because Eval needs unsafe_mode, which resets on every login — exactly when
+  // a capture is most likely to be wanted. Toggling: press once to start,
+  // again to stop early; it also stops by itself after DUMP_LOOP_TICKS.
+  _installDumpLoopKeybinding() {
+    this._dumpLoopId = 0;
+    Main.wm.addKeybinding(
+      'dump-loop-keybinding',
+      this.getSettings('org.gnome.shell.extensions.liquid-glass@thinkingcoding1231.gmail.com'),
+      Meta.KeyBindingFlags.NONE,
+      Shell.ActionMode.NORMAL | Shell.ActionMode.OVERVIEW,
+      () => this._toggleDumpLoop()
+    );
+  }
+
+  _toggleDumpLoop() {
+    if (this._dumpLoopId) {
+      GLib.source_remove(this._dumpLoopId);
+      this._dumpLoopId = 0;
+      console.log('[Liquid Glass][dump-loop] STOPPED early by Ctrl+Alt+L');
+      Main.notify('Liquid Glass', 'Diagnostic dump stopped');
+      return;
+    }
+
+    const INTERVAL_MS = 100;
+    const TICKS = 600;             // 60 seconds
+    let count = 0;
+    // A marker line so the capture can be found in the journal without
+    // guessing at timestamps.
+    console.log(`[Liquid Glass][dump-loop] STARTED ${TICKS} ticks @ ${INTERVAL_MS}ms`);
+    Main.notify('Liquid Glass', `Diagnostic dump: ${TICKS * INTERVAL_MS / 1000}s`);
+
+    this._dumpLoopId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, INTERVAL_MS, () => {
+      try {
+        global._lgGlass?.dump();
+      } catch (e) {
+        console.error(`[Liquid Glass][dump-loop] dump failed: ${e}`);
+      }
+      if (++count < TICKS) return GLib.SOURCE_CONTINUE;
+      this._dumpLoopId = 0;
+      console.log('[Liquid Glass][dump-loop] FINISHED');
+      return GLib.SOURCE_REMOVE;
+    });
+  }
+
+  _removeDumpLoopKeybinding() {
+    if (this._dumpLoopId) {
+      try { GLib.source_remove(this._dumpLoopId); } catch (e) { }
+      this._dumpLoopId = 0;
+    }
+    try { Main.wm.removeKeybinding('dump-loop-keybinding'); } catch (e) { }
+  }
+
   disable() {
     this._active = false;
+
+    try { this._removeDumpLoopKeybinding(); } catch (e) { }
 
     // [FIX] disable() must be idempotent and must never throw.
     //
