@@ -196,6 +196,108 @@ function _releaseFrameSerialHook() {
     _frameSerialStage = null;
     _frameSerialHandler = 0;
 }
+/**
+ * [anim-stall] A rolling in-memory record of what every window glass is doing,
+ * flushed to the journal only when asked.
+ *
+ * The fault this exists for is rare and has no known trigger, and a capture
+ * that starts AFTER it is noticed necessarily misses the one thing worth
+ * seeing: the frames where a perfectly normal animation turns into a stuck
+ * one. Logging continuously to the journal instead is not an option -- an
+ * earlier version of this extension hung the compositor by doing exactly that
+ * (journald backpressure on the main thread).
+ *
+ * So: sample cheaply into a ring buffer, write nothing, and dump the buffer
+ * when the capture key is pressed. Pressing it just after seeing the glitch
+ * then yields the seconds LEADING UP TO it.
+ *
+ * Kept small on purpose:
+ *   - only the fields that separate a healthy animation from a stuck one;
+ *   - a sample is stored only when a window's line actually CHANGED, so an
+ *     idle desktop costs one string compare per window per tick and the
+ *     buffer keeps spanning back to the last thing that moved;
+ *   - RING_MAX caps the memory regardless.
+ */
+const RING_MAX = 4000;
+const _ring = [];
+let _ringLast = new Map();
+function _ringSampleOnce() {
+    const t = GLib.get_monotonic_time();
+    for (const fx of _liveEffects) {
+        if (fx._owner !== 'application')
+            continue;
+        let line = '';
+        try {
+            const a = fx.get_actor();
+            if (!a)
+                continue;
+            const wa = a.get_parent();
+            if (!wa)
+                continue;
+            const trOp = wa.get_transition ? wa.get_transition('opacity') : null;
+            const mw = wa.get_meta_window ? wa.get_meta_window() : null;
+            line =
+                `${fx._diagOwnerLabel || '?'}|sc=${wa.scale_x.toFixed(3)},${wa.scale_y.toFixed(3)}` +
+                    `|op=${wa.opacity}|pos=${Math.round(wa.x)},${Math.round(wa.y)}` +
+                    `|map=${wa.mapped ? 1 : 0}|alloc=${wa.has_allocation() ? 1 : 0}` +
+                    `|gAlloc=${a.has_allocation() ? 1 : 0}|gPos=${Math.round(a.x)},${Math.round(a.y)}` +
+                    `|gSize=${Math.round(a.width)}x${Math.round(a.height)}` +
+                    `|min=${mw && mw.minimized ? 1 : 0}` +
+                    `|views=${(wa.peek_stage_views() || []).length}` +
+                    (trOp
+                        ? `|tr=${trOp.is_playing() ? 'play' : 'stop'},${trOp.get_progress().toFixed(3)},` +
+                            `${trOp.get_frame_clock() ? 'clk' : 'NOCLK'}`
+                        : '|tr=-');
+        }
+        catch (_) {
+            continue;
+        }
+        if (_ringLast.get(fx) === line)
+            continue;
+        _ringLast.set(fx, line);
+        _ring.push(`${t} ${line}`);
+        if (_ring.length > RING_MAX)
+            _ring.shift();
+    }
+}
+/** Starts the sampler. Returns the GLib source id so disable() can stop it. */
+export function startGlassRingSampler(intervalMs = 50) {
+    return GLib.timeout_add(GLib.PRIORITY_DEFAULT_IDLE, intervalMs, () => {
+        try {
+            _ringSampleOnce();
+        }
+        catch (_) { /* never let this kill the source */ }
+        return GLib.SOURCE_CONTINUE;
+    });
+}
+/** Writes the ring buffer out and clears it. */
+export function flushGlassRing() {
+    if (!_ring.length) {
+        console.log('[Liquid Glass][ring] empty');
+        return;
+    }
+    const t0 = parseInt(_ring[0].split(' ')[0], 10);
+    const tN = parseInt(_ring[_ring.length - 1].split(' ')[0], 10);
+    const lines = _ring.map(r => {
+        const sp = r.indexOf(' ');
+        const ms = Math.round((parseInt(r.slice(0, sp), 10) - t0) / 1000);
+        return `+${String(ms).padStart(6)}ms ${r.slice(sp + 1)}`;
+    });
+    // Chunked, NOT one giant message: journald truncates an over-long line, and
+    // a flood of tiny ones is what hung the compositor once before (backpressure
+    // on the main thread). A few dozen medium messages is neither.
+    const CHUNK = 150;
+    const total = Math.ceil(lines.length / CHUNK);
+    console.log(`[Liquid Glass][ring] BEGIN ${lines.length} samples spanning ` +
+        `${Math.round((tN - t0) / 1000)}ms in ${total} chunk(s)`);
+    for (let i = 0; i < total; i++) {
+        console.log(`[Liquid Glass][ring] ${i + 1}/${total}\n` +
+            lines.slice(i * CHUNK, (i + 1) * CHUNK).join('\n'));
+    }
+    console.log('[Liquid Glass][ring] END');
+    _ring.length = 0;
+    _ringLast = new Map();
+}
 function _registerGlassDebugHooks() {
     const g = globalThis;
     if (!g.global || g.global._lgGlass)

@@ -11,6 +11,7 @@ import { WindowListService } from './dist/windowListService.js';
 import { Logger } from './dist/logger.js';
 import { setUtilsLogger, adaptiveColorTweener, destroySharedBackgroundSource,
   releaseAllClonedWindowActors } from './dist/utils.js';
+import { startGlassRingSampler, flushGlassRing } from './dist/liquidEffect.js';
 import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import Shell from 'gi://Shell';
@@ -277,6 +278,9 @@ export default class LiquidGlassExtension extends Extension {
   // again to stop early; it also stops by itself after DUMP_LOOP_TICKS.
   _installDumpLoopKeybinding() {
     this._dumpLoopId = 0;
+    // [anim-stall] The rolling record starts with the extension and writes
+    // nothing until the capture key is pressed. See startGlassRingSampler().
+    this._ringSamplerId = startGlassRingSampler(50);
     Main.wm.addKeybinding(
       'dump-loop-keybinding',
       this.getSettings('org.gnome.shell.extensions.liquid-glass@thinkingcoding1231.gmail.com'),
@@ -293,6 +297,14 @@ export default class LiquidGlassExtension extends Extension {
       console.log('[Liquid Glass][dump-loop] STOPPED early by Ctrl+Alt+L');
       Main.notify('Liquid Glass', 'Diagnostic dump stopped');
       return;
+    }
+
+    // Flush the frames LEADING UP TO the key press first -- that is the part a
+    // capture started after the fact can never contain.
+    try {
+      flushGlassRing();
+    } catch (e) {
+      console.error(`[Liquid Glass][ring] flush failed: ${e}`);
     }
 
     const INTERVAL_MS = 100;
@@ -322,6 +334,10 @@ export default class LiquidGlassExtension extends Extension {
   }
 
   _removeDumpLoopKeybinding() {
+    if (this._ringSamplerId) {
+      try { GLib.source_remove(this._ringSamplerId); } catch (e) { }
+      this._ringSamplerId = 0;
+    }
     if (this._dumpLoopId) {
       try { GLib.source_remove(this._dumpLoopId); } catch (e) { }
       this._dumpLoopId = 0;
