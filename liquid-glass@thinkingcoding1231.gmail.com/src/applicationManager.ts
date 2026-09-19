@@ -1710,9 +1710,10 @@ export class ApplicationManager {
     // the geometry signature is what lets the next healthy frame take the full
     // path and show the glass again.
     if (this._counterScaleWouldStrand(state)) {
-      setActorVisible(state.bgActor, false);
-      setActorVisible(state.baseActor, false);
-      setActorVisible(state.cornerOverlay, false);
+      // Opacity, not visibility — see _setGlassStrandHidden(). Unmapping here
+      // is what stopped ensureGlassAllocated() from ever repairing the
+      // subtree this guard is reacting to.
+      this._setGlassStrandHidden(state, true);
       state.geomSig = undefined;
       return;
     }
@@ -1890,14 +1891,17 @@ export class ApplicationManager {
     // counter-scale the current animation asked for. Hide it and let
     // _frameTick()'s ensureGlassAllocated() calls do the repair.
     if (anchorOffBy > MAX_ANCHOR_DISPLACEMENT) {
-      setActorVisible(state.bgActor, false);
-      setActorVisible(state.baseActor, false);
-      setActorVisible(state.cornerOverlay, false);
+      // Opacity, not visibility — see _setGlassStrandHidden(). The comment
+      // above says to let ensureGlassAllocated() do the repair, and with
+      // setActorVisible() it never could.
+      this._setGlassStrandHidden(state, true);
       // [PERF] Drop the geometry signature: this frame HID the glass without
       // running the write half, so a later frame that comes back with the
       // exact same geometry would match the stale signature, take the fast
       // path, and never show the actors again.
       state.geomSig = undefined;
+    } else {
+      this._setGlassStrandHidden(state, false);
     }
   }
   /**
@@ -2410,6 +2414,43 @@ export class ApplicationManager {
         }
         return false;
       });
+  }
+
+  /**
+   * [strand-latch] Hides the glass for a frame WITHOUT unmapping it.
+   *
+   * The two guards that use this both hide the glass because the subtree is
+   * stranded, and both say "let ensureGlassAllocated() repair it". With
+   * setActorVisible(..., false) that repair can never run, and the result is a
+   * closed loop:
+   *
+   *   1. the anchor is off because the subtree has no allocation
+   *      -> hide bgActor/baseActor/cornerOverlay
+   *   2. ensureGlassAllocated() opens with
+   *          if (!actor.visible || !actor.mapped || actor.has_allocation()) {
+   *            _strandedFrames.delete(actor); return false;
+   *          }
+   *      so a hidden actor is not merely skipped, its stranded streak is
+   *      RESET every frame -- the rescue can never reach its threshold
+   *   3. and hiding means unmapping, while clutter_actor_allocate() refuses
+   *          if (!TOPLEVEL && !is_mapped && !has_mapped_clones) return;
+   *      so while hidden the actor cannot be allocated at all
+   *   4. -> the anchor stays off -> back to 1.
+   *
+   * The ring capture caught exactly this: bg(mapped=false,vis=false,
+   * alloc=false) on a window sitting at scale=0.995, i.e. long after the
+   * animation that triggered it had finished.
+   *
+   * Opacity 0 costs the same on screen -- clutter_actor_paint() returns at the
+   * top for a zero paint opacity -- but keeps the actor mapped, allocatable
+   * and therefore repairable. Same reasoning as the shared wallpaper source.
+   */
+  _setGlassStrandHidden(state: WindowState, hidden: boolean): void {
+    const wanted = hidden ? 0 : 255;
+    for (const actor of [state.bgActor, state.baseActor, state.cornerOverlay]) {
+      if (!isActorValid(actor)) continue;
+      if (actor.opacity !== wanted) actor.opacity = wanted;
+    }
   }
 
   _counterScaleWouldStrand(state: WindowState): boolean {
