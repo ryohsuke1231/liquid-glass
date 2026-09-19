@@ -170,9 +170,34 @@ export function ensureWindowActorAllocated(
     _windowActorStrandedFrames.set(actor, strandedFor);
 
     if (_windowActorRescueMode !== 'remap' && strandedFor === relayoutFrames) {
-      const parent = actor.get_parent();
-      if (parent && isActorValid(parent)) {
-        parent.queue_relayout();
+      // Walk up to an ancestor that can actually FORWARD the request.
+      //
+      // Queueing on the immediate parent was a no-op in practice, and the
+      // chain diagnostic says why: in 242 of 289 strand events the window
+      // group itself reported alloc=false —
+      //
+      //   wa(mapped=true,vis=true,alloc=false,op=255,scale=1.000)
+      //   parent(Meta_WindowGroup,mapped=true,alloc=false)
+      //   bg(mapped=true,vis=true,alloc=false) min=false
+      //
+      // and clutter_actor_queue_relayout() opens with
+      //
+      //   if (needs_width_request && needs_height_request && needs_allocation)
+      //     return; /* save some cpu cycles */
+      //
+      // which is exactly the state an actor with no allocation is in. So the
+      // request died in the window group the same way it used to die in the
+      // window actor, and stage 2 kept firing (134 remaps against 155
+      // relayouts in one 60s capture).
+      //
+      // An ancestor that still HAS an allocation is not in that state, so its
+      // queue_relayout() propagates to the stage and the whole subtree is
+      // allocated on the next pass.
+      let ancestor: any = actor.get_parent();
+      while (ancestor && isActorValid(ancestor) && !ancestor.has_allocation())
+        ancestor = ancestor.get_parent();
+      if (ancestor && isActorValid(ancestor)) {
+        ancestor.queue_relayout();
         return 'relayout';
       }
     }
