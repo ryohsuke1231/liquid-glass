@@ -298,10 +298,15 @@ export default class LiquidGlassExtension extends Extension {
     const INTERVAL_MS = 100;
     const TICKS = 600;             // 60 seconds
     let count = 0;
+    const seconds = (TICKS * INTERVAL_MS) / 1000;
+    const endsAt = new Date(Date.now() + seconds * 1000);
+    const hhmmss = d => [d.getHours(), d.getMinutes(), d.getSeconds()]
+      .map(n => String(n).padStart(2, '0')).join(':');
     // A marker line so the capture can be found in the journal without
     // guessing at timestamps.
-    console.log(`[Liquid Glass][dump-loop] STARTED ${TICKS} ticks @ ${INTERVAL_MS}ms`);
-    Main.notify('Liquid Glass', `Diagnostic dump: ${TICKS * INTERVAL_MS / 1000}s`);
+    console.log(`[Liquid Glass][dump-loop] STARTED ${TICKS} ticks @ ${INTERVAL_MS}ms, ends ${hhmmss(endsAt)}`);
+    Main.notify('Liquid Glass',
+      `Diagnostic dump running ${seconds}s — ends at ${hhmmss(endsAt)} (Ctrl+Alt+L to stop)`);
 
     this._dumpLoopId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, INTERVAL_MS, () => {
       try {

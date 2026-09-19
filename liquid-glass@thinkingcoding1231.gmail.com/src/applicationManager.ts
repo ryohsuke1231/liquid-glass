@@ -241,6 +241,8 @@ interface WindowState {
   // [black-frame] A BackgroundMirror, or (A/B off) an UnpickableClone of
   // _backgroundGroup; typed as the common base so either fits.
   bgClone: Clutter.Actor;
+  // [min-restore] Pending BEFORE_REDRAW later from _forceGlassReallocation().
+  remapReallocLaterId?: number;
   windowsContainer: Clutter.Actor;
   clones: Map<Meta.WindowActor, Clutter.Actor>;
   effect: LiquidEffect;
@@ -1196,6 +1198,43 @@ export class ApplicationManager {
     state.signals.push({
       obj: windowActor,
       id: windowActor.connect('notify::allocation', () => { state.isDirty = true; })
+    });
+
+    // [min-restore] Re-allocate the glass the moment its window actor comes
+    // back from being unmapped — minimise/restore being the case that matters.
+    //
+    // clutter_actor_allocate() refuses outright for an actor that is neither
+    // mapped nor has mapped clones:
+    //
+    //     if (!CLUTTER_ACTOR_IS_TOPLEVEL (self) &&
+    //         !clutter_actor_is_mapped (self) &&
+    //         !clutter_actor_has_mapped_clones (self))
+    //       return;
+    //
+    // so while a window is minimised its glass subtree is never allocated,
+    // and it keeps whatever allocation it happened to have when the window
+    // actor was unmapped -- which is a frame from the middle of the minimise
+    // animation. A 60s capture of three minimised windows:
+    //
+    //     Extension Manager  alloc 717x502  should be 2132x1149  hasAlloc=false
+    //     Calculator         alloc 320x385  should be  582x828   hasAlloc=false
+    //     Resources          alloc 501x412  should be 1236x808   hasAlloc=false
+    //
+    // while every non-minimised window's glass was exactly right. On restore
+    // the glass therefore starts from that stale geometry, and the per-frame
+    // sync writes transforms against it -- which is what the anchor DRIFT /
+    // REFUSED / strand machinery has been reacting to all along, downstream
+    // of the real problem.
+    //
+    // It also explains why opening the app grid clears it: the overview maps
+    // and allocates every window actor, so the subtree finally gets a real
+    // allocation.
+    state.signals.push({
+      obj: windowActor,
+      id: windowActor.connect('notify::mapped', () => {
+        if (!isActorValid(windowActor) || !windowActor.mapped) return;
+        this._forceGlassReallocation(state);
+      })
     });
 
     const metaWin = windowActor.get_meta_window();
@@ -2319,6 +2358,53 @@ export class ApplicationManager {
    * MAX_STRANDED_COUNTER_SCALE for why both halves are needed and why this can
    * be trusted at the top of a BEFORE_REDRAW tick.
    */
+  /**
+   * [min-restore] Drags a glass subtree back into the allocation cycle after
+   * its window actor was remapped.
+   *
+   * Runs on the next BEFORE_REDRAW rather than inside ::notify so the map has
+   * fully settled (real_map recurses into children) before anything is asked
+   * about has_allocation(). ensureGlassAllocated() with a one-frame threshold
+   * is the existing, proven repair -- hide()/show() clears needs_width_request
+   * / needs_height_request / needs_allocation via real_map() -- and here it is
+   * applied at the one moment it is certainly needed instead of after three to
+   * fourteen stranded frames of the per-frame detector noticing.
+   *
+   * These are all OUR actors. Mutter's window actor is deliberately not
+   * touched: it has just been mapped, so it is not the one that is stuck.
+   */
+  _forceGlassReallocation(state: WindowState): void {
+    if (state.remapReallocLaterId) return;
+    state.remapReallocLaterId = global.compositor.get_laters().add(
+      Meta.LaterType.BEFORE_REDRAW,
+      () => {
+        state.remapReallocLaterId = 0;
+        try {
+          if (this._torndown || !this._states.has(state.windowActor)) return false;
+          if (!isActorValid(state.windowActor) || !state.windowActor.mapped) return false;
+
+          let rescued = 0;
+          for (const actor of [state.bgActor, state.baseActor,
+                               state.cornerOverlay, state.windowsContainer]) {
+            if (isActorValid(actor) && ensureGlassAllocated(actor, 1)) rescued++;
+          }
+          state.isDirty = true;
+
+          if (rescued > 0) {
+            const metaWin = state.windowActor.get_meta_window();
+            const title = metaWin ? (metaWin.get_title() || '(untitled)') : '(?)';
+            this._logger.log(
+              `[Liquid Glass][min-restore] re-allocated ${rescued} glass actor(s) for ` +
+              `"${title}" after its window actor was remapped`
+            );
+          }
+        } catch (e) {
+          this._logger.error(`[Liquid Glass] _forceGlassReallocation failed: ${e}`);
+        }
+        return false;
+      });
+  }
+
   _counterScaleWouldStrand(state: WindowState): boolean {
     const container = state.windowsContainer;
     if (!isActorValid(container)) return false;
@@ -2449,6 +2535,12 @@ export class ApplicationManager {
     // and through it the whole state — alive against a destroyed glass.
     this._releaseDamageHooks(state);
     releaseClonedWindowActors(state);
+    // [min-restore] This later closes over `state`; leaving it armed would run
+    // against a torn-down glass.
+    if (state.remapReallocLaterId) {
+      try { global.compositor.get_laters().remove(state.remapReallocLaterId); } catch (_) { /* noop */ }
+      state.remapReallocLaterId = 0;
+    }
 
     // Restore the original opacity of the window's own content layer.
     // Uses the cached surfaceActor reference (see WindowState) rather than
