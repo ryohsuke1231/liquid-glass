@@ -69,14 +69,15 @@ for (const [file, name] of [['uiManager.js', 'UIManager'], ['notificationManager
     // Only the color methods run, with no frame loop or shader allocation.
     const C = load(file, name, { St: { Button: Actor },
       GLib: { get_monotonic_time: () => 0, source_remove() {}, timeout_add() { throw Error('Unexpected color fade'); } },
+      adaptiveColorTweener: { cancel() {} },
     })[name];
     const manager = Object.create(C.prototype);
     manager._styledActors = new Map(); manager._adaptiveConfig = config;
     const actor = new Actor(); const original = actor.style;
-    manager._setActorColor(actor, '#1a1a1a');
+    manager._setActorColor(actor, '#1a1a1a', true);
     assert.ok(actor.style.includes('font-weight: bold; padding: 4px;'));
     assert.ok(actor.style.includes('color:'));
-    manager._setActorColor(actor, '#f2f2f2');
+    manager._setActorColor(actor, '#f2f2f2', true);
     manager._clearAdaptiveStyles();
     assert.equal(actor.style, original);
     assert.equal(actor._currentTargetColor, undefined);

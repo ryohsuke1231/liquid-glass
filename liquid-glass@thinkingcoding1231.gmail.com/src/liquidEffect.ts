@@ -1368,6 +1368,9 @@ export const LiquidEffect = GObject.registerClass({
 
       // 読み込み完了後に再描画をリクエストし、パイプラインを初期化させる
       this.queue_repaint();
+      const actor = this.get_actor();
+      actor?.queue_redraw();
+      actor?.get_parent()?.queue_redraw();
     } catch (e) {
       this._logger?.error(`[Liquid Glass] Failed to load shaders asynchronously: ${e}`);
     }

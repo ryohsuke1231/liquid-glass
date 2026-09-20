@@ -354,6 +354,7 @@ export class DashManager {
             }
             else {
                 if (this._frameSyncId !== 0) {
+                    global.compositor.get_laters().remove(this._frameSyncId);
                     this._frameSyncId = 0;
                 }
             }
