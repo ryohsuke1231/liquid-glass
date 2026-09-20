@@ -238,6 +238,15 @@ export class DashManager {
     if (this._isEffectActive) return;
     this._isEffectActive = true;
 
+    this._lastScreenW = this._lastScreenH = undefined;
+    this._lastBgW = this._lastBgH = undefined;
+    this._lastBgX = this._lastBgY = undefined;
+    this._lastBaseW = this._lastBaseH = undefined;
+    this._lastAbsX = this._lastAbsY = undefined;
+    this._lastTW = this._lastTH = undefined;
+    this._stableDeltaW = this._stableDeltaH = undefined;
+    this._lastHidden = undefined;
+
     this.targetActor.add_style_class_name('liquid-glass-transparent');
 
     this._dockParent = this.targetActor.get_parent() as St.Widget | null;
@@ -731,7 +740,8 @@ export class DashManager {
     // Detect any change in dock geometry OR monitor size to trigger a rebuild.
     if (this._lastBgW !== bgW || this._lastBgH !== bgH ||
       this._lastBgX !== bgX || this._lastBgY !== bgY ||
-      this._lastScreenW !== screenW || this._lastScreenH !== screenH) {
+      this._lastScreenW !== screenW || this._lastScreenH !== screenH ||
+      this.bgActor.x !== monitor.x || this.bgActor.y !== monitor.y) {
 
       this.bgActor.remove_transition('size');
       this.bgActor.remove_transition('position');
