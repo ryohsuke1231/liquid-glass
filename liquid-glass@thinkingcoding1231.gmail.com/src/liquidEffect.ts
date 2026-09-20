@@ -305,9 +305,25 @@ export function noteStrandEntry(label: string, detail: string): void {
 // for a fault which is now mitigated has no business running on every desktop.
 // global._lgGlass.ring(true) arms it; Ctrl+Alt+L then flushes whatever it holds.
 let _ringArmed = false;
+let _ringSamplerEnabled = false;
+let _ringSamplerId = 0;
+let _ringSamplerInterval = 50;
+
+function syncGlassRingSampler(): void {
+  if (!_ringArmed || !_ringSamplerEnabled) {
+    if (_ringSamplerId) GLib.Source.remove(_ringSamplerId);
+    _ringSamplerId = 0;
+  } else if (!_ringSamplerId) {
+    _ringSamplerId = GLib.timeout_add(GLib.PRIORITY_DEFAULT_IDLE, _ringSamplerInterval, () => {
+      try { _ringSampleOnce(); } catch (_) { }
+      return GLib.SOURCE_CONTINUE;
+    });
+  }
+}
 
 export function setGlassRingArmed(armed: boolean): void {
   _ringArmed = !!armed;
+  syncGlassRingSampler();
   if (!_ringArmed) {
     _ring.length = 0;
     _ringLast = new Map();
@@ -318,13 +334,15 @@ export function isGlassRingArmed(): boolean {
   return _ringArmed;
 }
 
-/** Starts the sampler. Returns the GLib source id so disable() can stop it. */
-export function startGlassRingSampler(intervalMs: number = 50): number {
-  return GLib.timeout_add(GLib.PRIORITY_DEFAULT_IDLE, intervalMs, () => {
-    if (!_ringArmed) return GLib.SOURCE_CONTINUE;
-    try { _ringSampleOnce(); } catch (_) { /* never let this kill the source */ }
-    return GLib.SOURCE_CONTINUE;
-  });
+export function startGlassRingSampler(intervalMs: number = 50): void {
+  _ringSamplerInterval = intervalMs;
+  _ringSamplerEnabled = true;
+  syncGlassRingSampler();
+}
+
+export function stopGlassRingSampler(): void {
+  _ringSamplerEnabled = false;
+  setGlassRingArmed(false);
 }
 
 /** Writes the ring buffer out and clears it. */

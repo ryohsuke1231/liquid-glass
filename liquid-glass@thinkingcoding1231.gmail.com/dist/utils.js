@@ -9,6 +9,7 @@ import GObject from 'gi://GObject';
 import Clutter from 'gi://Clutter';
 import Cogl from 'gi://Cogl';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import * as DND from 'resource:///org/gnome/shell/ui/dnd.js';
 import St from 'gi://St';
 import Shell from 'gi://Shell';
 import Mtk from 'gi://Mtk';
@@ -1284,6 +1285,10 @@ function releaseSelfExcludingSnapshot(sourceActor, hideActor) {
  * picker sees through it to whatever is behind.
  */
 export const UnpickableClone = GObject.registerClass(class UnpickableClone extends Clutter.Clone {
+    _init(params = {}) {
+        super._init(params);
+        Shell.util_set_hidden_from_pick(this, true);
+    }
     vfunc_pick(_pickContext) {
         // No-op: never respond to picking.
     }
@@ -1294,6 +1299,10 @@ export const UnpickableClone = GObject.registerClass(class UnpickableClone exten
  * CSS/theming padding interfering with pixel-precise layout.
  */
 export const UnpickableActor = GObject.registerClass(class UnpickableActor extends Clutter.Actor {
+    _init(params = {}) {
+        super._init(params);
+        Shell.util_set_hidden_from_pick(this, true);
+    }
     vfunc_pick(_pickContext) {
         // No-op: never respond to picking.
     }
@@ -1739,6 +1748,7 @@ function ensureSharedBackgroundSource() {
     // contract to rely on.
     source.opacity = 0;
     source.reactive = false;
+    Shell.util_set_hidden_from_pick(source, true);
     // uiGroup, deliberately: it is a sibling of global.window_group, so
     // meta_window_group_paint()'s cull walk can never reach our contents.
     uiGroup.add_child(source);
@@ -1957,6 +1967,10 @@ export function createBackgroundMirror(name) {
  * as a descendant selector against the real widget's ancestry will not.
  */
 export const UnpickableStyledWidget = GObject.registerClass(class UnpickableStyledWidget extends St.Widget {
+    _init(params = {}) {
+        super._init(params);
+        Shell.util_set_hidden_from_pick(this, true);
+    }
     vfunc_pick(_pickContext) {
         // No-op: never respond to picking.
     }
@@ -2008,6 +2022,10 @@ export const LayoutOpaqueActor = GObject.registerClass(class LayoutOpaqueActor e
  * that need St's styling/layout features.
  */
 export const UnpickableWidget = GObject.registerClass(class UnpickableWidget extends St.Widget {
+    _init(params = {}) {
+        super._init(params);
+        Shell.util_set_hidden_from_pick(this, true);
+    }
     vfunc_pick(_pickContext) {
         // No-op: never respond to picking.
     }
@@ -2025,6 +2043,7 @@ export const TextureBlitActor = GObject.registerClass({
 }, class TextureBlitActor extends Clutter.Actor {
     _init(params = {}) {
         super._init(params);
+        Shell.util_set_hidden_from_pick(this, true);
         this._getTexture = null;
         this._sourceActor = null;
         this._pipeline = null;
@@ -2204,6 +2223,14 @@ export class UILayerSampler {
     // once instead of every frame.
     _clonedNamesLogged = '';
     _clones = new Map();
+    _sourceDestroyIds = new Map();
+    _dragActor = null;
+    _dragMonitor = {
+        dragMotion: (event) => {
+            this._dragActor = event.dragActor;
+            return DND.DragMotionResult.CONTINUE;
+        },
+    };
     _uiClonesContainer = null;
     // Read-only cache: for each uiGroup child, either the (actor, effect) pair
     // of an existing Clutter.OffscreenEffect found in its subtree, or null if
@@ -2274,6 +2301,7 @@ export class UILayerSampler {
         else {
             this._container.add_child(this._uiClonesContainer);
         }
+        DND.addDragMonitor(this._dragMonitor);
     }
     /**
      * [PERF ①b] Restricts clone culling to `rect` (screen coordinates), or
@@ -2845,6 +2873,8 @@ export class UILayerSampler {
         const uiGroup = Main.layoutManager.uiGroup;
         const children = uiGroup.get_children();
         const seen = new Set();
+        if (this._dragActor && !children.includes(this._dragActor))
+            this._dragActor = null;
         // [FIX] One lookup per refresh, not per child: notice BMS appearing or
         // disappearing and rebuild only the clones whose answer moved.
         const bmsTarget = this._resolveBmsTargetActor();
@@ -2875,6 +2905,8 @@ export class UILayerSampler {
                 if (child._isDisposed)
                     continue;
                 if (!isActorValid(child))
+                    continue;
+                if (child === this._dragActor)
                     continue;
                 if (child === this._selfActor || child === this._selfRoot)
                     continue;
@@ -2915,17 +2947,6 @@ export class UILayerSampler {
                 }
                 seen.add(child);
                 if (!this._clones.has(child)) {
-                    child.connect('destroy', () => {
-                        child._isDisposed = true;
-                        const clone = this._clones.get(child);
-                        if (clone) {
-                            this._clones.delete(child);
-                            try {
-                                clone.destroy();
-                            }
-                            catch (_) { }
-                        }
-                    });
                     const bmsTarget = this._findBmsDescendant(child);
                     // SKIP: leave the BMS target out of the glass altogether. Done here
                     // rather than in the exclusion block above so the child is still
@@ -2972,6 +2993,19 @@ export class UILayerSampler {
                     });
                     this._uiClonesContainer?.add_child(sourceClone);
                     this._clones.set(child, sourceClone);
+                    if (!this._sourceDestroyIds.has(child)) {
+                        this._sourceDestroyIds.set(child, child.connect('destroy', () => {
+                            this._sourceDestroyIds.delete(child);
+                            this._bmsStateAtClone.delete(child);
+                            this._existingEffectCache.delete(child);
+                            const clone = this._clones.get(child);
+                            this._clones.delete(child);
+                            try {
+                                clone?.destroy();
+                            }
+                            catch (_) { }
+                        }));
+                    }
                     this._insertCloneInZOrder(child, sourceClone);
                 }
             }
@@ -2987,6 +3021,17 @@ export class UILayerSampler {
                 catch (_) { }
                 this._clones.delete(actor);
             }
+        }
+        for (const [actor, id] of this._sourceDestroyIds) {
+            if (this._clones.has(actor))
+                continue;
+            try {
+                actor.disconnect(id);
+            }
+            catch (_) { }
+            this._sourceDestroyIds.delete(actor);
+            this._bmsStateAtClone.delete(actor);
+            this._existingEffectCache.delete(actor);
         }
         this._reportClonedSet();
         this._reportClonedWindowGroups();
@@ -3329,6 +3374,15 @@ export class UILayerSampler {
     }
     destroy() {
         _liveSamplers.delete(this);
+        DND.removeDragMonitor(this._dragMonitor);
+        this._dragActor = null;
+        for (const [actor, id] of this._sourceDestroyIds) {
+            try {
+                actor.disconnect(id);
+            }
+            catch (_) { }
+        }
+        this._sourceDestroyIds.clear();
         releaseClonedWindowActors(this);
         this._bmsStateAtClone.clear();
         if (this._uiClonesContainer) {

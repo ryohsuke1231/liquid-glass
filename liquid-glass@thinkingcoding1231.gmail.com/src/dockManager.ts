@@ -7,7 +7,7 @@ import Meta from 'gi://Meta';
 import { LiquidEffect } from './liquidEffect.js';
 import Gio from 'gi://Gio';
 import { UnpickableActor, UILayerSampler, WindowCloneManager, reportFrameLoopError, ensureGlassAllocated, isFrameSyncFrozen,
-  setClipIfChanged, syncGlassCaptureClip } from './utils.js';
+  setClipIfChanged, syncGlassCaptureClip, isActorValid } from './utils.js';
 
 import { Logger } from './logger.js';
 
@@ -838,78 +838,44 @@ export class DashManager {
   _removeEffect() {
     if (!this._isEffectActive) return;
     this._isEffectActive = false;
-
     this._currentMarginStyle = undefined;
-
-    // Safely try to remove styles/signals. If targetActor is already destroyed, 
-    // this will fail safely without breaking the rest of the cleanup.
-    try {
-      for (let sigId of this._signals) {
-        this.targetActor.disconnect(sigId);
-      }
-      this.targetActor.remove_style_class_name('liquid-glass-transparent');
-
-      if (this._originalStyle !== undefined) {
-        this.targetActor.set_style(this._originalStyle);
-        this._originalStyle = undefined;
-      }
-      let children = this.targetActor.get_children() as St.Widget[];
-      for (let i = 0; i < children.length; i++) {
-        if (children[i].has_style_class_name('dash-background')) {
-          children[i].opacity = 255;
-        }
-      }
-    } catch (e) {
-      // Actor was likely destroyed, safe to ignore
-    }
-
-    this._signals = [];
-
-    this.targetActor.remove_style_class_name('liquid-glass-transparent');
-
-    try {
-      if (this._dockParent) {
-        this._dockParent.remove_style_class_name('liquid-glass-transparent');
-      }
-    } catch (e) { }
-    this._dockParent = null;
-
-    if (this._originalStyle !== undefined) {
-      this.targetActor.set_style(this._originalStyle);
-      this._originalStyle = undefined; // 次回オンになった時に再取得できるようクリア
-    }
-
-    let children = this.targetActor.get_children() as St.Widget[];
-    for (let i = 0; i < children.length; i++) {
-      if (children[i].has_style_class_name('dash-background')) {
-        children[i].opacity = 255;
-      }
-    }
-
-    if (this._frameSyncId !== 0) {
-      if (global.compositor?.get_laters) {
-        global.compositor.get_laters().remove(this._frameSyncId);
-      } else {
-        // Meta.later_remove(this._frameSyncId);
-      }
+    this._teardownStep('frameSync', () => {
+      const id = this._frameSyncId;
       this._frameSyncId = 0;
+      if (id) global.compositor?.get_laters().remove(id);
+    });
+    for (const id of this._signals) {
+      this._teardownStep('targetSignal', () => {
+        if (isActorValid(this.targetActor)) this.targetActor.disconnect(id);
+      });
     }
-
-    if (this.effect) {
-      this.effect.cleanup();
-      this.effect = null;
-    }
-
-    if (this.bgActor) {
-      this.bgActor.destroy();
-      this.bgActor = null;
-    }
-    // liquidBox is a child of bgActor and is already destroyed by bgActor.destroy().
-    // Just clear the reference here.
+    this._signals = [];
+    this._teardownStep('targetStyle', () => {
+      if (!isActorValid(this.targetActor)) return;
+      this.targetActor.remove_style_class_name('liquid-glass-transparent');
+      if (this._originalStyle !== undefined) this.targetActor.set_style(this._originalStyle);
+      for (const child of this.targetActor.get_children() as St.Widget[]) {
+        if (child.has_style_class_name('dash-background')) child.opacity = 255;
+      }
+    });
+    this._originalStyle = undefined;
+    this._teardownStep('parentStyle', () => {
+      if (isActorValid(this._dockParent))
+        this._dockParent!.remove_style_class_name('liquid-glass-transparent');
+    });
+    this._dockParent = null;
+    this._teardownStep('effect', () => this.effect?.cleanup());
+    this.effect = null;
+    this._teardownStep('uiSampler', () => this._uiSampler?.destroy());
+    this._uiSampler = null;
+    this._teardownStep('windowClones', () => this._windowCloneManager?.destroy());
+    this._windowCloneManager = null;
+    this._teardownStep('background', () => {
+      if (isActorValid(this.bgActor)) this.bgActor!.destroy();
+    });
+    this.bgActor = null;
     this.liquidBox = null;
-
-    this._uiSampler?.destroy();
-    this._windowCloneManager?.destroy();
+    this._cloneContainer = null;
   }
 
   // 拡張機能全体が無効化される時の最終クリーンアップ

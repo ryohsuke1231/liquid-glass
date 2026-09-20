@@ -51,11 +51,11 @@ function fixture(monitor) {
     setPadding() {} setTintColor() {} setTintStrength() {} setCornerRadius() {}
     setBrightness() {} setContrast() {} setSaturation() {} setBlurRadius() {}
     setIsDock() {} setShadowMaxRadius() {} setResolution() {} setGlassGeometry() {}
-    cleanup() {}
+    cleanup() { this.cleaned = true; }
   }
   class Sampler {
     addExclusion() {} rebuildClones() {} rebindSelf() {} refresh() {} sync() {}
-    setOffset() {} destroy() {}
+    setOffset() {} destroy() { this.destroyed = true; }
   }
   const bindings = {
     Main: { layoutManager: { uiGroup: group, primaryIndex: 0,
@@ -65,6 +65,7 @@ function fixture(monitor) {
     UnpickableActor: Actor, LiquidEffect: Effect,
     WindowCloneManager: Sampler, UILayerSampler: Sampler,
     ensureGlassAllocated() {}, isFrameSyncFrozen: () => false,
+    isActorValid: actor => !!actor && !actor.destroyed,
     reportFrameLoopError(_, error) { throw error; }, syncGlassCaptureClip() {},
     setClipIfChanged(actor, ...args) { actor.set_clip(...args); },
   };
@@ -120,4 +121,20 @@ test('rapid dock hide/show keeps exactly one pending render callback', () => {
   }
   manager._removeEffect();
   assert.equal(pending.size, 0);
+});
+
+test('a failing target style cannot leave capture actors, effects or callbacks behind', () => {
+  const { manager, target, pending } = fixture({ x: 0, y: 0, width: 1920, height: 1080 });
+  manager._applyEffect();
+  const { bgActor, effect, _uiSampler, _windowCloneManager } = manager;
+  target.remove_style_class_name = () => { throw new Error('target no longer usable'); };
+  manager._removeEffect();
+  assert.equal(pending.size, 0);
+  assert.equal(target.handlers.size, 0);
+  assert.equal(bgActor.destroyed, true);
+  assert.equal(effect.cleaned, true);
+  assert.equal(_uiSampler.destroyed, true);
+  assert.equal(_windowCloneManager.destroyed, true);
+  assert.equal(manager.bgActor, null);
+  assert.doesNotThrow(() => manager._removeEffect());
 });
