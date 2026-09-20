@@ -3,7 +3,7 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import { LiquidEffect } from './liquidEffect.js';
-import { UnpickableActor, UILayerSampler, WindowCloneManager, reportFrameLoopError, ensureGlassAllocated, isFrameSyncFrozen, setClipIfChanged, syncGlassCaptureClip, isActorValid } from './utils.js';
+import { UnpickableActor, UILayerSampler, WindowCloneManager, reportFrameLoopError, ensureGlassAllocated, isFrameSyncFrozen, setClipIfChanged, syncGlassCaptureClip, isActorValid, SAME_FRAME_WINDOW_US } from './utils.js';
 // Padding to allow the shader to draw effects (like refraction and blur) outside the actor's strict bounds.
 const SHADER_PADDING = 20;
 // Utility: Convert HEX color string (e.g., "#ffffff") to normalized RGB array [1.0, 1.0, 1.0]
@@ -35,9 +35,8 @@ export class DashManager {
     _signals;
     _settingsSignals; // GSettingsのイベントリスナーを管理
     _frameSyncId;
-    // [FIX] Set by cleanup() before anything that can throw. Read by the
-    // per-frame BEFORE_REDRAW tick so an orphaned chain stops itself even if
-    // cleanup() never reached its laterRemove(). See the note in frameTick().
+    _frameSignalId = 0;
+    _lastTickUs = 0;
     _torndown = false;
     _isEffectActive; // エフェクトが現在適用されているかのフラグ
     _originalStyle;
@@ -105,6 +104,7 @@ export class DashManager {
         connectSetting('dock-glass-expand', () => {
             if (this.effect && this._isEffectActive) {
                 this._glassExpand = this._settings.get_int('dock-glass-expand');
+                this.bgActor?.queue_redraw();
             }
         });
         // マージン変更時
@@ -307,53 +307,32 @@ export class DashManager {
             this._uiSampler?.rebindSelf();
             this._uiSampler?.refresh();
         };
-        // The reschedule at the end is what keeps this chain alive, so it must
-        // not be reachable-only-on-success: a single throw out of
-        // _syncGeometry() (a disposed clone, a destroyed dash child, ...) used
-        // to skip it and freeze the dock's glass permanently — clones stuck at
-        // their last position, no new UI clones (the Overview's controls never
-        // appear inside the dock), and the only way back was hiding and
-        // re-showing the dock, since startFrameSync() only runs from
-        // 'notify::mapped'. Same shape as ApplicationManager._frameTick().
         let frameTick = () => {
-            this._frameSyncId = 0;
-            // [FIX] Hard stop after teardown. Every one of these ticks ends by
-            // re-adding itself as a BEFORE_REDRAW later, so a cleanup() that does
-            // not reach its laterRemove() — because an earlier step threw — leaves
-            // a self-rescheduling chain running forever against destroyed actors,
-            // holding this whole manager (and its settings and logger) alive. The
-            // next enable() then builds a second set on top of a live first set,
-            // which is the "the extension can no longer be enabled" symptom.
-            // Removing the later is still done in cleanup(); this is the backstop
-            // that does not depend on cleanup() getting that far.
-            if (this._torndown)
-                return GLib.SOURCE_REMOVE;
-            if (!this.bgActor || !this.targetActor.mapped)
-                return GLib.SOURCE_REMOVE;
-            // [DIAG] See setFrameSyncFrozen() in utils.ts. Reschedules but does
-            // nothing, so the cost of this poll can be measured directly.
-            if (isFrameSyncFrozen()) {
-                this._frameSyncId = laterAdd(frameLaterType, frameTick);
-                return GLib.SOURCE_REMOVE;
-            }
-            // Repair the subtree if Clutter has stopped allocating it. Sampled
-            // here, at the top of the tick, because the previous frame's relayout
-            // has settled by now and this frame's sync has not dirtied anything
-            // yet. See ensureGlassAllocated().
-            ensureGlassAllocated(this.bgActor);
+            if (this._torndown || !this._isEffectActive || !this.bgActor || !this.targetActor.mapped)
+                return;
+            if (isFrameSyncFrozen())
+                return;
+            const nowUs = GLib.get_monotonic_time();
+            if (nowUs - this._lastTickUs < SAME_FRAME_WINDOW_US)
+                return;
+            this._lastTickUs = nowUs;
             try {
+                ensureGlassAllocated(this.bgActor);
                 this._syncGeometry();
             }
             catch (e) {
                 reportFrameLoopError('DockManager', e);
             }
-            this._frameSyncId = laterAdd(frameLaterType, frameTick);
-            return GLib.SOURCE_REMOVE;
         };
         let startFrameSync = () => {
-            if (this._frameSyncId === 0) {
+            if (this._frameSignalId === 0) {
                 buildClones();
-                this._frameSyncId = laterAdd(frameLaterType, frameTick);
+                this._frameSignalId = global.stage.connect('before-update', frameTick);
+                this._frameSyncId = laterAdd(frameLaterType, () => {
+                    this._frameSyncId = 0;
+                    frameTick();
+                    return GLib.SOURCE_REMOVE;
+                });
             }
         };
         let mapSignalId = this.targetActor.connect('notify::mapped', () => {
@@ -361,10 +340,7 @@ export class DashManager {
                 startFrameSync();
             }
             else {
-                if (this._frameSyncId !== 0) {
-                    global.compositor.get_laters().remove(this._frameSyncId);
-                    this._frameSyncId = 0;
-                }
+                this._stopFrameSync();
             }
         });
         this._signals.push(mapSignalId);
@@ -745,18 +721,27 @@ export class DashManager {
         this._uiSampler?.sync(monitor.x, monitor.y, screenW, screenH);
         this._windowCloneManager?.sync();
     }
+    _stopFrameSync() {
+        this._teardownStep('frameSignal', () => {
+            const id = this._frameSignalId;
+            this._frameSignalId = 0;
+            if (id)
+                global.stage.disconnect(id);
+        });
+        this._teardownStep('initialFrame', () => {
+            const id = this._frameSyncId;
+            this._frameSyncId = 0;
+            if (id)
+                global.compositor?.get_laters().remove(id);
+        });
+    }
     // エフェクトを画面から消し、元に戻す処理
     _removeEffect() {
         if (!this._isEffectActive)
             return;
         this._isEffectActive = false;
         this._currentMarginStyle = undefined;
-        this._teardownStep('frameSync', () => {
-            const id = this._frameSyncId;
-            this._frameSyncId = 0;
-            if (id)
-                global.compositor?.get_laters().remove(id);
-        });
+        this._stopFrameSync();
         for (const id of this._signals) {
             this._teardownStep('targetSignal', () => {
                 if (isActorValid(this.targetActor))
@@ -818,16 +803,7 @@ export class DashManager {
     }
     cleanup() {
         this._torndown = true;
-        // 毎フレームの later チェーンを最初に、無条件で止める。_removeEffect()
-        // の途中で throw しても孤児チェーンが残らないようにするため
-        // （_teardownStep のコメント参照）。
-        this._teardownStep('frameSync', () => {
-            if (this._frameSyncId !== 0) {
-                if (global.compositor?.get_laters)
-                    global.compositor.get_laters().remove(this._frameSyncId);
-                this._frameSyncId = 0;
-            }
-        });
+        this._stopFrameSync();
         // エフェクトを解除
         this._teardownStep('removeEffect', () => this._removeEffect());
         // メモリリークを防ぐため、GSettingsのリスナーもすべて解除する

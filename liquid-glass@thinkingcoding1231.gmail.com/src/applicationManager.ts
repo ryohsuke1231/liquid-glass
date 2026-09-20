@@ -13,7 +13,7 @@ import { UnpickableClone, UnpickableActor, InverseCornerEffect, getWindowActors,
   isCullSiteEnabled, rectsIntersect, setCloneCulled,
   createBackgroundMirror, setBackgroundMirrorEnabled, isBackgroundMirrorEnabled,
   reportClonedWindowActors, releaseClonedWindowActors,
-  ensureWindowActorAllocated } from './utils.js';
+  ensureWindowActorAllocated, SAME_FRAME_WINDOW_US } from './utils.js';
 
 import { Logger } from './logger.js';
 
@@ -290,10 +290,8 @@ export class ApplicationManager {
   private _settings: Gio.Settings;
   private _logger: Logger;
   private _settingsSignals: number[];
-  private _frameSyncId: number;
-  // [FIX] Set by cleanup() before anything that can throw. Read by the
-  // per-frame BEFORE_REDRAW tick so an orphaned chain stops itself even if
-  // cleanup() never reached its laterRemove(). See the note in frameTick().
+  private _frameSignalId: number = 0;
+  private _lastTickUs: number = 0;
   private _torndown: boolean = false;
   private _windowCreatedId: number;
   private _restackedId: number = 0;
@@ -356,7 +354,6 @@ export class ApplicationManager {
     this._logger = logger;
     this._states = new Map();
     this._settingsSignals = [];
-    this._frameSyncId = 0;
     this._windowCreatedId = 0;
     this._restackedId = 0;
   }
@@ -706,12 +703,7 @@ export class ApplicationManager {
   }
 
   _removeAllEffects() {
-    if (this._frameSyncId) {
-      if (global.compositor?.get_laters) {
-        global.compositor.get_laters().remove(this._frameSyncId);
-      }
-      this._frameSyncId = 0;
-    }
+    this._stopFrameSync();
 
     if (this._rebuildFollowupLaterId) {
       if (global.compositor?.get_laters) {
@@ -868,8 +860,17 @@ export class ApplicationManager {
   // get_transformed_position, set_position vs translation_x/y vs
   // Clutter.Constraint) was tried in every combination and changed nothing.
   _startFrameSync() {
-    if (this._frameSyncId === 0)
-      this._frameTick();
+    if (this._frameSignalId !== 0) return;
+    this._frameSignalId = global.stage.connect('before-update', () => this._frameTick());
+    this._frameTick();
+  }
+
+  _stopFrameSync() {
+    const signalId = this._frameSignalId;
+    this._frameSignalId = 0;
+    if (signalId) {
+      try { global.stage.disconnect(signalId); } catch (e) { }
+    }
   }
 
   _rebuildAllClones() {
@@ -2205,21 +2206,12 @@ export class ApplicationManager {
   }
 
   _frameTick() {
-    // [FIX] Hard stop after teardown — see the note on _torndown. This tick
-    // re-adds itself as a BEFORE_REDRAW later at the end, so without this a
-    // cleanup() that threw before its laters().remove() would leave the
-    // chain running forever against destroyed window actors.
     if (this._torndown) return;
+    if (isFrameSyncFrozen()) return;
 
-    // [DIAG] See setFrameSyncFrozen() in utils.ts. Reschedules but does
-    // nothing, so the cost of this poll can be measured directly.
-    if (isFrameSyncFrozen()) {
-      this._frameSyncId = global.compositor.get_laters().add(
-        Meta.LaterType.BEFORE_REDRAW,
-        () => { this._frameTick(); return false; }
-      );
-      return;
-    }
+    const nowUs = GLib.get_monotonic_time();
+    if (nowUs - this._lastTickUs < SAME_FRAME_WINDOW_US) return;
+    this._lastTickUs = nowUs;
 
     for (let state of this._states.values()) {
       try {
@@ -2314,14 +2306,6 @@ export class ApplicationManager {
     }
 
     if (this._debugFocusLogFrames > 0) this._debugFocusLogFrames--;
-
-    this._frameSyncId = global.compositor.get_laters().add(
-      Meta.LaterType.BEFORE_REDRAW,
-      () => {
-        this._frameTick();
-        return false;
-      }
-    );
   }
 
   // ── Diagnostics: focus-change "shifted texture" investigation ──────────────

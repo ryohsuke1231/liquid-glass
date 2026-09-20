@@ -7,7 +7,7 @@ import Meta from 'gi://Meta';
 import { LiquidEffect } from './liquidEffect.js';
 import Gio from 'gi://Gio';
 import { UnpickableActor, UILayerSampler, WindowCloneManager, reportFrameLoopError, ensureGlassAllocated, isFrameSyncFrozen,
-  setClipIfChanged, syncGlassCaptureClip, isActorValid } from './utils.js';
+  setClipIfChanged, syncGlassCaptureClip, isActorValid, SAME_FRAME_WINDOW_US } from './utils.js';
 
 import { Logger } from './logger.js';
 
@@ -50,9 +50,8 @@ export class DashManager {
   private _signals: number[];
   private _settingsSignals: number[]; // GSettingsのイベントリスナーを管理
   private _frameSyncId: number;
-  // [FIX] Set by cleanup() before anything that can throw. Read by the
-  // per-frame BEFORE_REDRAW tick so an orphaned chain stops itself even if
-  // cleanup() never reached its laterRemove(). See the note in frameTick().
+  private _frameSignalId = 0;
+  private _lastTickUs = 0;
   private _torndown: boolean = false;
   private _isEffectActive: boolean; // エフェクトが現在適用されているかのフラグ
 
@@ -135,6 +134,7 @@ export class DashManager {
     connectSetting('dock-glass-expand', () => {
       if (this.effect && this._isEffectActive) {
         this._glassExpand = this._settings.get_int('dock-glass-expand');
+        this.bgActor?.queue_redraw();
       }
     });
 
@@ -371,53 +371,30 @@ export class DashManager {
       this._uiSampler?.refresh();
     };
 
-    // The reschedule at the end is what keeps this chain alive, so it must
-    // not be reachable-only-on-success: a single throw out of
-    // _syncGeometry() (a disposed clone, a destroyed dash child, ...) used
-    // to skip it and freeze the dock's glass permanently — clones stuck at
-    // their last position, no new UI clones (the Overview's controls never
-    // appear inside the dock), and the only way back was hiding and
-    // re-showing the dock, since startFrameSync() only runs from
-    // 'notify::mapped'. Same shape as ApplicationManager._frameTick().
     let frameTick = () => {
-      this._frameSyncId = 0;
-      // [FIX] Hard stop after teardown. Every one of these ticks ends by
-      // re-adding itself as a BEFORE_REDRAW later, so a cleanup() that does
-      // not reach its laterRemove() — because an earlier step threw — leaves
-      // a self-rescheduling chain running forever against destroyed actors,
-      // holding this whole manager (and its settings and logger) alive. The
-      // next enable() then builds a second set on top of a live first set,
-      // which is the "the extension can no longer be enabled" symptom.
-      // Removing the later is still done in cleanup(); this is the backstop
-      // that does not depend on cleanup() getting that far.
-      if (this._torndown) return GLib.SOURCE_REMOVE;
-      if (!this.bgActor || !this.targetActor.mapped) return GLib.SOURCE_REMOVE;
+      if (this._torndown || !this._isEffectActive || !this.bgActor || !this.targetActor.mapped) return;
+      if (isFrameSyncFrozen()) return;
 
-      // [DIAG] See setFrameSyncFrozen() in utils.ts. Reschedules but does
-      // nothing, so the cost of this poll can be measured directly.
-      if (isFrameSyncFrozen()) {
-        this._frameSyncId = laterAdd(frameLaterType, frameTick);
-        return GLib.SOURCE_REMOVE;
-      }
-
-      // Repair the subtree if Clutter has stopped allocating it. Sampled
-      // here, at the top of the tick, because the previous frame's relayout
-      // has settled by now and this frame's sync has not dirtied anything
-      // yet. See ensureGlassAllocated().
-      ensureGlassAllocated(this.bgActor);
+      const nowUs = GLib.get_monotonic_time();
+      if (nowUs - this._lastTickUs < SAME_FRAME_WINDOW_US) return;
+      this._lastTickUs = nowUs;
       try {
+        ensureGlassAllocated(this.bgActor);
         this._syncGeometry();
       } catch (e) {
         reportFrameLoopError('DockManager', e);
       }
-      this._frameSyncId = laterAdd(frameLaterType, frameTick);
-      return GLib.SOURCE_REMOVE;
     };
 
     let startFrameSync = () => {
-      if (this._frameSyncId === 0) {
+      if (this._frameSignalId === 0) {
         buildClones();
-        this._frameSyncId = laterAdd(frameLaterType, frameTick);
+        this._frameSignalId = global.stage.connect('before-update', frameTick);
+        this._frameSyncId = laterAdd(frameLaterType, () => {
+          this._frameSyncId = 0;
+          frameTick();
+          return GLib.SOURCE_REMOVE;
+        });
       }
     };
 
@@ -425,10 +402,7 @@ export class DashManager {
       if (this.targetActor.mapped) {
         startFrameSync();
       } else {
-        if (this._frameSyncId !== 0) {
-          global.compositor.get_laters().remove(this._frameSyncId);
-          this._frameSyncId = 0;
-        }
+        this._stopFrameSync();
       }
     });
     this._signals.push(mapSignalId);
@@ -834,16 +808,25 @@ export class DashManager {
     this._windowCloneManager?.sync();
   }
 
+  private _stopFrameSync(): void {
+    this._teardownStep('frameSignal', () => {
+      const id = this._frameSignalId;
+      this._frameSignalId = 0;
+      if (id) global.stage.disconnect(id);
+    });
+    this._teardownStep('initialFrame', () => {
+      const id = this._frameSyncId;
+      this._frameSyncId = 0;
+      if (id) global.compositor?.get_laters().remove(id);
+    });
+  }
+
   // エフェクトを画面から消し、元に戻す処理
   _removeEffect() {
     if (!this._isEffectActive) return;
     this._isEffectActive = false;
     this._currentMarginStyle = undefined;
-    this._teardownStep('frameSync', () => {
-      const id = this._frameSyncId;
-      this._frameSyncId = 0;
-      if (id) global.compositor?.get_laters().remove(id);
-    });
+    this._stopFrameSync();
     for (const id of this._signals) {
       this._teardownStep('targetSignal', () => {
         if (isActorValid(this.targetActor)) this.targetActor.disconnect(id);
@@ -901,16 +884,7 @@ export class DashManager {
   cleanup() {
     this._torndown = true;
 
-    // 毎フレームの later チェーンを最初に、無条件で止める。_removeEffect()
-    // の途中で throw しても孤児チェーンが残らないようにするため
-    // （_teardownStep のコメント参照）。
-    this._teardownStep('frameSync', () => {
-      if (this._frameSyncId !== 0) {
-        if (global.compositor?.get_laters)
-          global.compositor.get_laters().remove(this._frameSyncId);
-        this._frameSyncId = 0;
-      }
-    });
+    this._stopFrameSync();
 
     // エフェクトを解除
     this._teardownStep('removeEffect', () => this._removeEffect());

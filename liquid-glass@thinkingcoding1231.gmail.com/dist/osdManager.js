@@ -6,7 +6,7 @@ import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import { LiquidEffect } from './liquidEffect.js';
 import { StageContrastSampler, AdaptiveContrastConfig } from './contrastSampler.js';
-import { UnpickableActor, UILayerSampler, WindowCloneManager, reportFrameLoopError, ensureGlassAllocated, isFrameSyncFrozen, setClipIfChanged, syncGlassCaptureClip, resolveCrossFade, adaptiveColorTweener } from './utils.js';
+import { UnpickableActor, UILayerSampler, WindowCloneManager, reportFrameLoopError, ensureGlassAllocated, isFrameSyncFrozen, setClipIfChanged, syncGlassCaptureClip, resolveCrossFade, adaptiveColorTweener, SAME_FRAME_WINDOW_US } from './utils.js';
 // ========== Configuration Parameters (Defaults, overridden by settings) ==========
 const SHADER_PADDING = 20;
 export class OsdManager {
@@ -15,9 +15,8 @@ export class OsdManager {
     _logger;
     _settingsSignals;
     _frameSyncId;
-    // [FIX] Set by cleanup() before anything that can throw. Read by the
-    // per-frame BEFORE_REDRAW tick so an orphaned chain stops itself even if
-    // cleanup() never reached its laterRemove(). See the note in frameTick().
+    _frameSignalId = 0;
+    _lastTickUs = 0;
     _torndown = false;
     _isEffectActive;
     _osdYOffset;
@@ -123,6 +122,8 @@ export class OsdManager {
         connectSetting('osd-glass-expand', () => {
             if (this._isEffectActive) {
                 this._glassExpand = this._settings.get_int('osd-glass-expand');
+                for (const state of this._osdStates)
+                    state.bgActor?.queue_redraw();
             }
         });
         // ----------  Brightness / Saturation / Contrast  ----------
@@ -215,26 +216,16 @@ export class OsdManager {
         // Global frame-render loop (covers all OSD states)
         const frameLaterType = Meta.LaterType.BEFORE_REDRAW;
         const frameTick = () => {
-            this._frameSyncId = 0;
-            // [FIX] Hard stop after teardown. Every one of these ticks ends by
-            // re-adding itself as a BEFORE_REDRAW later, so a cleanup() that does
-            // not reach its laterRemove() — because an earlier step threw — leaves
-            // a self-rescheduling chain running forever against destroyed actors,
-            // holding this whole manager (and its settings and logger) alive. The
-            // next enable() then builds a second set on top of a live first set,
-            // which is the "the extension can no longer be enabled" symptom.
-            // Removing the later is still done in cleanup(); this is the backstop
-            // that does not depend on cleanup() getting that far.
             if (this._torndown)
-                return GLib.SOURCE_REMOVE;
+                return;
             if (!this._isEffectActive)
-                return GLib.SOURCE_REMOVE;
-            // [DIAG] See setFrameSyncFrozen() in utils.ts. Reschedules but does
-            // nothing, so the cost of this poll can be measured directly.
-            if (isFrameSyncFrozen()) {
-                this._frameSyncId = this._laterAdd(frameLaterType, frameTick);
-                return GLib.SOURCE_REMOVE;
-            }
+                return;
+            if (isFrameSyncFrozen())
+                return;
+            const nowUs = GLib.get_monotonic_time();
+            if (nowUs - this._lastTickUs < SAME_FRAME_WINDOW_US)
+                return;
+            this._lastTickUs = nowUs;
             for (let state of this._osdStates) {
                 // Per-state try/catch: one broken OSD must not stop the others, and
                 // must not skip the reschedule below (see DockManager's frameTick).
@@ -248,10 +239,13 @@ export class OsdManager {
                     reportFrameLoopError('OSDManager', e);
                 }
             }
-            this._frameSyncId = this._laterAdd(frameLaterType, frameTick);
-            return GLib.SOURCE_REMOVE;
         };
-        this._frameSyncId = this._laterAdd(frameLaterType, frameTick);
+        this._frameSignalId = global.stage.connect('before-update', frameTick);
+        this._frameSyncId = this._laterAdd(frameLaterType, () => {
+            this._frameSyncId = 0;
+            frameTick();
+            return GLib.SOURCE_REMOVE;
+        });
         this._startAdaptiveColorSampling();
         // Rebuild everything if monitor configuration changes
         this._monitorsChangedId = Main.layoutManager.connect('monitors-changed', () => {
@@ -532,11 +526,7 @@ export class OsdManager {
             Main.layoutManager.disconnect(this._monitorsChangedId);
             this._monitorsChangedId = 0;
         }
-        if (this._frameSyncId !== 0) {
-            if (global.compositor?.get_laters)
-                global.compositor.get_laters().remove(this._frameSyncId);
-            this._frameSyncId = 0;
-        }
+        this._stopFrameSync();
         for (let state of this._osdStates) {
             this._cleanupOsdState(state);
         }
@@ -615,13 +605,7 @@ export class OsdManager {
     }
     cleanup() {
         this._torndown = true;
-        this._teardownStep('frameSync', () => {
-            if (this._frameSyncId !== 0) {
-                if (global.compositor?.get_laters)
-                    global.compositor.get_laters().remove(this._frameSyncId);
-                this._frameSyncId = 0;
-            }
-        });
+        this._teardownStep('frameSync', () => this._stopFrameSync());
         this._teardownStep('settingsSignals', () => {
             for (let sigId of this._settingsSignals) {
                 try {
@@ -729,7 +713,7 @@ export class OsdManager {
         let isFirst = this._isFirstAdaptiveRun;
         this._isFirstAdaptiveRun = false;
         this._contrastSampler
-            .chooseColorsForActors(targets, this._adaptiveConfig)
+            .chooseColorsForActors(targets, this._adaptiveConfig, null)
             .then(colorMap => {
             this._applyAdaptiveColorMap(colorMap, isFirst);
         })
@@ -821,5 +805,20 @@ export class OsdManager {
     }
     _laterAdd(laterType, callback) {
         return global.compositor?.get_laters?.().add(laterType, callback);
+    }
+    _stopFrameSync() {
+        const signalId = this._frameSignalId;
+        this._frameSignalId = 0;
+        if (signalId) {
+            try {
+                global.stage.disconnect(signalId);
+            }
+            catch (e) { }
+        }
+        if (this._frameSyncId !== 0) {
+            if (global.compositor?.get_laters)
+                global.compositor.get_laters().remove(this._frameSyncId);
+            this._frameSyncId = 0;
+        }
     }
 }

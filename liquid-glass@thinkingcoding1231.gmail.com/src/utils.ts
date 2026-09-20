@@ -4265,6 +4265,8 @@ export function getWindowActors(): any[] {
 //
 // Diagnostic only: while frozen the glass stops following anything that moves.
 // global._lgGlass.freezeSync(true) / (false).
+export const SAME_FRAME_WINDOW_US = 4000;
+
 let _frameSyncFrozen = false;
 
 export function setFrameSyncFrozen(frozen: boolean): void {

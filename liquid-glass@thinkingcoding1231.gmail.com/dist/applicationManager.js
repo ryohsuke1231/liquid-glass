@@ -5,7 +5,7 @@ import Meta from 'gi://Meta';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { LiquidEffect, noteStrandEntry } from './liquidEffect.js';
 import GLib from 'gi://GLib';
-import { UnpickableClone, UnpickableActor, InverseCornerEffect, getWindowActors, isActorValid, InvertedPositionConstraint, getAllocatedSize, setActorVisible, ensureGlassAllocated, isFrameSyncFrozen, getNestedGlassFix, innerGlassEffectOf, isFocusDebugEnabled, setTranslationIfChanged, setSizeIfChanged, setScaleIfChanged, setOpacityIfChanged, isCullSiteEnabled, rectsIntersect, setCloneCulled, createBackgroundMirror, reportClonedWindowActors, releaseClonedWindowActors, ensureWindowActorAllocated } from './utils.js';
+import { UnpickableClone, UnpickableActor, InverseCornerEffect, getWindowActors, isActorValid, InvertedPositionConstraint, getAllocatedSize, setActorVisible, ensureGlassAllocated, isFrameSyncFrozen, getNestedGlassFix, innerGlassEffectOf, isFocusDebugEnabled, setTranslationIfChanged, setSizeIfChanged, setScaleIfChanged, setOpacityIfChanged, isCullSiteEnabled, rectsIntersect, setCloneCulled, createBackgroundMirror, reportClonedWindowActors, releaseClonedWindowActors, ensureWindowActorAllocated, SAME_FRAME_WINDOW_US } from './utils.js';
 // Padding to allow the shader to draw effects (like refraction and blur) outside the actor's strict bounds.
 // [FIX] How far the glass actor extends beyond the real window bounds, in
 // screen pixels. This is one number with two jobs: it is the sampling
@@ -187,10 +187,8 @@ export class ApplicationManager {
     _settings;
     _logger;
     _settingsSignals;
-    _frameSyncId;
-    // [FIX] Set by cleanup() before anything that can throw. Read by the
-    // per-frame BEFORE_REDRAW tick so an orphaned chain stops itself even if
-    // cleanup() never reached its laterRemove(). See the note in frameTick().
+    _frameSignalId = 0;
+    _lastTickUs = 0;
     _torndown = false;
     _windowCreatedId;
     _restackedId = 0;
@@ -246,7 +244,6 @@ export class ApplicationManager {
         this._logger = logger;
         this._states = new Map();
         this._settingsSignals = [];
-        this._frameSyncId = 0;
         this._windowCreatedId = 0;
         this._restackedId = 0;
     }
@@ -566,12 +563,7 @@ export class ApplicationManager {
         this._startFrameSync();
     }
     _removeAllEffects() {
-        if (this._frameSyncId) {
-            if (global.compositor?.get_laters) {
-                global.compositor.get_laters().remove(this._frameSyncId);
-            }
-            this._frameSyncId = 0;
-        }
+        this._stopFrameSync();
         if (this._rebuildFollowupLaterId) {
             if (global.compositor?.get_laters) {
                 global.compositor.get_laters().remove(this._rebuildFollowupLaterId);
@@ -714,8 +706,20 @@ export class ApplicationManager {
     // get_transformed_position, set_position vs translation_x/y vs
     // Clutter.Constraint) was tried in every combination and changed nothing.
     _startFrameSync() {
-        if (this._frameSyncId === 0)
-            this._frameTick();
+        if (this._frameSignalId !== 0)
+            return;
+        this._frameSignalId = global.stage.connect('before-update', () => this._frameTick());
+        this._frameTick();
+    }
+    _stopFrameSync() {
+        const signalId = this._frameSignalId;
+        this._frameSignalId = 0;
+        if (signalId) {
+            try {
+                global.stage.disconnect(signalId);
+            }
+            catch (e) { }
+        }
     }
     _rebuildAllClones() {
         if (this._rebuildQueued)
@@ -1967,18 +1971,14 @@ export class ApplicationManager {
         return !rectsIntersect(x - m, y - m, w + m * 2, h + m * 2, cullRect);
     }
     _frameTick() {
-        // [FIX] Hard stop after teardown — see the note on _torndown. This tick
-        // re-adds itself as a BEFORE_REDRAW later at the end, so without this a
-        // cleanup() that threw before its laters().remove() would leave the
-        // chain running forever against destroyed window actors.
         if (this._torndown)
             return;
-        // [DIAG] See setFrameSyncFrozen() in utils.ts. Reschedules but does
-        // nothing, so the cost of this poll can be measured directly.
-        if (isFrameSyncFrozen()) {
-            this._frameSyncId = global.compositor.get_laters().add(Meta.LaterType.BEFORE_REDRAW, () => { this._frameTick(); return false; });
+        if (isFrameSyncFrozen())
             return;
-        }
+        const nowUs = GLib.get_monotonic_time();
+        if (nowUs - this._lastTickUs < SAME_FRAME_WINDOW_US)
+            return;
+        this._lastTickUs = nowUs;
         for (let state of this._states.values()) {
             try {
                 const metaWin = state.windowActor?.get_meta_window?.();
@@ -2074,10 +2074,6 @@ export class ApplicationManager {
         }
         if (this._debugFocusLogFrames > 0)
             this._debugFocusLogFrames--;
-        this._frameSyncId = global.compositor.get_laters().add(Meta.LaterType.BEFORE_REDRAW, () => {
-            this._frameTick();
-            return false;
-        });
     }
     // ── Diagnostics: focus-change "shifted texture" investigation ──────────────
     // Logs, for `state`'s own window, the raw Clutter actor position next to
