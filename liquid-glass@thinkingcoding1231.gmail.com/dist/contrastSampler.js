@@ -4,6 +4,10 @@ import GdkPixbuf from 'gi://GdkPixbuf';
 import { getTransformedRect } from './utils.js';
 const SWITCH_ADVANTAGE = 1.2;
 const MIN_READABLE_CONTRAST = 4.5;
+const BACKDROP_COVERS_GLASS_ALPHA = 190;
+const READABILITY_FLIP_COOLDOWN = 3;
+const BACKGROUND_REALLY_MOVED = 0.15;
+const BACKDROP_SEARCH_DEPTH = 8;
 export const AdaptiveContrastConfig = {
     enabled: true,
     samplePerElement: false, // 要素ごとにサンプリングするか、全体をまとめてサンプリングするか　負荷を考慮してデフォルトはまとめてサンプリング
@@ -175,6 +179,28 @@ function _captureViaScreenshot(screenshot, rect) {
         }
     });
 }
+export function backdropLuminance(actor, root = null) {
+    let node = actor;
+    for (let depth = 0; node && depth < BACKDROP_SEARCH_DEPTH; depth++) {
+        try {
+            const themeNode = node.get_theme_node?.();
+            const color = themeNode?.get_background_color?.();
+            if (color && color.alpha >= BACKDROP_COVERS_GLASS_ALPHA) {
+                return {
+                    luminance: _luminanceFromRgb(color.red, color.green, color.blue),
+                    alpha: color.alpha,
+                };
+            }
+        }
+        catch (e) {
+            return null;
+        }
+        if (root && node === root)
+            break;
+        node = node.get_parent?.();
+    }
+    return null;
+}
 export class StageContrastSampler {
     // Created lazily on the first sample rather than in the constructor: the
     // managers all build a sampler up front, but most sessions never open the
@@ -182,6 +208,8 @@ export class StageContrastSampler {
     _screenshot = null;
     _lastLuma = null;
     _lastIsBright = null;
+    _roundsSinceFlip = READABILITY_FLIP_COOLDOWN;
+    _lastRawLuma = null;
     _lastRect = null;
     async sampleLuminance(rect) {
         if (!rect || rect.width <= 0 || rect.height <= 0)
@@ -262,12 +290,24 @@ export class StageContrastSampler {
         // window/background changes. Use the current measurement for this decision.
         const rawCurrent = isBright ? rawDark : rawLight;
         const rawAlternative = isBright ? rawLight : rawDark;
-        if (rawCurrent < MIN_READABLE_CONTRAST && rawAlternative >= MIN_READABLE_CONTRAST)
+        const jumped = this._lastRawLuma === null ||
+            Math.abs(luminance - this._lastRawLuma) > BACKGROUND_REALLY_MOVED;
+        this._lastRawLuma = luminance;
+        const wasBright = isBright;
+        if (rawCurrent < MIN_READABLE_CONTRAST && rawAlternative >= MIN_READABLE_CONTRAST &&
+            (jumped || this._roundsSinceFlip >= READABILITY_FLIP_COOLDOWN))
             isBright = !isBright;
+        this._roundsSinceFlip = isBright === wasBright ? this._roundsSinceFlip + 1 : 0;
         this._lastIsBright = isBright;
         return isBright ? config.darkTextColor : config.lightTextColor;
     }
-    async chooseColorsForActors(actors, config = AdaptiveContrastConfig) {
+    _backdropColorFor(actor, config, root) {
+        const backdrop = backdropLuminance(actor, root);
+        if (backdrop === null)
+            return null;
+        return this.decideTextColor(backdrop.luminance, { ...config, samplePerElement: true });
+    }
+    async chooseColorsForActors(actors, config = AdaptiveContrastConfig, root = null) {
         const rects = [];
         const targets = [];
         for (const actor of actors) {
@@ -281,12 +321,14 @@ export class StageContrastSampler {
         if (targets.length === 0)
             return result;
         if (!config.samplePerElement) {
-            const merged = _mergeRects(rects);
+            const merged = (root ? _getActorRect(root) : null) ?? _mergeRects(rects);
             if (!merged)
                 return result;
             if (!this._lastRect || ['x', 'y', 'width', 'height'].some(key => Math.abs(merged[key] - this._lastRect[key]) > 2)) {
                 this._lastLuma = null;
                 this._lastIsBright = null;
+                this._lastRawLuma = null;
+                this._roundsSinceFlip = READABILITY_FLIP_COOLDOWN;
             }
             this._lastRect = merged;
             const luma = await this.sampleLuminance(merged);

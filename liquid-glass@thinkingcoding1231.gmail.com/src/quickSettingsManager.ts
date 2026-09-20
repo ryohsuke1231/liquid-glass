@@ -2530,7 +2530,7 @@ export class QuickSettingsManager {
     this._adaptiveInFlight = true;
 
     this._contrastSampler
-      .chooseColorsForActors(targets, this._adaptiveConfig)
+      .chooseColorsForActors(targets, this._adaptiveConfig, this.menu?.actor)
       .then(colorMap => {
         this._applyAdaptiveColorMap(colorMap, skipAnimations);
       })
