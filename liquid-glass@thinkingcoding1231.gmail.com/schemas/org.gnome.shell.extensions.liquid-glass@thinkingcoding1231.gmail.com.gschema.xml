@@ -209,6 +209,11 @@
       <summary>Menu scale</summary>
       <description>Scales the whole panel menu, including its glass, like zooming a window. 1.0 is the size GNOME renders.</description>
     </key>
+    <key name="panel-menu-settled-height-scale" type="d">
+      <default>0.0</default>
+      <summary>Remembered Quick Settings height ratio</summary>
+      <description>Cache, not a preference. Quick Settings reports no height until it has been opened once, so the ratio can only be measured after that; it is kept here so later sessions do not have to guess. 0 means not measured yet.</description>
+    </key>
     <key name="panel-menu-match-quick-settings-height" type="b">
       <default>false</default>
       <summary>Match Quick Settings height</summary>
@@ -221,6 +226,11 @@
     <key name="panel-menu-sample-interval-ms" type="i">
       <default>400</default>
       <summary>Sample interval (ms)</summary>
+    </key>
+    <key name="menu-settled-height-scale" type="d">
+      <default>0.0</default>
+      <summary>Remembered Quick Settings height ratio</summary>
+      <description>Cache, not a preference. Quick Settings reports no height until it has been opened once, so the ratio can only be measured after that; it is kept here so later sessions do not have to guess. 0 means not measured yet.</description>
     </key>
     <key name="menu-match-quick-settings-height" type="b">
       <default>false</default>

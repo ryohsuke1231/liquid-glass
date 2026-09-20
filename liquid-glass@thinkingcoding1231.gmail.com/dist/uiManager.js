@@ -16,10 +16,15 @@ const SHADER_PADDING = 20;
 const SAMPLE_PER_ELEMENT = false;
 // ==============================================
 const MIN_MENU_SCALE = 0.5;
+const MENU_MEASURE_FRAMES = 30;
+let _quickSettingsHeight = 0;
+let _quickSettingsWaiting = null;
+const MENU_MEASURE_STABLE_FRAMES = 3;
 export class UIManager {
     _enableKey;
     _keyPrefix;
     _label;
+    _ownsSettingsNamespace;
     extensionPath;
     _settings;
     _logger;
@@ -45,11 +50,21 @@ export class UIManager {
     _menuScale = 1.0;
     _ownsAccentCss = true;
     _matchQuickSettingsHeight = false;
+    _settledHeightScale = null;
+    _measuringHeights = false;
+    _ownOpenHeight = 0;
+    _measureLaterId = 0;
+    _restoreQuickSettings = null;
     _tickId;
     _contrastSampler;
     _adaptiveTimerId;
     _adaptiveInFlight;
     _styledActors;
+    _hoverSignals = new Map();
+    _pendingBackdropRoots = new Set();
+    _backdropColored = new Set();
+    _applyingColors = false;
+    _backdropRefreshId = 0;
     _settingsSignals;
     _isEffectActive;
     _adaptiveConfig;
@@ -100,10 +115,11 @@ export class UIManager {
      * session with several panel menus says which one it is talking
      * about instead of five lines that all read "menu".
      */
-    _label = 'menu') {
+    _label = 'menu', _ownsSettingsNamespace = true) {
         this._enableKey = _enableKey;
         this._keyPrefix = _keyPrefix;
         this._label = _label;
+        this._ownsSettingsNamespace = _ownsSettingsNamespace;
         this.extensionPath = extensionPath;
         this._settings = settings;
         this._logger = logger;
@@ -159,6 +175,9 @@ export class UIManager {
         this._enableAnimation = this._settings.get_boolean(this._animationKey());
         this._menuScale = this._settings.get_double(this._key('scale'));
         this._matchQuickSettingsHeight = this._settings.get_boolean(this._key('match-quick-settings-height'));
+        const remembered = this._ownsSettingsNamespace
+            ? this._settings.get_double(this._key('settled-height-scale')) : 0;
+        this._settledHeightScale = remembered > 0 ? remembered : null;
         this._applyMenuScale();
         this._springStiffness = this._settings.get_double(this._key('spring-stiffness'));
         this._springDamping = this._settings.get_double(this._key('spring-damping'));
@@ -234,33 +253,181 @@ export class UIManager {
         let b = parseInt(hex.slice(5, 7), 16) / 255.0;
         return [r, g, b];
     }
-    _naturalHeightOf(actor) {
+    _allocatedHeightOf(actor) {
         if (!actor || !isActorValid(actor))
             return 0;
         try {
+            if (!actor.has_allocation?.())
+                return 0;
             const [, allocated] = getAllocatedSize(actor);
             if (allocated > 1)
                 return allocated;
         }
-        catch (e) { /* fall through to the preferred size */ }
-        try {
-            const [, natural] = actor.get_preferred_height(-1);
-            if (natural > 1)
-                return natural;
-        }
-        catch (e) { /* no usable measurement */ }
+        catch (e) { /* no usable allocation */ }
         return 0;
+    }
+    _firstHeight(actors, measure) {
+        for (const actor of actors) {
+            const height = measure(actor);
+            if (height > 0)
+                return height;
+        }
+        return 0;
+    }
+    _settleHeight(menu, done) {
+        const actor = menu?.actor;
+        if (!actor || !isActorValid(actor)) {
+            done(0);
+            return;
+        }
+        let framesLeft = MENU_MEASURE_FRAMES;
+        let tallest = 0;
+        let repeats = 0;
+        const tick = () => {
+            this._measureLaterId = 0;
+            let height = 0;
+            try {
+                height = this._firstHeight([actor, menu.box], a => this._allocatedHeightOf(a));
+            }
+            catch (e) { /* measurement failed; caller falls back */ }
+            repeats = height > 0 && height === tallest ? repeats + 1 : 0;
+            if (height > tallest)
+                tallest = height;
+            if (repeats < MENU_MEASURE_STABLE_FRAMES && --framesLeft > 0 && !this._torndown) {
+                this._measureLaterId = this._addMeasureLater(tick);
+                return GLib.SOURCE_REMOVE;
+            }
+            done(tallest);
+            return GLib.SOURCE_REMOVE;
+        };
+        this._measureLaterId = this._addMeasureLater(tick);
+    }
+    _addMeasureLater(callback) {
+        return global.compositor?.get_laters?.().add(Meta.LaterType.BEFORE_REDRAW, callback) ?? 0;
+    }
+    _cancelHeightMeasurement() {
+        if (this._measureLaterId !== 0) {
+            if (global.compositor?.get_laters)
+                global.compositor.get_laters().remove(this._measureLaterId);
+            this._measureLaterId = 0;
+        }
+        const restore = this._restoreQuickSettings;
+        this._restoreQuickSettings = null;
+        if (restore)
+            restore();
+    }
+    _withQuickSettingsHeight(done) {
+        if (_quickSettingsHeight > 0) {
+            done(_quickSettingsHeight);
+            return;
+        }
+        if (_quickSettingsWaiting) {
+            _quickSettingsWaiting.push(done);
+            return;
+        }
+        const menu = Main.panel.statusArea.quickSettings?.menu;
+        const actor = menu?.actor;
+        if (!menu || !actor || !isActorValid(actor)) {
+            done(0);
+            return;
+        }
+        _quickSettingsWaiting = [done];
+        const settle = (height) => {
+            _quickSettingsHeight = height;
+            const waiting = _quickSettingsWaiting ?? [];
+            _quickSettingsWaiting = null;
+            for (const callback of waiting)
+                callback(height);
+        };
+        if (menu.isOpen) {
+            this._settleHeight(menu, settle);
+            return;
+        }
+        const opacity = actor.opacity;
+        let restored = false;
+        const restore = () => {
+            if (restored)
+                return;
+            restored = true;
+            try {
+                menu.close(0);
+            }
+            catch (e) { /* already gone */ }
+            try {
+                actor.opacity = opacity;
+            }
+            catch (e) { /* already gone */ }
+        };
+        try {
+            menu.open(0);
+            actor.opacity = 0;
+        }
+        catch (e) {
+            restore();
+            settle(0);
+            return;
+        }
+        this._restoreQuickSettings = restore;
+        this._settleHeight(menu, height => {
+            this._restoreQuickSettings = null;
+            restore();
+            settle(height);
+        });
+    }
+    _measureHeightScale() {
+        if (this._torndown || !this.menu)
+            return;
+        _quickSettingsHeight = 0;
+        this._ownOpenHeight = 0;
+        this._withQuickSettingsHeight(() => this._rememberRatioWhenBothKnown());
+    }
+    _noteOwnOpenedHeight() {
+        if (this._torndown || !this._matchQuickSettingsHeight)
+            return;
+        if (this._measuringHeights || _quickSettingsHeight <= 0)
+            return;
+        this._measuringHeights = true;
+        this._settleHeight(this.menu, height => {
+            this._measuringHeights = false;
+            if (height > 0) {
+                this._ownOpenHeight = height;
+                this._rememberRatioWhenBothKnown();
+            }
+        });
+    }
+    _rememberRatioWhenBothKnown() {
+        if (_quickSettingsHeight <= 0 || this._ownOpenHeight <= 0)
+            return;
+        const ratio = _quickSettingsHeight / this._ownOpenHeight;
+        if (!Number.isFinite(ratio) || ratio <= 0 || ratio >= 1)
+            return;
+        this._rememberHeightScale(ratio);
+        this._applyMenuScale();
     }
     _quickSettingsHeightScale() {
         const quickSettings = Main.panel.statusArea.quickSettings?.menu;
         if (!quickSettings)
-            return null;
-        const targetHeight = this._naturalHeightOf(quickSettings.actor) || this._naturalHeightOf(quickSettings.box);
-        const ownHeight = this._naturalHeightOf(this.targetActor) || this._naturalHeightOf(this.animActor);
+            return this._settledHeightScale;
+        const targetHeight = this._firstHeight([quickSettings.actor, quickSettings.box], actor => this._allocatedHeightOf(actor));
+        const ownHeight = this._firstHeight([this.targetActor, this.animActor], actor => this._allocatedHeightOf(actor));
         if (targetHeight <= 0 || ownHeight <= 0)
-            return null;
+            return this._settledHeightScale;
         const ratio = targetHeight / ownHeight;
-        return Number.isFinite(ratio) && ratio > 0 ? ratio : null;
+        if (!Number.isFinite(ratio) || ratio <= 0)
+            return this._settledHeightScale;
+        this._rememberHeightScale(ratio);
+        return ratio;
+    }
+    _rememberHeightScale(ratio) {
+        if (this._settledHeightScale !== null && Math.abs(this._settledHeightScale - ratio) < 0.005)
+            return;
+        this._settledHeightScale = ratio;
+        if (!this._ownsSettingsNamespace)
+            return;
+        try {
+            this._settings.set_double(this._key('settled-height-scale'), ratio);
+        }
+        catch (e) { /* the cache is an optimisation, never a requirement */ }
     }
     _applyMenuScale() {
         if (!this.targetActor || !isActorValid(this.targetActor))
@@ -412,6 +579,8 @@ export class UIManager {
         connectSetting(this._key('match-quick-settings-height'), () => {
             this._matchQuickSettingsHeight = this._settings.get_boolean(this._key('match-quick-settings-height'));
             this._applyMenuScale();
+            if (this._matchQuickSettingsHeight)
+                this._measureHeightScale();
         });
         connectSetting(this._key('y-offset'), () => {
             if (this.animActor) {
@@ -610,6 +779,8 @@ export class UIManager {
             target: this.menu,
             id: this.menu.connect('open-state-changed', (menu, isOpen) => {
                 if (isOpen) {
+                    this._queueBackdropRefresh(this.menu?.actor);
+                    this._noteOwnOpenedHeight();
                     this._stableBaseW = undefined;
                     this._stableBaseH = undefined;
                     startFrameSync();
@@ -864,6 +1035,92 @@ export class UIManager {
             }
         }
         this._styledActors.clear();
+        this._backdropColored.clear();
+        this._disconnectHoverWatchers();
+    }
+    _disconnectHoverWatchers() {
+        this._pendingBackdropRoots.clear();
+        if (this._backdropRefreshId !== 0) {
+            if (global.compositor?.get_laters)
+                global.compositor.get_laters().remove(this._backdropRefreshId);
+            this._backdropRefreshId = 0;
+        }
+        for (const [actor, id] of this._hoverSignals.entries()) {
+            try {
+                if (isActorValid(actor))
+                    actor.disconnect(id);
+            }
+            catch (e) { /* the actor took its signals with it */ }
+        }
+        this._hoverSignals.clear();
+    }
+    _watchHoverFor(targets) {
+        const restyled = new Set(targets);
+        for (const target of targets) {
+            const holder = target.get_parent?.();
+            if (!holder || restyled.has(holder))
+                continue;
+            if (this._hoverSignals.has(holder) || typeof holder.connect !== 'function')
+                continue;
+            try {
+                this._hoverSignals.set(holder, holder.connect('style-changed', () => {
+                    if (this._applyingColors)
+                        return;
+                    this._queueBackdropRefresh(holder);
+                }));
+            }
+            catch (e) { /* nothing that reports style changes */ }
+        }
+        for (const [actor, id] of [...this._hoverSignals.entries()]) {
+            if (isActorValid(actor))
+                continue;
+            this._hoverSignals.delete(actor);
+            try {
+                actor.disconnect(id);
+            }
+            catch (e) { /* already gone */ }
+        }
+    }
+    _queueBackdropRefresh(root) {
+        if (!this._adaptiveConfig.enabled || !this._isEffectActive || this._actorDestroyed)
+            return;
+        this._pendingBackdropRoots.add(root);
+        if (this._backdropRefreshId !== 0)
+            return;
+        this._backdropRefreshId = global.compositor.get_laters().add(Meta.LaterType.BEFORE_REDRAW, () => {
+            this._backdropRefreshId = 0;
+            const roots = [...this._pendingBackdropRoots];
+            this._pendingBackdropRoots.clear();
+            const targets = [];
+            for (const actor of roots) {
+                if (isActorValid(actor))
+                    this._findAllTextActors(actor, targets);
+            }
+            this._applyBackdropColorsTo(targets);
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+    _applyBackdropColorsTo(targets) {
+        if (!targets || targets.length === 0)
+            return;
+        const root = this.menu?.actor ?? null;
+        const batchStart = GLib.get_monotonic_time();
+        this._applyingColors = true;
+        try {
+            for (const actor of new Set(targets)) {
+                const color = this._contrastSampler._backdropColorFor(actor, this._adaptiveConfig, root);
+                if (color) {
+                    this._backdropColored.add(actor);
+                    this._setActorColor(actor, color, true, batchStart);
+                }
+                else {
+                    this._backdropColored.delete(actor);
+                }
+            }
+        }
+        finally {
+            this._applyingColors = false;
+        }
     }
     // Iterates through the color map and applies the new target colors to the respective actors
     _applyAdaptiveColorMap(colorMap, skipAnimations = false) {
@@ -873,8 +1130,16 @@ export class UIManager {
         // then runs off the same clock, so a row of labels moves as one instead of
         // each starting whenever its own source first fired.
         const batchStart = GLib.get_monotonic_time();
-        for (const [actor, color] of colorMap.entries()) {
-            this._setActorColor(actor, color, skipAnimations, batchStart);
+        this._applyingColors = true;
+        try {
+            for (const [actor, color] of colorMap.entries()) {
+                if (this._backdropColored.has(actor))
+                    continue;
+                this._setActorColor(actor, color, skipAnimations, batchStart);
+            }
+        }
+        finally {
+            this._applyingColors = false;
         }
     }
     // Starts the timer for periodically sampling contrast and updating adaptive text colors
@@ -907,9 +1172,10 @@ export class UIManager {
         const targets = this._collectAdaptiveTextTargets();
         if (targets.length === 0)
             return;
+        this._watchHoverFor(targets);
         this._adaptiveInFlight = true;
         this._contrastSampler
-            .chooseColorsForActors(targets, this._adaptiveConfig)
+            .chooseColorsForActors(targets, this._adaptiveConfig, this.menu?.actor)
             .then(colorMap => {
             if (!this._isEffectActive || this._actorDestroyed)
                 return;
@@ -1199,6 +1465,7 @@ export class UIManager {
     }
     cleanup() {
         this._torndown = true;
+        this._teardownStep('heightMeasurement', () => this._cancelHeightMeasurement());
         // The later chain goes first and unconditionally — see _teardownStep().
         this._teardownStep('frameSync', () => {
             if (this._frameSyncId !== 0) {

@@ -109,7 +109,7 @@ export class PanelMenuManager {
       let manager: UIManager | null = null;
       try {
         manager = new UIManager(this._path, this._settings, this._logger, button, false,
-          'enable-extra-menu-glass', PANEL_MENU_PREFIX, `menu:${name}`);
+          'enable-extra-menu-glass', PANEL_MENU_PREFIX, `menu:${name}`, false);
         manager.setup();
         this._menus.set(menu, { name, manager });
       } catch (e) {

@@ -115,7 +115,7 @@ export class PanelMenuManager {
             const name = wantedNames.get(menu) ?? '?';
             let manager = null;
             try {
-                manager = new UIManager(this._path, this._settings, this._logger, button, false, 'enable-extra-menu-glass', PANEL_MENU_PREFIX, `menu:${name}`);
+                manager = new UIManager(this._path, this._settings, this._logger, button, false, 'enable-extra-menu-glass', PANEL_MENU_PREFIX, `menu:${name}`, false);
                 manager.setup();
                 this._menus.set(menu, { name, manager });
             }
