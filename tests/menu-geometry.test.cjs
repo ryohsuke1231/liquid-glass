@@ -4,9 +4,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const dist = path.join(__dirname, '../liquid-glass@thinkingcoding1231.gmail.com/dist');
 
-const utils = fs.readFileSync(path.join(dist, 'utils.js'), 'utf8');
-const allocatedSizeCode = utils.match(/^export function getAllocatedSize\([\s\S]*?^}/m)[0];
-const getAllocatedSize = new Function(`${allocatedSizeCode.replace('export ', '')}; return getAllocatedSize;`)();
+const { loadModule } = require('./helpers/load-module.cjs');
+const { getAllocatedSize } = loadModule(path.join(dist, 'actors/geometry.js'));
 
 function fixture() {
   const monitor = { x: 1920, y: 0, width: 1920, height: 1200 };

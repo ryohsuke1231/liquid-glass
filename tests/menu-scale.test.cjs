@@ -1,7 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
 const path = require('node:path');
+const { loadModule } = require('./helpers/load-module.cjs');
 
 class Signals {
   handlers = new Map();
@@ -36,9 +36,6 @@ function menuStub({ openHeight = 0 } = {}) {
 }
 
 function shell({ quickSettings = null, remembered = 0 } = {}) {
-  const code = fs.readFileSync(path.join(__dirname,
-    '../liquid-glass@thinkingcoding1231.gmail.com/dist/uiManager.js'), 'utf8')
-    .replace(/^import[\s\S]*?;\n/gm, '').replace(/export class /g, 'class ');
   const laters = { pending: [], add(_, fn) { this.pending.push(fn); return this.pending.length; }, remove() {} };
   const statusArea = quickSettings ? { quickSettings: { menu: quickSettings } } : {};
   const bindings = {
@@ -54,7 +51,8 @@ function shell({ quickSettings = null, remembered = 0 } = {}) {
     isActorValid: actor => !!actor,
     getAllocatedSize: actor => [0, actor.allocated],
   };
-  const C = new Function(...Object.keys(bindings), `${code}\nreturn UIManager;`)(...Object.values(bindings));
+  const { UIManager: C } = loadModule(path.join(__dirname,
+    '../liquid-glass@thinkingcoding1231.gmail.com/dist/uiManager.js'), bindings);
   const written = {};
   const settings = { get_boolean: k => k.endsWith('match-quick-settings-height'), get_int: () => 0,
     get_double: k => (k.endsWith('settled-height-scale') ? remembered : 1.0),

@@ -7,20 +7,16 @@ import Meta from 'gi://Meta';
 import { LiquidEffect } from './liquidEffect.js';
 import { StageContrastSampler, AdaptiveContrastConfig } from './contrastSampler.js';
 import Gio from 'gi://Gio';
-import {
-  UnpickableActor,
-  UILayerSampler,
-  WindowCloneManager,
-  reportFrameLoopError,
-  ensureGlassAllocated,
-  getTransformedRect,
-  resolveMonitorGeometry,
-  isFrameSyncFrozen,
-  setClipIfChanged,
-  syncGlassCaptureClip,
-  resolveCrossFade,
-  adaptiveColorTweener,
-} from './utils.js';
+import { UnpickableActor } from './actors/unpickable.js';
+import { UILayerSampler } from './capture/uiLayerSampler.js';
+import { WindowCloneManager } from './capture/windowClones.js';
+import { reportFrameLoopError } from './diagnostics/logging.js';
+import { ensureGlassAllocated } from './actors/allocation.js';
+import { getTransformedRect, resolveMonitorGeometry } from './actors/geometry.js';
+import { isFrameSyncFrozen } from './animation/frameSync.js';
+import { setClipIfChanged } from './actors/writes.js';
+import { syncGlassCaptureClip } from './capture/clip.js';
+import { resolveCrossFade, adaptiveColorTweener } from './animation/colors.js';
 
 import { Logger } from './logger.js';
 

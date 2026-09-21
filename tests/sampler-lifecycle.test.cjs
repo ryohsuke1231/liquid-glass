@@ -1,8 +1,8 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
 const path = require('node:path');
 const dist = path.join(__dirname, '../liquid-glass@thinkingcoding1231.gmail.com/dist');
+const { loadModule } = require('./helpers/load-module.cjs');
 
 function fixture() {
   class Actor {
@@ -41,11 +41,10 @@ function fixture() {
       addDragMonitor(m) { monitors.add(m); }, removeDragMonitor(m) { monitors.delete(m); } },
     GLib: { get_monotonic_time: () => 0 }, Meta: {},
   };
-  const code = fs.readFileSync(path.join(dist, 'utils.js'), 'utf8')
-    .replace(/^import[\s\S]*?;\n/gm, '').replace(/^export /gm, '');
-  const classes = new Function(...Object.keys(bindings), `${code};
-    return { UILayerSampler, UnpickableActor, UnpickableClone, UnpickableWidget,
-      UnpickableStyledWidget, TextureBlitActor, LayoutOpaqueActor };`)(...Object.values(bindings));
+  const utils = loadModule(path.join(dist, 'utils.js'), bindings);
+  const classes = Object.fromEntries(['UILayerSampler', 'UnpickableActor', 'UnpickableClone',
+    'UnpickableWidget', 'UnpickableStyledWidget', 'TextureBlitActor', 'LayoutOpaqueActor']
+    .map(name => [name, utils[name]]));
   const sampler = new classes.UILayerSampler(self, self);
   sampler._resolveBmsTargetActor = () => null;
   sampler._containsOtherLiquidGlassRoot = () => false;
@@ -115,12 +114,7 @@ test('disabled diagnostic recorder has no timer and re-arming cannot multiply ti
   const GLib = { PRIORITY_DEFAULT_IDLE: 0, SOURCE_CONTINUE: true,
     timeout_add(_, __, fn) { const id = next++; pending.set(id, fn); return id; },
     Source: { remove(id) { assert.ok(pending.delete(id)); } } };
-  const code = fs.readFileSync(path.join(dist, 'liquidEffect.js'), 'utf8');
-  const section = code.slice(code.indexOf('let _ringArmed = false;'),
-    code.indexOf('/** Writes the ring buffer out and clears it. */')).replace(/^export /gm, '');
-  const ring = new Function('GLib', `let _ring = [], _ringLast = new Map(), _autoCaptures = 0;
-    function _ringSampleOnce() {} ${section}
-    return { startGlassRingSampler, stopGlassRingSampler, setGlassRingArmed };`)(GLib);
+  const ring = loadModule(path.join(dist, 'diagnostics/glass.js'), { GLib });
   ring.startGlassRingSampler();
   assert.equal(pending.size, 0);
   ring.setGlassRingArmed(true);

@@ -3,7 +3,15 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import { LiquidEffect } from './liquidEffect.js';
-import { UnpickableActor, UILayerSampler, WindowCloneManager, reportFrameLoopError, ensureGlassAllocated, isFrameSyncFrozen, setClipIfChanged, syncGlassCaptureClip, isActorValid, SAME_FRAME_WINDOW_US } from './utils.js';
+import { UnpickableActor } from './actors/unpickable.js';
+import { UILayerSampler } from './capture/uiLayerSampler.js';
+import { WindowCloneManager } from './capture/windowClones.js';
+import { reportFrameLoopError } from './diagnostics/logging.js';
+import { ensureGlassAllocated } from './actors/allocation.js';
+import { isFrameSyncFrozen, SAME_FRAME_WINDOW_US } from './animation/frameSync.js';
+import { setClipIfChanged } from './actors/writes.js';
+import { syncGlassCaptureClip } from './capture/clip.js';
+import { isActorValid } from './actors/lifecycle.js';
 // Padding to allow the shader to draw effects (like refraction and blur) outside the actor's strict bounds.
 const SHADER_PADDING = 20;
 // Utility: Convert HEX color string (e.g., "#ffffff") to normalized RGB array [1.0, 1.0, 1.0]

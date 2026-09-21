@@ -39,8 +39,8 @@
     ]
   },
   "include": [
-    "src/*.ts",
-    "src/*.js",
+    "src/**/*.ts",
+    "src/**/*.js",
     "global.d.ts",
     "tests/uiManager-final.ts"
   ],

@@ -1,7 +1,7 @@
 import Shell from 'gi://Shell';
 import Gio from 'gi://Gio';
 import GdkPixbuf from 'gi://GdkPixbuf';
-import { getTransformedRect } from './utils.js';
+import { getTransformedRect } from './actors/geometry.js';
 const SWITCH_ADVANTAGE = 1.2;
 const MIN_READABLE_CONTRAST = 4.5;
 const BACKDROP_COVERS_GLASS_ALPHA = 190;

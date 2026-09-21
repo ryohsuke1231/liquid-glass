@@ -155,6 +155,8 @@ npm install
 npm run build
 ```
 
+The [source layout and test instructions](docs/architecture.md) describe module ownership and renderer lifecycle constraints.
+
 A significant part of this codebase was written with the help of AI coding assistants, primarily **Claude (Anthropic)**, used for implementation, shader debugging, and refactoring. The design, the shader math, the architecture decisions, and all of the testing on real hardware are mine, and every change is reviewed before it lands.
 
 

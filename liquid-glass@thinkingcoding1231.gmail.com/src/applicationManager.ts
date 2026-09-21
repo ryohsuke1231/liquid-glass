@@ -7,13 +7,19 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { LiquidEffect, noteStrandEntry } from './liquidEffect.js';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
-import { UnpickableClone, UnpickableActor, InverseCornerEffect, getWindowActors, isActorValid, InvertedPositionConstraint, getAllocatedSize, setActorVisible, ensureGlassAllocated, isFrameSyncFrozen,
-  getNestedGlassFix, innerGlassEffectOf, isFocusDebugEnabled,
-  setTranslationIfChanged, setSizeIfChanged, setScaleIfChanged, setOpacityIfChanged,
-  isCullSiteEnabled, rectsIntersect, setCloneCulled,
-  createBackgroundMirror, setBackgroundMirrorEnabled, isBackgroundMirrorEnabled,
-  reportClonedWindowActors, releaseClonedWindowActors,
-  ensureWindowActorAllocated, SAME_FRAME_WINDOW_US } from './utils.js';
+import { UnpickableClone, UnpickableActor } from './actors/unpickable.js';
+import { InverseCornerEffect } from './actors/inverseCorner.js';
+import { getWindowActors } from './actors/windows.js';
+import { isActorValid } from './actors/lifecycle.js';
+import { InvertedPositionConstraint } from './actors/invertedPosition.js';
+import { getAllocatedSize, rectsIntersect } from './actors/geometry.js';
+import { setActorVisible, ensureGlassAllocated, ensureWindowActorAllocated } from './actors/allocation.js';
+import { isFrameSyncFrozen, SAME_FRAME_WINDOW_US } from './animation/frameSync.js';
+import { getNestedGlassFix, innerGlassEffectOf, isFocusDebugEnabled } from './capture/nestedGlass.js';
+import { setTranslationIfChanged, setSizeIfChanged, setScaleIfChanged, setOpacityIfChanged, setCloneCulled } from './actors/writes.js';
+import { isCullSiteEnabled } from './capture/options.js';
+import { createBackgroundMirror, setBackgroundMirrorEnabled, isBackgroundMirrorEnabled } from './capture/background.js';
+import { reportClonedWindowActors, releaseClonedWindowActors } from './capture/windowCulling.js';
 
 import { Logger } from './logger.js';
 

@@ -1,14 +1,11 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
 const path = require('node:path');
+const { loadModule } = require('./helpers/load-module.cjs');
 
-// Same trick as panel-notification.test.cjs: run the built class against
-// stubbed shell actors, no GNOME session required.
+// Run the built module graph against stubbed shell actors.
 function loadClass(file, name, bindings) {
-  const code = fs.readFileSync(path.join(__dirname, '../liquid-glass@thinkingcoding1231.gmail.com/dist', file), 'utf8')
-    .replace(/^import[\s\S]*?;\n/gm, '').replace(/export class /g, 'class ');
-  return new Function(...Object.keys(bindings), `${code}\nreturn ${name};`)(...Object.values(bindings));
+  return loadModule(path.join(__dirname, '../liquid-glass@thinkingcoding1231.gmail.com/dist', file), bindings)[name];
 }
 
 class Signals {
