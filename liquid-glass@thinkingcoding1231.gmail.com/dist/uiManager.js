@@ -826,8 +826,10 @@ export class UIManager {
         if (!this._enableAnimation) {
             this.bgActor.opacity = this.targetActor.opacity;
         }
-        let [inW, inH] = this.animActor.get_size();
-        let [outW, outH] = this.targetActor.get_size();
+        // Hover/colour restyles invalidate layout. get_size() then reports the
+        // preferred size (including margins), not the body currently on screen.
+        // Keep its last allocation until layout commits an actual size change.
+        let [inW, inH] = getAllocatedSize(this.animActor);
         let [scaleX, scaleY] = this.animActor.get_scale();
         inW = Number.isNaN(inW) || inW <= 0 ? (this._stableBaseW || 1) : inW;
         inH = Number.isNaN(inH) || inH <= 0 ? (this._stableBaseH || 1) : inH;
@@ -835,22 +837,8 @@ export class UIManager {
         scaleY = Number.isNaN(scaleY) ? 1.0 : scaleY;
         scaleX *= this.targetActor.get_scale()[0];
         scaleY *= this.targetActor.get_scale()[1];
-        let themeNode = this.animActor.get_theme_node();
-        let mL = themeNode ? themeNode.get_margin(St.Side.LEFT) : 0;
-        let mR = themeNode ? themeNode.get_margin(St.Side.RIGHT) : 0;
-        let mT = themeNode ? themeNode.get_margin(St.Side.TOP) : 0;
-        let mB = themeNode ? themeNode.get_margin(St.Side.BOTTOM) : 0;
-        let marginW = mL + mR;
-        let marginH = mT + mB;
-        let targetW = Math.round(inW);
-        let targetH = Math.round(inH);
-        // GNOME Shell Hover Bug Compensation:
-        if (Math.abs(inW - outW) <= 2 && marginW > 0) {
-            targetW = Math.round(inW - marginW);
-            targetH = Math.round(inH - marginH);
-        }
-        this._stableBaseW = targetW;
-        this._stableBaseH = targetH;
+        this._stableBaseW = Math.round(inW);
+        this._stableBaseH = Math.round(inH);
         // Multiply by the current animation scale.
         let w = Math.max(1, this._stableBaseW * scaleX);
         let h = Math.max(1, this._stableBaseH * scaleY);
