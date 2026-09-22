@@ -5,7 +5,7 @@ import St from 'gi://St';
 import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import { LiquidEffect } from './liquidEffect.js';
-import { StageContrastSampler, AdaptiveContrastConfig } from './contrastSampler.js';
+import { StageContrastSampler, AdaptiveContrastConfig, sanitizeColorPreference } from './contrastSampler.js';
 import { UnpickableActor, UILayerSampler, WindowCloneManager, reportFrameLoopError, ensureGlassAllocated, isActorValid, resolveMonitorGeometry, LayoutOpaqueActor, UnpickableStyledWidget, getAllocatedSize, getTransformedRect, isFrameSyncFrozen, setClipIfChanged, syncGlassCaptureClip, resolveCrossFade, adaptiveColorTweener } from './utils.js';
 // ========== Configuration Parameters ==========
 // Transparent padding outside the glass area.
@@ -352,6 +352,9 @@ export class QuickSettingsManager {
         connectSetting('quick-settings-enable-adaptive-text-color', () => {
             this._adaptiveConfig.enabled = this._settings.get_boolean('quick-settings-enable-adaptive-text-color');
         });
+        connectSetting('quick-settings-adaptive-text-preference', () => {
+            this._adaptiveConfig.preference = sanitizeColorPreference(this._settings.get_string('quick-settings-adaptive-text-preference'));
+        });
         connectSetting('quick-settings-sample-interval-ms', () => {
             this._adaptiveConfig.sampleIntervalMs = this._settings.get_int('quick-settings-sample-interval-ms');
         });
@@ -414,6 +417,7 @@ export class QuickSettingsManager {
             enabled: this._settings.get_boolean('quick-settings-enable-adaptive-text-color'),
             samplePerElement: SAMPLE_PER_ELEMENT,
             sampleIntervalMs: this._settings.get_int('quick-settings-sample-interval-ms'),
+            preference: sanitizeColorPreference(this._settings.get_string('quick-settings-adaptive-text-preference')),
         };
         // ── 1. bgActor: full monitor, no effect ──────────────────────────────────
         // Create the main background actor that covers the full monitor
@@ -647,6 +651,7 @@ export class QuickSettingsManager {
             enabled: this._settings.get_boolean('quick-settings-enable-adaptive-text-color'),
             samplePerElement: SAMPLE_PER_ELEMENT,
             sampleIntervalMs: this._settings.get_int('quick-settings-sample-interval-ms'),
+            preference: sanitizeColorPreference(this._settings.get_string('quick-settings-adaptive-text-preference')),
         };
         // ── 1. bgActor: full monitor, no effect ──────────────────────────────────
         this.bgActor = new UnpickableActor();

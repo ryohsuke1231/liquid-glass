@@ -1,8 +1,26 @@
 import Shell from 'gi://Shell';
 import Gio from 'gi://Gio';
 import GdkPixbuf from 'gi://GdkPixbuf';
+import GLib from 'gi://GLib';
 import { getTransformedRect } from './utils.js';
+// How much better the OTHER colour has to score before the decision flips.
+// Only used when no preference is set ('auto'); with a preference the two
+// directions get their own, deliberately asymmetric thresholds below.
 const SWITCH_ADVANTAGE = 1.2;
+// Flipping TOWARDS the user's preferred colour barely needs an excuse ...
+const SWITCH_ADVANTAGE_TOWARD_PREFERRED = 1.02;
+// ... flipping AWAY from it needs a decisive one.
+const SWITCH_ADVANTAGE_AGAINST_PREFERRED = 1.6;
+// Contrast ratios this close to each other mean the background genuinely does
+// not favour either colour. See decideTextColor(): in that band a configured
+// preference is applied outright ("断定してしまう") instead of letting the
+// measurement decide, which is what the ping-ponging came from.
+const AMBIGUOUS_RATIO = 1.15;
+// After the decision flips, ignore every measurement for this long. The colour
+// tween takes ~380ms and the sampler photographs the screen area the text
+// itself is drawn on, so samples taken during the tween are measuring our own
+// half-finished colour change. See the feedback-loop note on sampleLuminance().
+const SWITCH_SETTLE_MS = 600;
 const MIN_READABLE_CONTRAST = 4.5;
 export const AdaptiveContrastConfig = {
     enabled: true,
@@ -10,7 +28,18 @@ export const AdaptiveContrastConfig = {
     sampleIntervalMs: 200, // 5Hz
     lightTextColor: '#f2f2f2',
     darkTextColor: '#1a1a1a',
+    // 'auto' keeps the previous behaviour exactly (symmetric hysteresis, no
+    // snapping). 'light'/'dark' name the TEXT colour to favour.
+    preference: 'auto',
 };
+/**
+ * Narrows a raw GSettings string to an AdaptiveColorPreference. Anything
+ * unrecognised (an older/newer schema, a hand-edited dconf value) falls back
+ * to 'auto', which is the behaviour that existed before the setting did.
+ */
+export function sanitizeColorPreference(value) {
+    return (value === 'light' || value === 'dark') ? value : 'auto';
+}
 function _clamp(v, min, max) {
     return Math.min(max, Math.max(min, v));
 }
@@ -182,6 +211,8 @@ export class StageContrastSampler {
     _screenshot = null;
     _lastLuma = null;
     _lastIsBright = null;
+    /** Monotonic time of the last polarity change; see SWITCH_SETTLE_MS. */
+    _lastSwitchAt = 0;
     _lastRect = null;
     async sampleLuminance(rect) {
         if (!rect || rect.width <= 0 || rect.height <= 0)
@@ -224,7 +255,19 @@ export class StageContrastSampler {
                 _reportCapturePath('capture produced no usable pixels (everything below the alpha cutoff)');
                 return null;
             }
-            return _trimmedMean(values, 0.10);
+            // [FIX] 0.10 -> 0.30. The rectangle handed to this function is the
+            // union of the TEXT actors' own rects, so a large minority of the
+            // pixels in it are the glyphs themselves — and their colour is the very
+            // thing this measurement decides. At a 10% trim the mean still moved by
+            // roughly 0.1 in luminance when the text flipped, which on a background
+            // sitting anywhere near the light/dark crossover is enough to flip the
+            // decision straight back: the white -> black -> white -> black
+            // ping-pong. Trimming 30% from each end keeps the middle 40% of the
+            // sorted values — an interquartile mean — which is robust to that
+            // contamination from BOTH ends (light text on a dark background and
+            // dark text on a light one) and barely moves when the glyphs change
+            // colour. The background itself, being the majority, still decides.
+            return _trimmedMean(values, 0.30);
         }
         catch (e) {
             return null;
@@ -245,25 +288,77 @@ export class StageContrastSampler {
         const contrast = (background, foreground) => (Math.max(background, foreground) + 0.05) / (Math.min(background, foreground) + 0.05);
         const rawLight = contrast(luminance, light);
         const rawDark = contrast(luminance, dark);
-        if (config.samplePerElement)
+        const preference = config.preference ?? 'auto';
+        const preferDark = preference === 'dark';
+        const hasPreference = preference !== 'auto';
+        // "Ambiguous" = the two candidates score within AMBIGUOUS_RATIO of each
+        // other, i.e. the background is the half-way grey where neither colour is
+        // meaningfully more readable. Computed from the RAW contrasts so the
+        // classification reflects what is on screen right now.
+        const ambiguous = Math.max(rawLight, rawDark) < Math.min(rawLight, rawDark) * AMBIGUOUS_RATIO;
+        if (config.samplePerElement) {
+            // Stateless path (one decision per element): there is no single "last
+            // decision" that could hold, so the only stabiliser available is the
+            // preference. In the ambiguous band it decides outright; outside it the
+            // measurement still wins, exactly as before.
+            if (ambiguous && hasPreference)
+                return preferDark ? config.darkTextColor : config.lightTextColor;
             return rawDark > rawLight ? config.darkTextColor : config.lightTextColor;
+        }
+        // [FIX] Hold everything still for a moment after a flip. This function is
+        // driven by a screenshot of the area the text is drawn on, so for the
+        // ~380ms the colour tween runs, every measurement is partly a measurement
+        // of our own in-progress change — a feedback loop that can sustain the
+        // ping-pong on its own even with the hysteresis below.
+        const now = GLib.get_monotonic_time();
+        if (this._lastIsBright !== null &&
+            now - this._lastSwitchAt < SWITCH_SETTLE_MS * 1000) {
+            return this._lastIsBright ? config.darkTextColor : config.lightTextColor;
+        }
         const smoothed = this._lastLuma === null
             ? luminance : this._lastLuma * 0.7 + luminance * 0.3;
         this._lastLuma = smoothed;
         const lightContrast = contrast(smoothed, light);
         const darkContrast = contrast(smoothed, dark);
-        let isBright = this._lastIsBright ?? (darkContrast > lightContrast);
-        const current = isBright ? darkContrast : lightContrast;
-        const alternative = isBright ? lightContrast : darkContrast;
-        // A meaningful advantage prevents small sampling fluctuations changing polarity.
-        if (alternative > current * SWITCH_ADVANTAGE)
-            isBright = !isBright;
+        const previous = this._lastIsBright;
+        let isBright;
+        if (previous === null) {
+            // First decision for this surface. An ambiguous background is decided
+            // by the preference rather than by a coin-flip-grade measurement.
+            isBright = (ambiguous && hasPreference) ? preferDark : (darkContrast > lightContrast);
+        }
+        else if (ambiguous && hasPreference) {
+            // [FIX] The oscillation zone, resolved by fiat. Inside this band the
+            // preference is simply asserted; since the band is defined by the
+            // measurement alone (no history), the result cannot depend on which
+            // colour happens to be on screen, so it cannot oscillate.
+            isBright = preferDark;
+        }
+        else {
+            isBright = previous;
+            const current = isBright ? darkContrast : lightContrast;
+            const alternative = isBright ? lightContrast : darkContrast;
+            // Does flipping move us TOWARDS the preferred colour or away from it?
+            const alternativeIsPreferred = hasPreference && (preferDark !== isBright);
+            const advantage = !hasPreference
+                ? SWITCH_ADVANTAGE
+                : (alternativeIsPreferred
+                    ? SWITCH_ADVANTAGE_TOWARD_PREFERRED
+                    : SWITCH_ADVANTAGE_AGAINST_PREFERRED);
+            // A meaningful advantage prevents small sampling fluctuations changing polarity.
+            if (alternative > current * advantage)
+                isBright = !isBright;
+        }
         // Smoothing must never delay an obvious readability correction after a
         // window/background changes. Use the current measurement for this decision.
+        // This overrides the preference as well: a preference is about taste in the
+        // cases where both colours work, never about keeping unreadable text.
         const rawCurrent = isBright ? rawDark : rawLight;
         const rawAlternative = isBright ? rawLight : rawDark;
         if (rawCurrent < MIN_READABLE_CONTRAST && rawAlternative >= MIN_READABLE_CONTRAST)
             isBright = !isBright;
+        if (previous !== null && previous !== isBright)
+            this._lastSwitchAt = now;
         this._lastIsBright = isBright;
         return isBright ? config.darkTextColor : config.lightTextColor;
     }
@@ -287,6 +382,7 @@ export class StageContrastSampler {
             if (!this._lastRect || ['x', 'y', 'width', 'height'].some(key => Math.abs(merged[key] - this._lastRect[key]) > 2)) {
                 this._lastLuma = null;
                 this._lastIsBright = null;
+                this._lastSwitchAt = 0;
             }
             this._lastRect = merged;
             const luma = await this.sampleLuminance(merged);

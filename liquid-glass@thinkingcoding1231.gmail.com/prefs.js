@@ -153,6 +153,11 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
     const menuSampleIntervalRow = this._addSliderRow(menuGroup, settings, 'menu-sample-interval-ms', 'Sample Interval (ms)', 'Contrast update frequency', 100, 2000, 50);
     // Adaptive Text Color連動の非表示化
     settings.bind('menu-enable-adaptive-text-color', menuSampleIntervalRow, 'visible', Gio.SettingsBindFlags.GET);
+    const menuTextPrefRow = this._addChoiceRow(menuGroup, settings, 'menu-adaptive-text-preference',
+      'Preferred Text Color',
+      'Which color to settle on when the background favours neither. Also stops the text flickering between the two.',
+      [{ label: 'Automatic', value: 'auto' }, { label: 'Prefer Light Text', value: 'light' }, { label: 'Prefer Dark Text', value: 'dark' }]);
+    settings.bind('menu-enable-adaptive-text-color', menuTextPrefRow, 'visible', Gio.SettingsBindFlags.GET);
 
     this._addColorRow(menuGroup, settings, 'menu-tint-color', 'Tint Color', 'Color of the glass tint');
     this._addSliderRow(menuGroup, settings, 'menu-tint-strength', 'Tint Strength', 'Intensity of the color tint', 0.0, 1.0, 0.01);
@@ -270,6 +275,11 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
     this._addSwitchRow(panelAppearance, settings, 'panel-menu-enable-adaptive-text-color', 'Adaptive Text Color', 'Adjust text contrast automatically');
     const panelSampleIntervalRow = this._addSliderRow(panelAppearance, settings, 'panel-menu-sample-interval-ms', 'Sample Interval (ms)', 'Contrast update frequency', 100, 2000, 50);
     settings.bind('panel-menu-enable-adaptive-text-color', panelSampleIntervalRow, 'visible', Gio.SettingsBindFlags.GET);
+    const panelTextPrefRow = this._addChoiceRow(panelAppearance, settings, 'panel-menu-adaptive-text-preference',
+      'Preferred Text Color',
+      'Which color to settle on when the background favours neither. Also stops the text flickering between the two.',
+      [{ label: 'Automatic', value: 'auto' }, { label: 'Prefer Light Text', value: 'light' }, { label: 'Prefer Dark Text', value: 'dark' }]);
+    settings.bind('panel-menu-enable-adaptive-text-color', panelTextPrefRow, 'visible', Gio.SettingsBindFlags.GET);
 
     this._addColorRow(panelAppearance, settings, 'panel-menu-tint-color', 'Tint Color', 'Color of the glass tint');
     this._addSliderRow(panelAppearance, settings, 'panel-menu-tint-strength', 'Tint Strength', 'Intensity of the color tint', 0.0, 1.0, 0.01);
@@ -324,6 +334,11 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
     const notifSampleIntervalRow = this._addSliderRow(notifGroup, settings, 'notification-sample-interval-ms', 'Sample Interval (ms)', 'Contrast update frequency', 100, 2000, 50);
     // Adaptive Text Color連動の非表示化
     settings.bind('notification-enable-adaptive-text-color', notifSampleIntervalRow, 'visible', Gio.SettingsBindFlags.GET);
+    const notifTextPrefRow = this._addChoiceRow(notifGroup, settings, 'notification-adaptive-text-preference',
+      'Preferred Text Color',
+      'Which color to settle on when the background favours neither. Also stops the text flickering between the two.',
+      [{ label: 'Automatic', value: 'auto' }, { label: 'Prefer Light Text', value: 'light' }, { label: 'Prefer Dark Text', value: 'dark' }]);
+    settings.bind('notification-enable-adaptive-text-color', notifTextPrefRow, 'visible', Gio.SettingsBindFlags.GET);
 
     this._addSliderRow(notifGroup, settings, 'notification-glass-expand', 'Glass Expand', 'Extra area for the effect', 0, 50, 1);
     this._addSliderRow(notifGroup, settings, 'notification-y-offset', 'Y Offset', 'Vertical offset adjustment', 0, 100, 1);
@@ -373,6 +388,11 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
     const qsSampleIntervalRow = this._addSliderRow(qsGroup, settings, 'quick-settings-sample-interval-ms', 'Sample Interval (ms)', 'Contrast update frequency', 100, 2000, 50);
     // Adaptive Text Color連動の非表示化
     settings.bind('quick-settings-enable-adaptive-text-color', qsSampleIntervalRow, 'visible', Gio.SettingsBindFlags.GET);
+    const qsTextPrefRow = this._addChoiceRow(qsGroup, settings, 'quick-settings-adaptive-text-preference',
+      'Preferred Text Color',
+      'Which color to settle on when the background favours neither. Also stops the text flickering between the two.',
+      [{ label: 'Automatic', value: 'auto' }, { label: 'Prefer Light Text', value: 'light' }, { label: 'Prefer Dark Text', value: 'dark' }]);
+    settings.bind('quick-settings-enable-adaptive-text-color', qsTextPrefRow, 'visible', Gio.SettingsBindFlags.GET);
 
     this._addSliderRow(qsGroup, settings, 'quick-settings-glass-expand', 'Glass Expand', 'Extra area for the effect', 0, 50, 1);
     const qsXOffsetRow = this._addSliderRow(qsGroup, settings, 'quick-settings-x-offset', 'X Offset', 'Horizontal offset adjustment', -100, 100, 1);
@@ -465,6 +485,11 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
     const osdSampleIntervalRow = this._addSliderRow(osdGroup, settings, 'osd-sample-interval-ms', 'Sample Interval (ms)', 'Contrast update frequency', 100, 2000, 50);
     // Adaptive Text Color連動の非表示化
     settings.bind('osd-enable-adaptive-text-color', osdSampleIntervalRow, 'visible', Gio.SettingsBindFlags.GET);
+    const osdTextPrefRow = this._addChoiceRow(osdGroup, settings, 'osd-adaptive-text-preference',
+      'Preferred Text Color',
+      'Which color to settle on when the background favours neither. Also stops the text flickering between the two.',
+      [{ label: 'Automatic', value: 'auto' }, { label: 'Prefer Light Text', value: 'light' }, { label: 'Prefer Dark Text', value: 'dark' }]);
+    settings.bind('osd-enable-adaptive-text-color', osdTextPrefRow, 'visible', Gio.SettingsBindFlags.GET);
 
     this._addSliderRow(osdGroup, settings, 'osd-glass-expand', 'Glass Expand', 'Extra area for the effect', 0, 50, 1);
     this._addSliderRow(osdGroup, settings, 'osd-y-offset', 'Y Offset', 'Vertical offset adjustment', -100, 100, 1);
@@ -693,6 +718,35 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
     } else {
       container.add(row);
     }
+  }
+
+  // 文字列値を選ぶ ComboRow。Adw.ComboRow の `selected` は整数インデックスなので
+  // GSettings の文字列キーには直接 bind できず、双方向の対応づけを手で書いている
+  // （Blur Resolution の行と同じ事情）。
+  _addChoiceRow(container, settings, key, title, subtitle, options) {
+    const row = new Adw.ComboRow({
+      title,
+      subtitle,
+      model: Gtk.StringList.new(options.map(o => o.label)),
+    });
+    this._addRowToContainer(container, row);
+
+    const values = options.map(o => o.value);
+    const sync = () => {
+      const idx = values.indexOf(settings.get_string(key));
+      row.selected = idx < 0 ? 0 : idx;
+    };
+    sync();
+    row.connect('notify::selected', () => {
+      const value = values[row.selected];
+      if (value !== undefined && value !== settings.get_string(key))
+        settings.set_string(key, value);
+    });
+    // The handler outlives nothing: `settings` is created per preferences
+    // window and dies with it, so there is no disconnect to arrange here
+    // (and GTK4 gives no reliable per-row hook to hang one on).
+    settings.connect(`changed::${key}`, sync);
+    return row;
   }
 
   // ON/OFFスイッチ

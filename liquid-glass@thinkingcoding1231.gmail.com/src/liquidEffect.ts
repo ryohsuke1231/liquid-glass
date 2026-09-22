@@ -671,6 +671,39 @@ function _registerGlassDebugHooks(): void {
       console.log(msg);
       return msg;
     },
+    // [DIAG] The glass rect every live instance is CURRENTLY drawing with,
+    // straight out of the uniforms, so a per-frame probe can compare it
+    // against whatever the glass is supposed to be following and read the
+    // tracking error off directly instead of eyeballing it. Cheap enough to
+    // call once a frame: four Map lookups per instance, no allocation beyond
+    // the result.
+    geom: (owner?: string) => {
+      const out: { owner: string, x: number, y: number, w: number, h: number }[] = [];
+      for (const fx of _liveEffects) {
+        const f = fx as any;
+        if (owner && f._owner !== owner) continue;
+        out.push({
+          owner: f._owner,
+          x: f._pendingUniforms.get('dock_x') ?? 0,
+          y: f._pendingUniforms.get('dock_y') ?? 0,
+          w: f._pendingUniforms.get('dock_w') ?? 0,
+          h: f._pendingUniforms.get('dock_h') ?? 0,
+        });
+      }
+      return out;
+    },
+    // A/B switch for the edge's footprint taps across every live instance.
+    // false = the plain four-tap RGSS pattern everywhere, i.e. what the edge
+    // antialiasing looked like before the taps existed.
+    edgeTaps: (enabled: boolean) => {
+      let n = 0;
+      for (const fx of _liveEffects) {
+        try { fx.setEdgeTapsEnabled(enabled); n++; } catch (e) { }
+      }
+      const msg = `[Liquid Glass] edge footprint taps ${enabled ? 'ENABLED' : 'DISABLED'} on ${n} instance(s)`;
+      console.log(msg);
+      return msg;
+    },
     earlyExit: (enabled: boolean) => {
       let n = 0;
       for (const fx of _liveEffects) {
@@ -1164,6 +1197,10 @@ export const LiquidEffect = GObject.registerClass({
     this._owner = owner ?? '?';
     this._diagOwnerLabel = '';
 
+    // See setLiveGeometryHook(). Off unless a manager opts in.
+    this._liveGeometryHook = null;
+    this._inLiveGeometry = false;
+
     this._blurTextures = [];
     this._blurFbos = [];
     this._gaussianTempTextures = [];
@@ -1304,6 +1341,15 @@ export const LiquidEffect = GObject.registerClass({
     this._setFloat('blur_rect_y', 0.0);
     this._setFloat('blur_rect_w', 0.0);
     this._setFloat('blur_rect_h', 0.0);
+    // 0 = "do not try to reconstruct a magnified texture"; the real sizes are
+    // set every paint, once it is known what layer 1 actually holds.
+    this._setFloat('blur_tex_w', 0.0);
+    this._setFloat('blur_tex_h', 0.0);
+    // +1 = the inward lens; an unset uniform would read 0.0, which the shader
+    // also treats as +1, but seed it so dump() shows the real value.
+    // The footprint taps are on unless an A/B turns them off; an unset Cogl
+    // uniform reads 0.0, which would silently disable them.
+    this._setFloat('edge_taps_enabled', 1.0);
 
     this._settingsIds = [];
     if (this._settings) {
@@ -1961,6 +2007,27 @@ export const LiquidEffect = GObject.registerClass({
       }
     }
 
+    // ── Live geometry ───────────────────────────────────────────────────────
+    // [FIX] The one place in the frame where an animated actor's position is
+    // final. See setLiveGeometryHook() for the whole story; in short, the
+    // per-frame BEFORE_REDRAW tick that computes this glass's geometry runs
+    // in the stage's "before-update" phase, which is BEFORE Clutter advances
+    // this frame's transitions — so anything driven by a transition (a
+    // notification banner sliding in, a dock sliding out) is read one frame
+    // stale and the glass trails the thing it is supposed to be under. By
+    // paint time the transition has been applied, so the hook re-reads it and
+    // corrects the uniforms for this very paint.
+    if (this._liveGeometryHook) {
+      this._inLiveGeometry = true;
+      try {
+        this._liveGeometryHook();
+      } catch (e) {
+        this._logger?.error(`[Liquid Glass] Live geometry hook failed: ${e}`);
+      } finally {
+        this._inLiveGeometry = false;
+      }
+    }
+
     // ── Wait for async shaders ──────────────────────────────────────────────
     if (!this._shadersLoaded) {
       super.vfunc_paint_target(_paintNode, paintContext);
@@ -2281,6 +2348,11 @@ export const LiquidEffect = GObject.registerClass({
     // contradict layer 1's coordinate range. Bind whichever texture already
     // uses the range layer 1 needs.
     const layer0Tex = haveBlur ? this._blurResultTex! : effectiveTex;
+    // [FIX] The texel grid the shader is about to magnify — the blur chain
+    // runs at half (or quarter) resolution. glass.frag needs the real texture
+    // size to reconstruct it smoothly; see the blur_tex_* uniforms there.
+    this._setFloat('blur_tex_w', layer0Tex.get_width());
+    this._setFloat('blur_tex_h', layer0Tex.get_height());
     compPipeline.set_layer_texture(0, layer0Tex);
     this._configureSamplerLayer(compPipeline, 0);
     const layer0UV = haveBlur ? [0, 0, 1, 1] : inputUV;
@@ -2443,6 +2515,7 @@ export const LiquidEffect = GObject.registerClass({
           isDock: this._pendingUniforms.get('isDock'),
           multiRegion: this._pendingUniforms.get('multi_region_mode'),
           earlyExit: this._pendingUniforms.get('early_exit_enabled'),
+          edgeTaps: this._pendingUniforms.get('edge_taps_enabled'),
           dockRect: [
             this._pendingUniforms.get('dock_x'),
             this._pendingUniforms.get('dock_y'),
@@ -2502,6 +2575,13 @@ export const LiquidEffect = GObject.registerClass({
   // Hard floor on the margin around the glass, on top of the computed
   // refraction reach. Covers edge_smoothing's feather, the 4-tap RGSS spread
   // and rounding.
+  // Mirrors EDGE_LENS_REACH in glass.frag, which clamps the bevel's
+  // displacement to this many pixels. That makes it the refraction's true
+  // reach, so the blur and capture margins below are derived from it — the
+  // two constants have to move together, or the rim starts sampling the
+  // blurred region's clamped border and streaks.
+  static EDGE_LENS_REACH = 96;
+
   static BLUR_RECT_MIN_MARGIN = 12;
 
   // Below this the rect is not worth the extra uniforms: if it already covers
@@ -2749,15 +2829,23 @@ export const LiquidEffect = GObject.registerClass({
     const eta = 1.0 / Math.max(ior, 1.001);
     const bend = Math.min(eta / Math.sqrt(Math.max(1 - eta * eta, 1e-6)), 1 / 0.15);
     const minRes = Math.max(Math.min(resW, resH), 1);
-    const dispUV = Math.min(0.30, bend * Math.max(dispScale, 0) / minRes);
+    // Pixels, both axes — same correction as _computeBlurRect().
+    // [FIX] The reach is whichever is larger: what the flat-normal refraction
+    // asks for, or the rim's own ceiling (EDGE_LENS_REACH). `bend` alone is
+    // not a bound — it is the deflection of a ray hitting a FLAT normal, and
+    // the bevel's normals are anything but flat, which is why the rim can ask
+    // for ~66px where bend predicts 21. EDGE_LENS_REACH is the value the
+    // shader actually clamps to, so it is what this has to cover.
+    const dispPx = Math.min(0.30 * minRes, Math.max(
+      bend * Math.max(dispScale, 0), LiquidEffect.EDGE_LENS_REACH));
 
     const feather = Math.max(this._pendingUniforms.get('edge_smoothing') ?? 0, 0.75);
     const blurReach = 3 * Math.max(Math.min(this._targetRadius, 30), 0);
     const extra = LiquidEffect.BLUR_RECT_MIN_MARGIN + feather + 2.5 +
       blurReach + LiquidEffect.CAPTURE_CLIP_EXTRA_MARGIN;
 
-    const mx = Math.ceil(dispUV * resW + extra);
-    const my = Math.ceil(dispUV * resH + extra);
+    const mx = Math.ceil(dispPx + extra);
+    const my = Math.ceil(dispPx + extra);
 
     const maxW = Math.round(resW);
     const maxH = Math.round(resH);
@@ -2801,9 +2889,16 @@ export const LiquidEffect = GObject.registerClass({
     // capped the way the shader's safe_z floor caps it.
     const bend = Math.min(eta / Math.sqrt(Math.max(1 - eta * eta, 1e-6)), 1 / 0.15);
     const minRes = Math.max(Math.min(resW, resH), 1);
-    const dispUV = Math.min(0.30, bend * Math.max(dispScale, 0) / minRes);
-    const dispX = dispUV * resW;
-    const dispY = dispUV * resH;
+    // [FIX] displacement_scale is in PIXELS now, equally on both axes — see
+    // getDisplacement() in glass.frag. It used to be normalised by the
+    // shorter side and then applied across the longer one too, so this margin
+    // had to be computed per axis and came out 1.78x too wide horizontally on
+    // a 1920x1080 surface (and, on other surfaces, too narrow).
+    // Same reach as getCaptureClipRect() — see the note there.
+    const dispPx = Math.min(0.30 * minRes, Math.max(
+      bend * Math.max(dispScale, 0), LiquidEffect.EDGE_LENS_REACH));
+    const dispX = dispPx;
+    const dispY = dispPx;
 
     const feather = Math.max(this._pendingUniforms.get('edge_smoothing') ?? 0, 0.75);
     const extra = LiquidEffect.BLUR_RECT_MIN_MARGIN + feather + 2.5;
@@ -3263,6 +3358,10 @@ export const LiquidEffect = GObject.registerClass({
 
   cleanup(): void {
     _liveEffects.delete(this);
+    // Drop the manager's closure before anything else: it captures the
+    // manager, its actors and its settings, and a paint can still arrive
+    // while the rest of this teardown runs.
+    this._liveGeometryHook = null;
     // The frame-serial hook is one signal shared by every instance; drop it
     // once nothing is left to use it, so disabling the extension leaves
     // nothing connected to the stage.
@@ -3340,6 +3439,18 @@ export const LiquidEffect = GObject.registerClass({
   setCompositeRectEnabled(enabled: boolean): void {
     this._compositeRectEnabled = enabled;
     this.queue_repaint();
+  }
+
+
+  /**
+   * [DEBUG] The footprint taps in sampleBackdrop() — see glass.frag's
+   * edge_taps_enabled. Off forces the plain four-tap RGSS pattern, which is
+   * the direct A/B for whether the edge antialiasing is doing any work.
+   * Reachable as global._lgGlass.edgeTaps(bool).
+   */
+  setEdgeTapsEnabled(enabled: boolean): void {
+    this._setFloat('edge_taps_enabled', enabled ? 1.0 : 0.0);
+    this._queueRepaintIfDirty();
   }
 
   setEarlyExitEnabled(enabled: boolean): void {
@@ -3565,6 +3676,62 @@ export const LiquidEffect = GObject.registerClass({
   private declare _batchDepth: number;
   private declare _batchDirty: boolean;
 
+  // See setLiveGeometryHook().
+  private declare _liveGeometryHook: (() => void) | null;
+  private declare _inLiveGeometry: boolean;
+
+  /**
+   * Registers a callback run at the very top of every vfunc_paint_target(),
+   * i.e. during the paint phase of the frame.
+   *
+   * WHY THIS EXISTS
+   *
+   * Every manager syncs its glass geometry from a Meta.LaterType.BEFORE_REDRAW
+   * later, and reads the tracked actor through get_transformed_position() /
+   * get_transformed_extents() — i.e. through its ALLOCATION.
+   *
+   * NOT the timelines. That was the first theory and it is wrong: a probe
+   * easing translation_x and comparing the value seen in a BEFORE_REDRAW
+   * later against the value seen at 'after-paint' measured a lag of exactly
+   * 0.0px on all 30 sampled frames. Transitions have already been advanced by
+   * the time a later runs.
+   *
+   * The allocation is the part that has not caught up. Both animations that
+   * show the lag drive position through a property that queues a RELAYOUT
+   * rather than through a paint-time transform:
+   *
+   *   * the notification banner — messageTray.js eases `_bannerBin.y`, and
+   *     clutter_actor_set_y() sets a fixed position and queues a relayout;
+   *   * Dash to Dock — ease_property('slide-x') on its DashSlideContainer,
+   *     whose 'notify::slide-x' handler calls queue_relayout() and whose
+   *     vfunc_allocate() is what actually places the dash.
+   *
+   * Clutter recomputes allocations in the stage's relayout phase, which comes
+   * after the laters have run (META_LATER_RESIZE is documented as "a resize
+   * processing phase that is done before ... layout"), so the tick reads the
+   * PREVIOUS frame's allocation. At ~160px over ~200ms, one frame of that is
+   * a visible ~13px gap between the banner and its glass. An application
+   * window does not show it because its glass is a child of the window actor
+   * and is moved by the scene graph, not by a poll.
+   *
+   * The paint phase is past both the timeline advance and the relayout, so
+   * what the hook reads there is this frame's real geometry.
+   *
+   * WHAT A HOOK MAY DO
+   *
+   * Uniforms only — setGlassGeometry() and friends, which write straight to
+   * the composite pipeline and are consumed by the node added moments later
+   * in the same paint. It must NOT touch actor state: set_position/set_size/
+   * set_clip/opacity all queue relayouts or redraws mid-paint, which is both
+   * a frame too late to matter and a way to spin the compositor at 100%.
+   * queue_repaint() is suppressed while the hook runs for exactly that reason.
+   *
+   * Pass null to unregister (cleanup() does).
+   */
+  setLiveGeometryHook(fn: (() => void) | null): void {
+    this._liveGeometryHook = fn;
+  }
+
   beginBatch(): void {
     if (!LiquidEffect.DRAG_PERF_MODE_ENABLED) return;
     this._batchDepth = (this._batchDepth || 0) + 1;
@@ -3588,6 +3755,13 @@ export const LiquidEffect = GObject.registerClass({
   // sites transparently goes through here without needing to change any
   // of them individually) the inherited Clutter.Effect.queue_repaint().
   queue_repaint(): void {
+    // [FIX] Queueing a repaint from inside the paint we are already running
+    // would schedule a fresh frame for every frame — an endless redraw loop
+    // at full frame rate. The live-geometry hook has nothing to queue anyway:
+    // it writes uniforms straight onto the composite pipeline, and that
+    // pipeline is consumed by the node this same paint is about to add. See
+    // setLiveGeometryHook().
+    if (this._inLiveGeometry) return;
     if (LiquidEffect.DRAG_PERF_MODE_ENABLED && this._batchDepth) {
       this._batchDirty = true;
       return;

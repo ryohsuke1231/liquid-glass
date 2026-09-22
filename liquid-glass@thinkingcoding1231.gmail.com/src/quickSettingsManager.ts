@@ -5,7 +5,7 @@ import St from 'gi://St';
 import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import { LiquidEffect } from './liquidEffect.js';
-import { StageContrastSampler, AdaptiveContrastConfig } from './contrastSampler.js';
+import { StageContrastSampler, AdaptiveContrastConfig, sanitizeColorPreference } from './contrastSampler.js';
 import Gio from 'gi://Gio';
 import {
   UnpickableActor,
@@ -459,6 +459,11 @@ export class QuickSettingsManager {
       this._adaptiveConfig.enabled = this._settings.get_boolean('quick-settings-enable-adaptive-text-color');
     });
 
+    connectSetting('quick-settings-adaptive-text-preference', () => {
+      this._adaptiveConfig.preference = sanitizeColorPreference(
+        this._settings.get_string('quick-settings-adaptive-text-preference'));
+    });
+
     connectSetting('quick-settings-sample-interval-ms', () => {
       this._adaptiveConfig.sampleIntervalMs = this._settings.get_int('quick-settings-sample-interval-ms');
     });
@@ -527,6 +532,8 @@ export class QuickSettingsManager {
       enabled: this._settings.get_boolean('quick-settings-enable-adaptive-text-color'),
       samplePerElement: SAMPLE_PER_ELEMENT,
       sampleIntervalMs: this._settings.get_int('quick-settings-sample-interval-ms'),
+      preference: sanitizeColorPreference(
+        this._settings.get_string('quick-settings-adaptive-text-preference')),
     };
 
     // ── 1. bgActor: full monitor, no effect ──────────────────────────────────
@@ -785,6 +792,8 @@ export class QuickSettingsManager {
       enabled: this._settings.get_boolean('quick-settings-enable-adaptive-text-color'),
       samplePerElement: SAMPLE_PER_ELEMENT,
       sampleIntervalMs: this._settings.get_int('quick-settings-sample-interval-ms'),
+      preference: sanitizeColorPreference(
+        this._settings.get_string('quick-settings-adaptive-text-preference')),
     };
 
     // ── 1. bgActor: full monitor, no effect ──────────────────────────────────

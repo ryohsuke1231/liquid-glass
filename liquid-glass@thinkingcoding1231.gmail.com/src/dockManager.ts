@@ -82,6 +82,15 @@ export class DashManager {
   // Tracks the hide/show transition so the reason is logged once, not per frame.
   private _lastHidden: boolean | undefined;
 
+  // What the last _syncGeometry() derived the shader's glass rect from, so
+  // the paint-time hook can re-apply the part of it that moves. See
+  // _syncGlassGeometryLive().
+  private _liveRef: {
+    actor: Clutter.Actor;
+    rawX: number; rawY: number;
+    rect: [number, number, number, number];
+  } | null = null;
+
   private _uiSampler: UILayerSampler | null = null;
   private _windowCloneManager: WindowCloneManager | null = null;
 
@@ -313,6 +322,10 @@ export class DashManager {
     this.effect.setIsDock(true);
     this.liquidBox.add_effect(this.effect);
 
+    // [FIX] Dock-follows-glass lag — same cause and same remedy as the
+    // notification banner's. See LiquidEffect.setLiveGeometryHook().
+    this.effect.setLiveGeometryHook(() => this._syncGlassGeometryLive());
+
     // WindowCloneManager + UILayerSampler deposit their clones inside liquidBox.
     this._windowCloneManager = new WindowCloneManager(this.liquidBox, this._cloneContainer, 'lg-dock');
     // [FIX] dockRoot is passed BOTH as a fixed exclusion and as an ancestor
@@ -428,6 +441,38 @@ export class DashManager {
     }
   }
 
+  // ── Paint-time geometry (see LiquidEffect.setLiveGeometryHook) ─────────────
+  //
+  // _syncGeometry() runs from a BEFORE_REDRAW later and reads the dash
+  // through get_transformed_position(), i.e. through its allocation. Dash to
+  // Dock slides by easing 'slide-x' on its DashSlideContainer, whose
+  // 'notify::slide-x' handler calls queue_relayout() and whose
+  // vfunc_allocate() is what actually moves the dash (docking.js) — so the
+  // position only becomes current in the stage's relayout phase, which runs
+  // after the laters. The tick therefore reads the previous frame's
+  // allocation and the glass trails the dock across the whole animation.
+  //
+  // Only the translation is corrected here. _syncGeometry() is a long
+  // stateful function — the gap/margin corrections, the "isMoving" guard, the
+  // stable-delta bookkeeping all depend on running exactly once per frame —
+  // so re-running it mid-paint would corrupt its own state, and none of that
+  // bookkeeping is what moves during a slide anyway. The shape and size stay
+  // as the tick computed them; the rect is simply put where the dock actually
+  // is this frame.
+  _syncGlassGeometryLive() {
+    const ref = this._liveRef;
+    if (!ref || !this.effect) return;
+    if (!ref.actor?.mapped) return;
+
+    const [nx, ny] = ref.actor.get_transformed_position();
+    if (!Number.isFinite(nx) || !Number.isFinite(ny)) return;
+
+    this.effect.setGlassGeometry(
+      ref.rect[0] + (nx - ref.rawX),
+      ref.rect[1] + (ny - ref.rawY),
+      ref.rect[2], ref.rect[3]);
+  }
+
   _syncGeometry() {
     if (!this.bgActor || !this.targetActor || !this.targetActor.mapped) return;
 
@@ -445,6 +490,12 @@ export class DashManager {
     let [baseW, baseH] = sourceActor.get_size();
     let [absX, absY] = sourceActor.get_transformed_position();
     if (Number.isNaN(absX) || Number.isNaN(absY)) return;
+
+    // Remembered before any of the corrections below touch it: the paint-time
+    // hook compares against exactly this to learn how far the dock has moved
+    // since this tick ran. See _syncGlassGeometryLive().
+    const rawSrcX = absX;
+    const rawSrcY = absY;
 
     if (sourceActor !== this.targetActor) {
       let [tX, tY] = this.targetActor.get_transformed_position();
@@ -793,6 +844,12 @@ export class DashManager {
     // the FBO was dock-sized.
     this.effect?.setGlassGeometry(localBgX, localBgY, bgW, bgH);
 
+    this._liveRef = {
+      actor: sourceActor,
+      rawX: rawSrcX, rawY: rawSrcY,
+      rect: [localBgX, localBgY, bgW, bgH],
+    };
+
     // Clones in WindowCloneManager are placed at (w.x, w.y) — absolute screen
     // coordinates. The container shift of (-monitor.x, -monitor.y) makes each
     // clone appear at (w.x - monitor.x, w.y - monitor.y) inside the full-screen
@@ -923,6 +980,9 @@ export class DashManager {
 
   cleanup() {
     this._torndown = true;
+    // Nothing for a late paint-time hook to act on. (The effect drops the
+    // hook itself in its own cleanup(); this covers the window before that.)
+    this._liveRef = null;
 
     // 毎フレームの later チェーンを最初に、無条件で止める。_removeEffect()
     // の途中で throw しても孤児チェーンが残らないようにするため

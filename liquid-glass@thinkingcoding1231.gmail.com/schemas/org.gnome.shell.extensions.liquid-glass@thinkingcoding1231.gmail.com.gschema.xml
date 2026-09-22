@@ -86,6 +86,11 @@
       <default>true</default>
       <summary>Enable adaptive text color</summary>
     </key>
+    <key name="menu-adaptive-text-preference" type="s">
+      <default>"auto"</default>
+      <summary>Preferred text color</summary>
+      <description>Which text color to settle on when the background does not clearly favour either one: "auto", "light" or "dark".</description>
+    </key>
     <key name="menu-sample-per-element" type="b">
       <default>false</default>
       <summary>Sample per element</summary>
@@ -218,6 +223,11 @@
       <default>true</default>
       <summary>Enable adaptive text color</summary>
     </key>
+    <key name="panel-menu-adaptive-text-preference" type="s">
+      <default>"auto"</default>
+      <summary>Preferred text color</summary>
+      <description>Which text color to settle on when the background does not clearly favour either one: "auto", "light" or "dark".</description>
+    </key>
     <key name="panel-menu-sample-interval-ms" type="i">
       <default>400</default>
       <summary>Sample interval (ms)</summary>
@@ -259,6 +269,11 @@
     <key name="notification-enable-adaptive-text-color" type="b">
       <default>true</default>
       <summary>Enable adaptive text color</summary>
+    </key>
+    <key name="notification-adaptive-text-preference" type="s">
+      <default>"auto"</default>
+      <summary>Preferred text color</summary>
+      <description>Which text color to settle on when the background does not clearly favour either one: "auto", "light" or "dark".</description>
     </key>
     <key name="notification-sample-per-element" type="b">
       <default>false</default>
@@ -340,6 +355,11 @@
       <default>false</default>
       <summary>Enable adaptive text color</summary>
     </key>
+    <key name="quick-settings-adaptive-text-preference" type="s">
+      <default>"auto"</default>
+      <summary>Preferred text color</summary>
+      <description>Which text color to settle on when the background does not clearly favour either one: "auto", "light" or "dark".</description>
+    </key>
     <key name="quick-settings-sample-per-element" type="b">
       <default>false</default>
       <summary>Sample per element</summary>
@@ -415,6 +435,11 @@
     <key name="osd-enable-adaptive-text-color" type="b">
       <default>true</default>
       <summary>Enable adaptive text color</summary>
+    </key>
+    <key name="osd-adaptive-text-preference" type="s">
+      <default>"auto"</default>
+      <summary>Preferred text color</summary>
+      <description>Which text color to settle on when the background does not clearly favour either one: "auto", "light" or "dark".</description>
     </key>
     <key name="osd-sample-interval-ms" type="i">
       <default>400</default>
