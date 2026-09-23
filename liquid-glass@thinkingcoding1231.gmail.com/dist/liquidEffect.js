@@ -193,25 +193,31 @@ function _frameSerialIsLive() {
 // its WHOLE window, e.g. 2132x1246 for a maximized window — even though the
 // enclosing glass only ever samples the part of its capture it can show (its
 // cull rect: glass + refraction reach + blur reach + slack, the very rect ①b
-// culls whole windows against). Everything composited outside it is thrown
-// away, and it is ~80% of the nested fill in the "maximized window under the
-// dock" case.
+// culls whole windows against, published by syncGlassCaptureClip() as
+// `_lgCaptureScreenRect`). Everything composited outside it is thrown away.
 //
-// So a re-rendering glass pushes that rect here for the duration of its
-// capture, and a nested paint shrinks its composite quad to it. The rect is in
-// SCREEN coordinates, the space every clone is placed in (each clone sits at
-// its source's own screen position; the container translation maps that into
-// the capture), so a nested glass can map it into its own local space with its
-// REAL stage transform — which the clone reproduces exactly. The outer glass's
-// own transform (a menu scaling in, say) never enters into it.
+// A nested composite therefore shrinks its quad to the enclosing glass's rect.
+// FINDING the enclosing glass is the subtle part. A nested paint does NOT run
+// inside the enclosing effect's vfunc_paint(): ClutterOffscreenEffect adds an
+// actor node, and that node's draw handler paints the subtree during the
+// EXECUTION phase, after every vfunc_paint of the build phase has returned
+// (see _blurFrameSerial's note). The first implementation published the rect
+// on a stack around vfunc_paint() and so never found anything — measured:
+// nested composite fill unchanged. What IS true at execution time is that the
+// enclosing effect's offscreen is the current framebuffer. So the lookup goes
+//     paintContext.get_framebuffer() -> Cogl.Offscreen.get_texture()
+//       -> the LiquidEffect whose capture that texture is
+// via this table, which each glass keeps current from its own paint_target.
+// Any other offscreen in between (another extension's effect) simply is not in
+// the table, and the composite is left whole — the safe side.
 //
-// This shrinks geometry; it is NOT a set_clip(). memo.md 地雷17: a clip node
-// costs more than the fill it saves. A smaller quad costs nothing.
+// The rect is in SCREEN coordinates, the space every clone is placed in (each
+// clone sits at its source's own screen position; the container translation
+// maps that into the capture), so the nested glass maps it into its own space
+// with its REAL stage transform, which the clone reproduces exactly.
 //
-// Entries are pushed by every painting LiquidEffect, with roi = null when there
-// is nothing to clamp to, so the nearest entry always names the framebuffer the
-// nested composite really lands in.
-const _captureRoiStack = [];
+// This shrinks geometry; it is NOT a set_clip() (memo.md 地雷17).
+const _captureOwners = new Map();
 function _releaseFrameSerialHook() {
     if (!_frameSerialHandler)
         return;
@@ -1099,6 +1105,7 @@ export const LiquidEffect = GObject.registerClass({
         this._nestedRoiEnabled = LiquidEffect.USE_NESTED_ROI;
         this._nestedRoiClamps = 0;
         this._nestedRoiSkips = 0;
+        this._registeredCaptureTex = null;
         _ensureFrameSerialHook();
         this._uvMismatchWarned = false;
         this._passPipelines = new Map();
@@ -1722,24 +1729,9 @@ export const LiquidEffect = GObject.registerClass({
      * left to the base class.
      */
     vfunc_paint(node, paintContext, flags) {
-        const dirty = (flags & Clutter.EffectPaintFlags.ACTOR_DIRTY) !== 0;
-        if (dirty)
+        if (flags & Clutter.EffectPaintFlags.ACTOR_DIRTY)
             this._recaptureSerial++;
-        // [PERF B2] Publish, for the duration of the capture, the part of it this
-        // glass can actually show. The subtree — including every glass painted
-        // through a clone inside it — is painted synchronously inside the super
-        // call below (paint-node BUILD phase), and so is this effect's own
-        // paint_target (post_paint -> paint_texture), which is why readers skip
-        // their own entry. Only a re-rendering paint can paint nested glass, so a
-        // cached paint pushes no region.
-        const roi = (dirty && this._nestedRoiEnabled) ? (this._lgCaptureScreenRect ?? null) : null;
-        _captureRoiStack.push({ fx: this, roi });
-        try {
-            super.vfunc_paint(node, paintContext, flags);
-        }
-        finally {
-            _captureRoiStack.pop();
-        }
+        super.vfunc_paint(node, paintContext, flags);
     }
     vfunc_paint_target(_paintNode, paintContext) {
         // ── [DIAG] Black-background investigation ──────────────────────────────
@@ -1883,6 +1875,14 @@ export const LiquidEffect = GObject.registerClass({
         }
         const srcW = srcTex.get_width();
         const srcH = srcTex.get_height();
+        // [PERF B2] Keep "which glass owns this capture" current, so a glass
+        // painted into it later (execution phase) can find us. See _captureOwners.
+        if (this._registeredCaptureTex !== srcTex) {
+            if (this._registeredCaptureTex && _captureOwners.get(this._registeredCaptureTex) === this)
+                _captureOwners.delete(this._registeredCaptureTex);
+            _captureOwners.set(srcTex, this);
+            this._registeredCaptureTex = srcTex;
+        }
         // ── Trust the actor's logical size over get_texture()'s reported size ──
         // get_texture() can be a few pixels larger than the actor's logical size
         // due to internal FBO padding (see the crop-pass comment above), so
@@ -2250,7 +2250,7 @@ export const LiquidEffect = GObject.registerClass({
         // compRect: the quad and pixel_coord must agree, so it is only applied when
         // the two spaces coincide.
         if (spacesExact) {
-            const roi = this._nestedCompositeRoi(actor, resW, resH);
+            const roi = this._nestedCompositeRoi(actor, paintContext, resW, resH);
             if (roi) {
                 const base = compRect ?? [0, 0, resW, resH];
                 const x0 = Math.max(base[0], roi[0]);
@@ -2497,7 +2497,7 @@ export const LiquidEffect = GObject.registerClass({
      * glass's own shader space as [x0, y0, x1, y1], or null when this paint is
      * not nested inside a re-rendering glass that published one.
      *
-     * The ROI is in screen coordinates (see _captureRoiStack). A nested glass is
+     * The ROI is in screen coordinates (see _captureOwners). A nested glass is
      * painted through a clone that sits at its source's screen position with its
      * source's scale and pivot, so mapping the ROI through this actor's REAL
      * stage transform gives exactly where the enclosing capture's ROI falls in
@@ -2505,17 +2505,24 @@ export const LiquidEffect = GObject.registerClass({
      * on top of the ROI's own slack; a quad that is slightly too big costs a few
      * pixels, one that is too small would be a visible cut.
      */
-    _nestedCompositeRoi(actor, resW, resH) {
-        if (!this._nestedRoiEnabled || !actor || _captureRoiStack.length === 0)
+    _nestedCompositeRoi(actor, paintContext, resW, resH) {
+        if (!this._nestedRoiEnabled || !actor || _captureOwners.size === 0)
             return null;
-        let roi = null;
-        for (let i = _captureRoiStack.length - 1; i >= 0; i--) {
-            const entry = _captureRoiStack[i];
-            if (entry.fx === this)
-                continue;
-            roi = entry.roi;
-            break;
+        // Top-level paints draw into the stage view's (onscreen) framebuffer and
+        // stop here.
+        let owner = null;
+        try {
+            const fb = paintContext.get_framebuffer();
+            if (!(fb instanceof Cogl.Offscreen))
+                return null;
+            owner = _captureOwners.get(fb.get_texture()) ?? null;
         }
+        catch (_) {
+            return null;
+        }
+        if (!owner || owner === this || !_liveEffects.has(owner))
+            return null;
+        const roi = owner._lgCaptureScreenRect ?? null;
         if (!roi)
             return null;
         let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -3199,6 +3206,10 @@ export const LiquidEffect = GObject.registerClass({
     // ─── Public API (compatible with the previous ShaderEffect-based interface) ──
     cleanup() {
         _liveEffects.delete(this);
+        // [PERF B2] The owner table holds this effect and its capture texture.
+        if (this._registeredCaptureTex && _captureOwners.get(this._registeredCaptureTex) === this)
+            _captureOwners.delete(this._registeredCaptureTex);
+        this._registeredCaptureTex = null;
         // Drop the manager's closure before anything else: it captures the
         // manager, its actors and its settings, and a paint can still arrive
         // while the rest of this teardown runs.
