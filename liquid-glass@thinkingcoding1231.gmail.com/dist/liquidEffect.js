@@ -186,6 +186,32 @@ function _ensureFrameSerialHook() {
 function _frameSerialIsLive() {
     return _frameSerialHandler !== 0;
 }
+// ─── Nested-composite region of interest ─────────────────────────────────────
+//
+// [PERF B2] When a glass re-renders its capture, every window glass reached
+// through a clone inside it runs its composite pass into that capture — over
+// its WHOLE window, e.g. 2132x1246 for a maximized window — even though the
+// enclosing glass only ever samples the part of its capture it can show (its
+// cull rect: glass + refraction reach + blur reach + slack, the very rect ①b
+// culls whole windows against). Everything composited outside it is thrown
+// away, and it is ~80% of the nested fill in the "maximized window under the
+// dock" case.
+//
+// So a re-rendering glass pushes that rect here for the duration of its
+// capture, and a nested paint shrinks its composite quad to it. The rect is in
+// SCREEN coordinates, the space every clone is placed in (each clone sits at
+// its source's own screen position; the container translation maps that into
+// the capture), so a nested glass can map it into its own local space with its
+// REAL stage transform — which the clone reproduces exactly. The outer glass's
+// own transform (a menu scaling in, say) never enters into it.
+//
+// This shrinks geometry; it is NOT a set_clip(). memo.md 地雷17: a clip node
+// costs more than the fill it saves. A smaller quad costs nothing.
+//
+// Entries are pushed by every painting LiquidEffect, with roi = null when there
+// is nothing to clamp to, so the nearest entry always names the framebuffer the
+// nested composite really lands in.
+const _captureRoiStack = [];
 function _releaseFrameSerialHook() {
     if (!_frameSerialHandler)
         return;
@@ -312,21 +338,52 @@ export function setGlassRingArmed(armed) {
         _ringLast = new Map();
         _autoCaptures = 0;
     }
+    _syncRingSampler();
 }
 export function isGlassRingArmed() {
     return _ringArmed;
 }
-/** Starts the sampler. Returns the GLib source id so disable() can stop it. */
-export function startGlassRingSampler(intervalMs = 50) {
-    return GLib.timeout_add(GLib.PRIORITY_DEFAULT_IDLE, intervalMs, () => {
-        if (!_ringArmed)
+// [PERF C3] The timer only exists while the recorder is armed. It used to be
+// created at enable() and simply return early while disarmed — which still
+// woke the main loop 20 times a second on every desktop, for nothing.
+let _ringSamplerWanted = false;
+let _ringSamplerInterval = 50;
+let _ringSamplerId = 0;
+function _syncRingSampler() {
+    const want = _ringSamplerWanted && _ringArmed;
+    if (want && !_ringSamplerId) {
+        _ringSamplerId = GLib.timeout_add(GLib.PRIORITY_DEFAULT_IDLE, _ringSamplerInterval, () => {
+            if (!_ringArmed || !_ringSamplerWanted) {
+                _ringSamplerId = 0;
+                return GLib.SOURCE_REMOVE;
+            }
+            try {
+                _ringSampleOnce();
+            }
+            catch (_) { /* never let this kill the source */ }
             return GLib.SOURCE_CONTINUE;
+        });
+    }
+    else if (!want && _ringSamplerId) {
         try {
-            _ringSampleOnce();
+            GLib.source_remove(_ringSamplerId);
         }
-        catch (_) { /* never let this kill the source */ }
-        return GLib.SOURCE_CONTINUE;
-    });
+        catch (_) { /* noop */ }
+        _ringSamplerId = 0;
+    }
+}
+/**
+ * Enables the sampler: it runs whenever the recorder is armed (see
+ * setGlassRingArmed()). Pair with stopGlassRingSampler() in disable().
+ */
+export function startGlassRingSampler(intervalMs = 50) {
+    _ringSamplerInterval = intervalMs;
+    _ringSamplerWanted = true;
+    _syncRingSampler();
+}
+export function stopGlassRingSampler() {
+    _ringSamplerWanted = false;
+    _syncRingSampler();
 }
 /** Writes the ring buffer out and clears it. */
 export function flushGlassRing() {
@@ -555,6 +612,14 @@ function _registerGlassDebugHooks() {
             console.log(msg);
             return msg;
         },
+        // [PERF B3] false restores the old handling of Blur My Shell replicas:
+        // never culled, panel band always unioned into the cull rect.
+        cullBms: (enabled) => {
+            setCullSiteEnabled('bms', enabled);
+            const msg = `[Liquid Glass] cull site bms (BMS replicas out of reach) ${enabled ? 'ON' : 'OFF'}`;
+            console.log(msg);
+            return msg;
+        },
         // [DIAG] Full subtree of every glass — painted AND not — so the capture's
         // actual contents can be compared against what the screen shows. Use it
         // when something is missing from a glass and cullReport() says nothing is
@@ -622,6 +687,7 @@ function _registerGlassDebugHooks() {
             app: isCullSiteEnabled('app'),
             windows: isCullSiteEnabled('windows'),
             ui: isCullSiteEnabled('ui'),
+            bms: isCullSiteEnabled('bms'),
         }),
         // [DIAG ①b] Lists every live glass and every clone inside it that is
         // currently not being painted — culled (opacity 0) or hidden. This is
@@ -703,6 +769,37 @@ function _registerGlassDebugHooks() {
                 catch (e) { }
             }
             const msg = `[Liquid Glass] composite sub-rect ${enabled ? 'ENABLED' : 'DISABLED'} on ${n} instance(s)`;
+            console.log(msg);
+            return msg;
+        },
+        // [PERF B1] A/B switch for the cross-frame blur cache (default on).
+        blurCache: (enabled) => {
+            LiquidEffect.USE_BLUR_CACHE = !!enabled;
+            let n = 0;
+            for (const fx of _liveEffects) {
+                try {
+                    fx.setBlurCacheEnabled(enabled);
+                    n++;
+                }
+                catch (e) { }
+            }
+            const msg = `[Liquid Glass] cross-frame blur cache ${enabled ? 'ENABLED' : 'DISABLED'} on ${n} instance(s)`;
+            console.log(msg);
+            return msg;
+        },
+        // [PERF B2] A/B switch for clamping nested composites to the enclosing
+        // glass's region of interest (default on).
+        nestedRoi: (enabled) => {
+            LiquidEffect.USE_NESTED_ROI = !!enabled;
+            let n = 0;
+            for (const fx of _liveEffects) {
+                try {
+                    fx.setNestedRoiEnabled(enabled);
+                    n++;
+                }
+                catch (e) { }
+            }
+            const msg = `[Liquid Glass] nested composite ROI ${enabled ? 'ENABLED' : 'DISABLED'} on ${n} instance(s)`;
             console.log(msg);
             return msg;
         },
@@ -895,6 +992,9 @@ function _registerGlassDebugHooks() {
                     composited: fx._diagCompositedPaintCount,
                     blurRuns: fx._blurRuns,
                     blurSkips: fx._blurSkips,
+                    blurCacheHits: fx._blurCacheHits,
+                    nestedRoiClamps: fx._nestedRoiClamps,
+                    nestedRoiSkips: fx._nestedRoiSkips,
                     snapshotAgeMs: Math.round((now - fx._diagLastSnapshotAt) / 1000),
                     ...live,
                 }));
@@ -992,6 +1092,13 @@ export const LiquidEffect = GObject.registerClass({
         this._blurRuns = 0;
         this._blurSkips = 0;
         this._recaptureSerial = 0;
+        this._blurCacheEnabled = LiquidEffect.USE_BLUR_CACHE;
+        this._blurCacheKey = null;
+        this._blurKeyScratch = [];
+        this._blurCacheHits = 0;
+        this._nestedRoiEnabled = LiquidEffect.USE_NESTED_ROI;
+        this._nestedRoiClamps = 0;
+        this._nestedRoiSkips = 0;
         _ensureFrameSerialHook();
         this._uvMismatchWarned = false;
         this._passPipelines = new Map();
@@ -1586,6 +1693,9 @@ export const LiquidEffect = GObject.registerClass({
         this._upFbos = [];
         this._upTextures = [];
         this._blurResultTex = null;
+        // [PERF B1] Nothing cached survives the pool (and the key holds a
+        // reference to the old capture texture).
+        this._blurCacheKey = null;
         this._poolWidth = 0;
         this._poolHeight = 0;
     }
@@ -1612,9 +1722,24 @@ export const LiquidEffect = GObject.registerClass({
      * left to the base class.
      */
     vfunc_paint(node, paintContext, flags) {
-        if (flags & Clutter.EffectPaintFlags.ACTOR_DIRTY)
+        const dirty = (flags & Clutter.EffectPaintFlags.ACTOR_DIRTY) !== 0;
+        if (dirty)
             this._recaptureSerial++;
-        super.vfunc_paint(node, paintContext, flags);
+        // [PERF B2] Publish, for the duration of the capture, the part of it this
+        // glass can actually show. The subtree — including every glass painted
+        // through a clone inside it — is painted synchronously inside the super
+        // call below (paint-node BUILD phase), and so is this effect's own
+        // paint_target (post_paint -> paint_texture), which is why readers skip
+        // their own entry. Only a re-rendering paint can paint nested glass, so a
+        // cached paint pushes no region.
+        const roi = (dirty && this._nestedRoiEnabled) ? (this._lgCaptureScreenRect ?? null) : null;
+        _captureRoiStack.push({ fx: this, roi });
+        try {
+            super.vfunc_paint(node, paintContext, flags);
+        }
+        finally {
+            _captureRoiStack.pop();
+        }
     }
     vfunc_paint_target(_paintNode, paintContext) {
         // ── [DIAG] Black-background investigation ──────────────────────────────
@@ -1844,12 +1969,60 @@ export const LiquidEffect = GObject.registerClass({
             ? (blurRect === null)
             : (blurRect !== null && a[0] === blurRect[0] && a[1] === blurRect[1] &&
                 a[2] === blurRect[2] && a[3] === blurRect[3]);
-        const reuseBlur = !firstPaintThisFrame &&
+        const reuseSameFrame = !firstPaintThisFrame &&
             this.PASS_COUNT > 0 &&
             this._blurResultTex !== null &&
             rectUnchanged &&
             this._poolWidth === blurW &&
             this._poolHeight === blurH;
+        // [PERF B1] Cross-frame reuse: the capture has not been re-rendered since
+        // the pool's result was computed, so the blur of it cannot differ.
+        //
+        // The same-frame reuse above only covered repeat paints within ONE frame.
+        // The first paint of every frame re-ran the whole chain, even when
+        // ClutterOffscreenEffect was about to hand it the very same cached FBO —
+        // which is what happens on every redraw that touches the glass without
+        // touching what is behind it: hovering a menu item or a dock icon, the
+        // glass's own window repainting its content (a video, a terminal, a caret
+        // blink), another window dragged across it. Measured with [lg-blurstale]:
+        // 81-82% of all blur runs in the video and window-drag cases.
+        //
+        // The key is what the chain's output depends on, and nothing else:
+        //   - _recaptureSerial: bumped exactly when Clutter re-renders the capture
+        //     (ACTOR_DIRTY, see vfunc_paint) — the SAME condition Clutter itself
+        //     uses to decide whether its FBO is stale, so "unchanged serial" means
+        //     "byte-identical capture";
+        //   - the capture texture itself: a re-allocated offscreen (resize, or the
+        //     offscreen == NULL path that re-renders without ACTOR_DIRTY) is a new
+        //     texture;
+        //   - the sampled sub-rect of the capture, and the pool it lands in;
+        //   - every blur parameter and pipeline object (radius, method, downscale,
+        //     a recompiled kernel or a reloaded shader all produce a new object or
+        //     value).
+        // blurRect and the pool size are covered by rectUnchanged / the size check.
+        // The slice of the RAW capture the chain reads. (The crop, when it runs,
+        // copies exactly srcUV out first, so srcUV identifies its input too.)
+        const keyUV = blurRect ? blurSrcUV : srcUV;
+        const key = this._blurKeyScratch;
+        key.length = 0;
+        key.push(this._recaptureSerial, srcTex, keyUV[0], keyUV[1], keyUV[2], keyUV[3], this._blurFbos.length ? this._blurFbos[0] : null, this._blurMethod, this.PASS_COUNT, this._blurDownscale, this._blurRadiusDown, this._blurRadiusUp, this._gaussianScale, this._gaussianHPipeline, this._gaussianVPipeline, this._downsamplePipeline, this._upsamplePipeline, this._passthroughPipeline, this._boxDownPipeline, this._cropPassEnabled);
+        const cached = this._blurCacheKey;
+        let keyMatches = this._blurCacheEnabled && cached !== null && cached.length === key.length;
+        if (keyMatches) {
+            for (let i = 0; i < key.length; i++) {
+                if (cached[i] !== key[i]) {
+                    keyMatches = false;
+                    break;
+                }
+            }
+        }
+        const reuseCrossFrame = !reuseSameFrame && keyMatches &&
+            this.PASS_COUNT > 0 &&
+            this._blurResultTex !== null &&
+            rectUnchanged &&
+            this._poolWidth === blurW &&
+            this._poolHeight === blurH;
+        const reuseBlur = reuseSameFrame || reuseCrossFrame;
         // [PERF] The crop runs only for a paint that is going to blur — the blur
         // is its only consumer now that both composite layers share one texture.
         // With a sub-rect in play it has nothing left to do: its whole job was to
@@ -1927,12 +2100,16 @@ export const LiquidEffect = GObject.registerClass({
         // Always takes the raw capture as input, sampled over srcUV.
         // ─────────────────────────────────────────────────────────────────────
         if (reuseBlur) {
-            // _blurResultTex is left exactly as the frame's first paint set it.
+            // _blurResultTex is left exactly as the paint that computed it set it —
+            // earlier this frame, or (B1) in an earlier frame from the same capture.
             this._blurSkips++;
+            if (reuseCrossFrame)
+                this._blurCacheHits++;
         }
         else {
             this._blurResultTex = null;
             this._blurRectUsed = blurRect;
+            this._blurCacheKey = null;
             if (this.PASS_COUNT > 0) {
                 this._blurRuns++;
                 if (this._blurMethod === 0) {
@@ -1942,6 +2119,14 @@ export const LiquidEffect = GObject.registerClass({
                 }
                 else {
                     this._runDualKawaseBlur(_paintNode, effectiveTex, blurInputUV);
+                }
+                // Only a chain that actually produced a result may be reused later.
+                // The pool may have been rebuilt after the key was taken (a resize),
+                // so record the pool it was actually written into.
+                if (this._blurResultTex !== null) {
+                    const stored = key.slice();
+                    stored[6] = this._blurFbos.length ? this._blurFbos[0] : null;
+                    this._blurCacheKey = stored;
                 }
             }
         }
@@ -2057,10 +2242,32 @@ export const LiquidEffect = GObject.registerClass({
         // That is only exactly true when the two spaces coincide, so the rect is
         // dropped unless they do — a sub-pixel disagreement here is a visible
         // clip, not a sampling error.
-        const compRect = (resW === effectiveW && resH === effectiveH)
-            ? this._computeCompositeRect()
-            : null;
+        const spacesExact = resW === effectiveW && resH === effectiveH;
+        let compRect = spacesExact ? this._computeCompositeRect() : null;
         this._compositeRect = compRect;
+        // [PERF B2] A nested paint only has to cover the part of the enclosing
+        // capture that the enclosing glass can show. Same exactness requirement as
+        // compRect: the quad and pixel_coord must agree, so it is only applied when
+        // the two spaces coincide.
+        if (spacesExact) {
+            const roi = this._nestedCompositeRoi(actor, resW, resH);
+            if (roi) {
+                const base = compRect ?? [0, 0, resW, resH];
+                const x0 = Math.max(base[0], roi[0]);
+                const y0 = Math.max(base[1], roi[1]);
+                const x1 = Math.min(base[0] + base[2], roi[2]);
+                const y1 = Math.min(base[1] + base[3], roi[3]);
+                if (!(x1 > x0) || !(y1 > y0)) {
+                    // Nothing of this glass lands anywhere the enclosing one samples.
+                    this._nestedRoiSkips++;
+                    return;
+                }
+                if (x0 > base[0] || y0 > base[1] || x1 < base[0] + base[2] || y1 < base[1] + base[3]) {
+                    compRect = [x0, y0, x1 - x0, y1 - y0];
+                    this._nestedRoiClamps++;
+                }
+            }
+        }
         let drawRect = layout.dest;
         let drawUV = layer0UV;
         if (compRect) {
@@ -2262,6 +2469,12 @@ export const LiquidEffect = GObject.registerClass({
     //
     // global._lgGlass.compositeRect(false) turns it off for A/B testing.
     static USE_COMPOSITE_RECT = true;
+    // [PERF B1] Reuse the blur across frames while the capture is unchanged.
+    // global._lgGlass.blurCache(false) turns it off for A/B testing.
+    static USE_BLUR_CACHE = true;
+    // [PERF B2] Clamp nested composites to the enclosing glass's ROI.
+    // global._lgGlass.nestedRoi(false) turns it off for A/B testing.
+    static USE_NESTED_ROI = true;
     // As with the blur rect: not worth the arithmetic if it saves nothing.
     static COMPOSITE_RECT_MIN_SAVING = 0.95;
     /**
@@ -2279,6 +2492,61 @@ export const LiquidEffect = GObject.registerClass({
      * so nothing is drawn beyond min(shadow_radius, maxRadius) from the body.
      * Multi-region mode sets shadowAlpha to 0 outright.
      */
+    /**
+     * [PERF B2] The enclosing glass's region of interest, mapped into this
+     * glass's own shader space as [x0, y0, x1, y1], or null when this paint is
+     * not nested inside a re-rendering glass that published one.
+     *
+     * The ROI is in screen coordinates (see _captureRoiStack). A nested glass is
+     * painted through a clone that sits at its source's screen position with its
+     * source's scale and pivot, so mapping the ROI through this actor's REAL
+     * stage transform gives exactly where the enclosing capture's ROI falls in
+     * the space this composite is drawn in. Padded outwards by a couple of pixels
+     * on top of the ROI's own slack; a quad that is slightly too big costs a few
+     * pixels, one that is too small would be a visible cut.
+     */
+    _nestedCompositeRoi(actor, resW, resH) {
+        if (!this._nestedRoiEnabled || !actor || _captureRoiStack.length === 0)
+            return null;
+        let roi = null;
+        for (let i = _captureRoiStack.length - 1; i >= 0; i--) {
+            const entry = _captureRoiStack[i];
+            if (entry.fx === this)
+                continue;
+            roi = entry.roi;
+            break;
+        }
+        if (!roi)
+            return null;
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        const xs = [roi[0], roi[0] + roi[2]];
+        const ys = [roi[1], roi[1] + roi[3]];
+        for (const sx of xs) {
+            for (const sy of ys) {
+                let res;
+                try {
+                    res = actor.transform_stage_point(sx, sy);
+                }
+                catch (_) {
+                    return null;
+                }
+                if (!Array.isArray(res) || res[0] !== true ||
+                    !Number.isFinite(res[1]) || !Number.isFinite(res[2]))
+                    return null;
+                minX = Math.min(minX, res[1]);
+                maxX = Math.max(maxX, res[1]);
+                minY = Math.min(minY, res[2]);
+                maxY = Math.max(maxY, res[2]);
+            }
+        }
+        const PAD = 2;
+        return [
+            Math.max(0, Math.floor(minX) - PAD),
+            Math.max(0, Math.floor(minY) - PAD),
+            Math.min(resW, Math.ceil(maxX) + PAD),
+            Math.min(resH, Math.ceil(maxY) + PAD),
+        ];
+    }
     _computeCompositeRect() {
         if (!this._compositeRectEnabled)
             return null;
@@ -3006,6 +3274,16 @@ export const LiquidEffect = GObject.registerClass({
     setCompositeRectEnabled(enabled) {
         this._compositeRectEnabled = enabled;
         this.queue_repaint();
+    }
+    /** [PERF B1] A/B for the cross-frame blur cache. */
+    setBlurCacheEnabled(enabled) {
+        this._blurCacheEnabled = !!enabled;
+        this._blurCacheKey = null;
+        this.queue_repaint();
+    }
+    /** [PERF B2] A/B for clamping nested composites to the enclosing ROI. */
+    setNestedRoiEnabled(enabled) {
+        this._nestedRoiEnabled = !!enabled;
     }
     /**
      * [DEBUG] The footprint taps in sampleBackdrop() — see glass.frag's

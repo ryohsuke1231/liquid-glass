@@ -698,7 +698,10 @@ export class NotificationManager {
         this._adaptiveInFlight = true;
         const generation = this._bannerGeneration;
         this._contrastSampler
-            .chooseColorsForActors(targets, this._adaptiveConfig)
+            .chooseColorsForActors(targets, this._adaptiveConfig, 
+        // [PERF B4] Skip the capture while the glass under the text has not
+        // been repainted since the last one. See chooseColorsForActors().
+        () => this.effect?._diagPaintCount ?? NaN)
             .then(colorMap => {
             if (generation !== this._bannerGeneration || !this.currentBanner)
                 return;

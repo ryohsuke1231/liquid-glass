@@ -214,6 +214,23 @@ export class StageContrastSampler {
     /** Monotonic time of the last polarity change; see SWITCH_SETTLE_MS. */
     _lastSwitchAt = 0;
     _lastRect = null;
+    // [PERF B4] "Nothing under the text has been redrawn since the last sample."
+    // See chooseColorsForActors(). _unchangedSig is the caller's paint counter
+    // as of the end of the last capture (null = unknown, sample next time);
+    // _unchangedRects is the rect set that capture measured.
+    _unchangedSig = null;
+    _unchangedRects = '';
+    _skippedSamples = 0;
+    _lastDecided = null;
+    /** [DIAG] How many samples were skipped because nothing had been redrawn. */
+    get skippedSamples() {
+        return this._skippedSamples;
+    }
+    /** Forget the skip baseline, so the next call always samples. */
+    invalidate() {
+        this._unchangedSig = null;
+        this._unchangedRects = '';
+    }
     async sampleLuminance(rect) {
         if (!rect || rect.width <= 0 || rect.height <= 0)
             return null;
@@ -362,7 +379,20 @@ export class StageContrastSampler {
         this._lastIsBright = isBright;
         return isBright ? config.darkTextColor : config.lightTextColor;
     }
-    async chooseColorsForActors(actors, config = AdaptiveContrastConfig) {
+    /**
+     * @param paintSignature [PERF B4] Optional. Returns a counter that advances
+     *   whenever the glass under the text is painted (LiquidEffect's paint
+     *   count). The stage only repaints what is damaged, and anything that
+     *   changes under the text — the backdrop, a hover highlight, the text
+     *   itself — lies on top of that glass and therefore repaints it. So an
+     *   unchanged counter means the pixels this would sample are the pixels it
+     *   sampled last time, and the capture (a partial stage render, a GPU
+     *   read-back and a PNG round trip) is skipped, returning an empty map:
+     *   the colours already applied stay as they are. The sampling INTERVAL is
+     *   untouched (memo.md 地雷10); only the cost of a sample that cannot
+     *   change anything goes away.
+     */
+    async chooseColorsForActors(actors, config = AdaptiveContrastConfig, paintSignature) {
         const rects = [];
         const targets = [];
         for (const actor of actors) {
@@ -375,6 +405,47 @@ export class StageContrastSampler {
         const result = new Map();
         if (targets.length === 0)
             return result;
+        const readSig = () => {
+            if (!paintSignature)
+                return null;
+            try {
+                const v = paintSignature();
+                return Number.isFinite(v) ? v : null;
+            }
+            catch (_) {
+                return null;
+            }
+        };
+        const rectsKey = rects
+            .map(r => `${Math.round(r.x)},${Math.round(r.y)},${Math.round(r.width)},${Math.round(r.height)}`)
+            .join(';') + (config.samplePerElement ? '|pe' : '|m') +
+            // The decision also depends on the configuration, not only on pixels.
+            `|${config.preference ?? 'auto'}|${config.lightTextColor}|${config.darkTextColor}`;
+        const preSig = readSig();
+        if (preSig !== null && preSig === this._unchangedSig && rectsKey === this._unchangedRects) {
+            this._skippedSamples++;
+            return result;
+        }
+        // The capture paints the stage region itself, so it advances the counter
+        // by (at most) one per screenshot. Anything beyond that means the screen
+        // really changed while it was being taken; then no baseline is kept and
+        // the next tick samples again.
+        const nCaptures = config.samplePerElement ? targets.length : 1;
+        // `stable` is required on top of the counter check: the merged path's
+        // decision is NOT a pure function of the pixels — it smooths the luma over
+        // successive samples and holds for SWITCH_SETTLE_MS after a flip — so
+        // re-measuring an unchanged screen can still move it until it converges.
+        // Only a converged, repeated decision may be frozen.
+        const settle = (stable) => {
+            const postSig = readSig();
+            if (stable && preSig !== null && postSig !== null && postSig - preSig <= nCaptures) {
+                this._unchangedSig = postSig;
+                this._unchangedRects = rectsKey;
+            }
+            else {
+                this.invalidate();
+            }
+        };
         if (!config.samplePerElement) {
             const merged = _mergeRects(rects);
             if (!merged)
@@ -386,9 +457,17 @@ export class StageContrastSampler {
             }
             this._lastRect = merged;
             const luma = await this.sampleLuminance(merged);
-            if (luma === null)
+            if (luma === null) {
+                this.invalidate();
                 return result;
+            }
+            const inHold = this._lastIsBright !== null &&
+                GLib.get_monotonic_time() - this._lastSwitchAt < SWITCH_SETTLE_MS * 1000;
             const color = this.decideTextColor(luma, config);
+            const stable = !inHold && color !== null && color === this._lastDecided &&
+                this._lastLuma !== null && Math.abs(this._lastLuma - _clamp(luma, 0, 1)) < 0.01;
+            this._lastDecided = color;
+            settle(stable);
             if (!color)
                 return result;
             for (const actor of targets)
@@ -397,12 +476,17 @@ export class StageContrastSampler {
         }
         for (let i = 0; i < targets.length; i++) {
             const luma = await this.sampleLuminance(rects[i]);
-            if (luma === null)
+            if (luma === null) {
+                this.invalidate();
                 return result;
+            }
             const color = this.decideTextColor(luma, config);
             if (color)
                 result.set(targets[i], color);
         }
+        // Per-element decisions are stateless (see decideTextColor()), so the
+        // same pixels always give the same answer.
+        settle(true);
         return result;
     }
 }

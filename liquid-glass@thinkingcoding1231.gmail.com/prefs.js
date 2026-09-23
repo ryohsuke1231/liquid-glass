@@ -180,7 +180,7 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
     const menuStiffnessRow = this._addSliderRow(menuAdvanced, settings, 'menu-spring-stiffness', 'Spring Stiffness', 'Spring stiffness', 0.0, 1000.0, 0.1);
     const menuDampingRow = this._addSliderRow(menuAdvanced, settings, 'menu-spring-damping', 'Spring Damping', 'Spring damping', 0.0, 1000.0, 0.1);
     const menuMassRow = this._addSliderRow(menuAdvanced, settings, 'menu-spring-mass', 'Spring Mass', 'Spring mass', 0.0, 1.0, 0.1);
-    const menuIntervalRow = this._addSliderRow(menuAdvanced, settings, 'menu-animation-interval-ms', 'Animation Interval (ms)', 'Animation interval', 0, 1000, 1);
+    const menuIntervalRow = this._addAnimationIntervalRow(menuAdvanced, settings, 'menu-animation-interval-ms');
 
     // アニメーションOFF時に項目を非表示にするバインド（Advanced内にあっても正常に動作します）
     settings.bind('enable-menu-animation', menuStiffnessRow, 'visible', Gio.SettingsBindFlags.GET);
@@ -300,7 +300,7 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
     const panelStiffnessRow = this._addSliderRow(panelAdvanced, settings, 'panel-menu-spring-stiffness', 'Spring Stiffness', 'Spring stiffness', 0.0, 1000.0, 0.1);
     const panelDampingRow = this._addSliderRow(panelAdvanced, settings, 'panel-menu-spring-damping', 'Spring Damping', 'Spring damping', 0.0, 1000.0, 0.1);
     const panelMassRow = this._addSliderRow(panelAdvanced, settings, 'panel-menu-spring-mass', 'Spring Mass', 'Spring mass', 0.0, 1.0, 0.1);
-    const panelIntervalRow = this._addSliderRow(panelAdvanced, settings, 'panel-menu-animation-interval-ms', 'Animation Interval (ms)', 'Animation interval', 0, 1000, 1);
+    const panelIntervalRow = this._addAnimationIntervalRow(panelAdvanced, settings, 'panel-menu-animation-interval-ms');
 
     settings.bind('enable-panel-menu-animation', panelStiffnessRow, 'visible', Gio.SettingsBindFlags.GET);
     settings.bind('enable-panel-menu-animation', panelDampingRow, 'visible', Gio.SettingsBindFlags.GET);
@@ -443,7 +443,7 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
     const quickSettingsStiffnessRow = this._addSliderRow(qsAdvanced, settings, 'quick-settings-spring-stiffness', 'Spring Stiffness', 'Spring stiffness', 0.0, 1000.0, 0.1);
     const quickSettingsDampingRow = this._addSliderRow(qsAdvanced, settings, 'quick-settings-spring-damping', 'Spring Damping', 'Spring damping', 0.0, 1000.0, 0.1);
     const quickSettingsMassRow = this._addSliderRow(qsAdvanced, settings, 'quick-settings-spring-mass', 'Spring Mass', 'Spring mass', 0.0, 1.0, 0.1);
-    const quickSettingsIntervalRow = this._addSliderRow(qsAdvanced, settings, 'quick-settings-animation-interval-ms', 'Animation Interval (ms)', 'Animation interval', 0, 1000, 1);
+    const quickSettingsIntervalRow = this._addAnimationIntervalRow(qsAdvanced, settings, 'quick-settings-animation-interval-ms');
 
     // アニメーションOFF、またはTogglesモードのときは非表示にする
     // (単純な settings.bind だと片方の条件しか見られないため関数化して両方の
@@ -689,6 +689,7 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
     shaderPage.add(debugGroup);
 
     this._addSwitchRow(debugGroup, settings, 'output-logs', 'Output Logs', 'Output logs to the terminal');
+    this._addSwitchRow(debugGroup, settings, 'enable-dump-shortcut', 'Diagnostic Dump Shortcut (Ctrl+Alt+L)', 'For bug reports. While on, Ctrl+Alt+L writes the last few seconds and then 60 s of glass state to the system journal (press again to stop early). Off by default because it can clash with your own shortcuts. Turn on Render Diagnostics too for the most detailed capture.');
     this._addSwitchRow(debugGroup, settings, 'glass-debug-diagnostics', 'Render Diagnostics', 'Collect per-paint render state for global._lgGlass.dump(). This runs on every paint of every glass surface and costs performance even with logging off — leave it disabled unless you are debugging a rendering problem.');
 
     // Blur Methodの選択に応じて、各Blur Radiusの注釈（subtitle）を動的に切り替える処理
@@ -804,6 +805,44 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
     // 設定とAdjustmentをバインド（これだけで両方が連動して保存・読み込みされます）
     settings.bind(key, adjustment, 'value', Gio.SettingsBindFlags.DEFAULT);
 
+    return row;
+  }
+
+  // Open/close animation update rate. Only values that mean something are
+  // offered: the animation is driven by the compositor's frame clock, so it can
+  // never update more often than once per frame — anything shorter than a frame
+  // (the old free slider allowed 1ms, and 0ms was a busy loop) just burned CPU
+  // without adding a single visible step. Larger values are a frame-rate cap.
+  // The physics is sub-stepped independently of this, so "Every frame" is
+  // already as smooth as the display can show.
+  _addAnimationIntervalRow(container, settings, key) {
+    const choices = [
+      { value: 16, label: 'Every frame (display refresh rate)' },
+      { value: 33, label: '30 fps' },
+      { value: 50, label: '20 fps' },
+    ];
+    const row = new Adw.ComboRow({
+      title: 'Animation Update Rate',
+      subtitle: 'How often the open/close animation redraws',
+      model: Gtk.StringList.new(choices.map(c => c.label)),
+    });
+    const indexFor = v => (v <= 16 ? 0 : v <= 33 ? 1 : 2);
+    let syncing = false;
+    const load = () => {
+      syncing = true;
+      row.set_selected(indexFor(settings.get_int(key)));
+      syncing = false;
+    };
+    load();
+    row.connect('notify::selected', () => {
+      if (syncing) return;
+      const choice = choices[row.get_selected()];
+      if (choice && settings.get_int(key) !== choice.value)
+        settings.set_int(key, choice.value);
+    });
+    const id = settings.connect(`changed::${key}`, load);
+    row.connect('destroy', () => settings.disconnect(id));
+    this._addRowToContainer(container, row);
     return row;
   }
 

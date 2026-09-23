@@ -23,6 +23,15 @@ export class Logger {
     });
   }
 
+  /**
+   * Whether log()/error() currently write anything. Callers that build an
+   * expensive message (or query Clutter) purely to log it should check this
+   * first — log() itself only discards the finished string.
+   */
+  get enabled(): boolean {
+    return this._outputLogs;
+  }
+
   log(...args: any[]) {
     if (!this._outputLogs) return;
     console.log(...args);
