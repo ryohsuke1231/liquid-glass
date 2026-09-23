@@ -5,7 +5,7 @@ import St from 'gi://St';
 import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import { LiquidEffect } from './liquidEffect.js';
-import { StageContrastSampler, AdaptiveContrastConfig } from './contrastSampler.js';
+import { StageContrastSampler, AdaptiveContrastConfig, sanitizeColorPreference } from './contrastSampler.js';
 import Gio from 'gi://Gio';
 import {
   UnpickableActor,
@@ -223,8 +223,15 @@ export class OsdManager {
       }
     });
 
+    connectSetting('osd-adaptive-text-preference', () => {
+      this._adaptiveConfig.preference = sanitizeColorPreference(
+        this._settings.get_string('osd-adaptive-text-preference'));
+    });
+
     connectSetting('osd-sample-interval-ms', () => {
       this._adaptiveConfig.sampleIntervalMs = this._settings.get_int('osd-sample-interval-ms');
+    this._adaptiveConfig.preference = sanitizeColorPreference(
+      this._settings.get_string('osd-adaptive-text-preference'));
     });
 
     connectSetting('osd-y-offset', () => {
@@ -826,7 +833,10 @@ export class OsdManager {
     this._isFirstAdaptiveRun = false;
 
     this._contrastSampler
-      .chooseColorsForActors(targets, this._adaptiveConfig)
+      .chooseColorsForActors(targets, this._adaptiveConfig,
+        // [PERF B4] Skip the capture while the glass under the text has not
+        // been repainted since the last one. See chooseColorsForActors().
+        () => this._osdStates.reduce((sum: number, st: any) => sum + (st.effect?._diagPaintCount ?? NaN), 0))
       .then(colorMap => {
         this._applyAdaptiveColorMap(colorMap, isFirst);
       })

@@ -1841,7 +1841,7 @@ export class ApplicationManager {
             }
             if (isActorValid(clone)) {
                 if (this._shouldCullClone(src, cullRect)) {
-                    setCloneCulled(clone, true, this._cullWhy(src, cullRect, 'blurred'));
+                    setCloneCulled(clone, true, () => this._cullWhy(src, cullRect, 'blurred'));
                     this._clearCloneAnomaly(clone);
                     continue;
                 }
@@ -1879,7 +1879,7 @@ export class ApplicationManager {
             }
             if (isActorValid(clone)) {
                 if (this._shouldCullClone(src, cullRect)) {
-                    setCloneCulled(clone, true, this._cullWhy(src, cullRect, 'base'));
+                    setCloneCulled(clone, true, () => this._cullWhy(src, cullRect, 'base'));
                     this._clearCloneAnomaly(clone);
                     continue;
                 }

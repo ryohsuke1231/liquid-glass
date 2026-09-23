@@ -21,13 +21,26 @@ import Meta from 'gi://Meta';
  * everything else — so extension.js hands the shared Logger in once, and
  * everything here stays a no-op until it does.
  */
-type UtilsLogger = { log: (...args: any[]) => void };
+type UtilsLogger = { log: (...args: any[]) => void, readonly enabled?: boolean };
 let _utilsLogger: UtilsLogger | null = null;
 export function setUtilsLogger(logger: UtilsLogger | null): void {
   _utilsLogger = logger;
 }
 function utilsLog(msg: string): void {
   try { _utilsLogger?.log(msg); } catch (_) { /* noop */ }
+}
+
+/**
+ * [PERF C3] Whether a utilsLog() line would actually be written.
+ *
+ * The logger handed in by extension.js is ALWAYS non-null — it checks
+ * `output-logs` inside log() — so `if (!_utilsLogger) return;` never returned,
+ * and every diagnostic behind it ran on every frame with logging off
+ * (memo.md 地雷20). Anything that builds a string or calls into Clutter only
+ * to feed a log line must gate on this instead.
+ */
+function utilsLogEnabled(): boolean {
+  return !!_utilsLogger && _utilsLogger.enabled !== false;
 }
 
 /**
@@ -506,20 +519,29 @@ export function isCloneCullEnabled(): boolean {
 //                                       (uiGroup clones in those same five)
 //
 // Each is ANDed with the master cloneCull switch.
+//   global._lgGlass.cullBms(false)      [PERF B3] BMS replicas are never
+//                                       culled and their panel band is always
+//                                       unioned into the cull rect (the old
+//                                       behaviour); see syncGlassCaptureClip()
 let _cullApp = true;
 let _cullWindows = true;
 let _cullUi = true;
+let _cullBms = true;
 
-export function setCullSiteEnabled(site: 'app' | 'windows' | 'ui', enabled: boolean): void {
+export type CullSite = 'app' | 'windows' | 'ui' | 'bms';
+
+export function setCullSiteEnabled(site: CullSite, enabled: boolean): void {
   if (site === 'app') _cullApp = !!enabled;
   else if (site === 'windows') _cullWindows = !!enabled;
+  else if (site === 'bms') _cullBms = !!enabled;
   else _cullUi = !!enabled;
 }
 
-export function isCullSiteEnabled(site: 'app' | 'windows' | 'ui'): boolean {
+export function isCullSiteEnabled(site: CullSite): boolean {
   if (!_cloneCullEnabled) return false;
   if (site === 'app') return _cullApp;
   if (site === 'windows') return _cullWindows;
+  if (site === 'bms') return _cullBms && _cullUi;
   return _cullUi;
 }
 
@@ -579,7 +601,7 @@ export function setPositionIfChanged(actor: any, x: number, y: number): boolean 
  * setOpacityIfChanged(): un-culling drops the cached value so the write
  * cannot be skipped.
  */
-export function setCloneCulled(actor: any, culled: boolean, why?: string): void {
+export function setCloneCulled(actor: any, culled: boolean, why?: string | (() => string)): void {
   if (!actor) return;
   const wasCulled = !!actor._lgCulled;
   if (wasCulled === !!culled) return;
@@ -591,10 +613,13 @@ export function setCloneCulled(actor: any, culled: boolean, why?: string): void 
   // screen at the moment of a wrong cull and then stays there, because with
   // ④ in place nothing damages that region again — so the report taken
   // afterwards shows everything correct. The timeline is what identifies it.
-  if (why) {
+  // [PERF C3] `why` may be a function so per-frame callers do not build the
+  // string on the frames where nothing transitions (i.e. almost all of them).
+  if (why && utilsLogEnabled()) {
     let name = '(?)';
     try { name = actor.get_name?.() || '(unnamed)'; } catch (_) { }
-    utilsLog(`[Liquid Glass][cull] ${culled ? 'CULL ' : 'SHOW '} "${name}" ${why}`);
+    const text = typeof why === 'function' ? why() : why;
+    utilsLog(`[Liquid Glass][cull] ${culled ? 'CULL ' : 'SHOW '} "${name}" ${text}`);
   }
   if (culled) {
     actor.opacity = 0;
@@ -908,6 +933,78 @@ class AdaptiveColorTweener {
 }
 
 export const adaptiveColorTweener = new AdaptiveColorTweener();
+
+// ─── Frame-clock animation driver ───────────────────────────────────────────
+//
+// [PERF C1] The menu / quick-settings open-close springs used to be stepped by
+// GLib.timeout_add(animation-interval-ms). That timer is not tied to the frame
+// clock at all: at the default 16ms it beats against the 16.67ms frame (a
+// double step every ~25 frames, a skipped one as often — see the same finding
+// for the text-colour tween, memo.md 追記12 C), and at the 1ms a user can dial
+// in it ran _syncGeometry() a thousand times a second — sixteen full geometry
+// syncs per frame, fifteen of which no frame ever showed (and 0ms was a busy
+// loop). Smoothness is decided by how finely the PHYSICS is stepped, not by
+// how often the actors are written: see Spring.update(), which sub-steps.
+//
+// addFrameTicker() calls `cb` at most once per frame, from a BEFORE_REDRAW
+// later (which also keeps the frame clock running while the animation lives),
+// optionally no more often than `minIntervalMs`. `cb` returns true to keep
+// going. The returned id stays valid across the internal reschedules.
+const FRAME_TICKER_SLACK_US = 4000;
+let _frameTickerSeq = 0;
+const _frameTickers: Map<number, { laterId: number, cb: () => boolean, minUs: number, last: number }> = new Map();
+
+export function addFrameTicker(cb: () => boolean, minIntervalMs: number = 0): number {
+  const id = ++_frameTickerSeq;
+  const st = { laterId: 0, cb, minUs: Math.max(0, minIntervalMs || 0) * 1000, last: 0 };
+  _frameTickers.set(id, st);
+  const schedule = () => {
+    st.laterId = global.compositor.get_laters().add(Meta.LaterType.BEFORE_REDRAW, () => {
+      st.laterId = 0;
+      if (_frameTickers.get(id) !== st) return GLib.SOURCE_REMOVE;
+      let keep = true;
+      const now = GLib.get_monotonic_time();
+      // A little slack so a 16ms minimum does not drop a frame whose interval
+      // happened to measure 15.9ms.
+      if (st.minUs <= 0 || st.last === 0 || now - st.last >= st.minUs - FRAME_TICKER_SLACK_US) {
+        st.last = now;
+        try {
+          keep = !!st.cb();
+        } catch (e) {
+          keep = false;
+          reportFrameLoopError('frameTicker', e);
+        }
+      }
+      if (keep && _frameTickers.get(id) === st) schedule();
+      else if (_frameTickers.get(id) === st) _frameTickers.delete(id);
+      return GLib.SOURCE_REMOVE;
+    });
+  };
+  schedule();
+  return id;
+}
+
+export function removeFrameTicker(id: number): void {
+  const st = _frameTickers.get(id);
+  if (!st) return;
+  _frameTickers.delete(id);
+  if (st.laterId) {
+    try { global.compositor.get_laters().remove(st.laterId); } catch (_) { /* noop */ }
+    st.laterId = 0;
+  }
+}
+
+/**
+ * [PERF C1] The animation-interval-ms settings, reduced to what can actually
+ * happen now that the animation is frame-driven: anything up to one 60Hz frame
+ * (including the old 0/1ms values) means "every frame" (0); larger values are
+ * a frame-rate cap, bounded to what the preferences offer.
+ */
+export const ANIMATION_INTERVAL_MAX_MS = 50;
+export function normalizeAnimationIntervalMs(v: number): number {
+  if (!Number.isFinite(v) || v <= 16) return 0;
+  return Math.min(Math.round(v), ANIMATION_INTERVAL_MAX_MS);
+}
 
 // ─── Nested glass: which repair runs ─────────────────────────────────────────
 //
@@ -2839,7 +2936,7 @@ export class UILayerSampler {
    * the outside. Reported on change only, so a stable panel costs one line.
    */
   private _reportReplicaGeometry(source: Clutter.Actor, replica: any): void {
-    if (!_utilsLogger) return;
+    if (!utilsLogEnabled()) return;
     try {
       const blurWidget: Clutter.Actor = replica.blurWidget;
       const [srcAbsX, srcAbsY] = source.get_transformed_position();
@@ -3294,18 +3391,31 @@ export class UILayerSampler {
       //     degenerate rect intersects nothing and would cull a clone that is
       //     merely waiting for its first allocation. Fail open: not culling
       //     costs a frame of fill, culling wrongly leaves a hole in the glass.
+      //
+      // [PERF B3] A BMS replica IS cullable now, once its panel rect has been
+      // measured: syncGlassCaptureClip() unions its band into the cull rect
+      // exactly when this glass can see it, so a replica that still falls
+      // outside the rect is one no pixel of this glass depends on. Its last
+      // measured rect keeps being reported while it is culled — the panel does
+      // not move — so hasUnmeasuredBmsReplica() does not flip the whole cull
+      // off again on the next frame.
       const cull = this._cullRect;
+      const replicaForCull = (sourceClone as any)._lgBmsReplica;
       const cullable = !!cull && isCullSiteEnabled('ui') &&
-        !(sourceClone as any)._lgBmsReplica &&
+        (!replicaForCull || (isCullSiteEnabled('bms') && !!replicaForCull.panelRect)) &&
         scaledW > 0 && scaledH > 0 &&
         Number.isFinite(absX) && Number.isFinite(absY);
       if (cullable && !rectsIntersect(absX, absY, scaledW, scaledH, cull!)) {
-        setCloneCulled(sourceClone, true,
+        if (replicaForCull) {
+          const pr = replicaForCull.panelRect;
+          this._bmsScreenRects.push([absX + pr[0], absY + pr[1], pr[2], pr[3]]);
+        }
+        setCloneCulled(sourceClone, true, () =>
           `src=(${Math.round(absX)},${Math.round(absY)},${Math.round(scaledW)}x${Math.round(scaledH)}) ` +
           `cullRect=[${cull!.map(Math.round)}] label=${this._label}`);
         return;
       }
-      setCloneCulled(sourceClone, false, `label=${this._label}`);
+      setCloneCulled(sourceClone, false, () => `label=${this._label}`);
 
       // [PERF] Compare-then-write: see setTranslationIfChanged(). The UI
       // sampler runs this for every uiGroup child of every open glass, on
@@ -3368,7 +3478,7 @@ export class UILayerSampler {
     expectX: number,
     expectY: number
   ): void {
-    if (!_utilsLogger) return;
+    if (!utilsLogEnabled()) return;
     try {
       const [gotX, gotY] = sourceClone.get_transformed_position();
       const drifted = !Number.isFinite(gotX) || !Number.isFinite(gotY) ||
@@ -3566,6 +3676,10 @@ export class UILayerSampler {
   }
 
   private _reportClonedSet(): void {
+    // [PERF C3] Runs from refresh(), i.e. every frame of every open glass;
+    // the name string is only worth building when it can be written. Clearing
+    // the memo makes the current set get logged once logging is switched on.
+    if (!utilsLogEnabled()) { this._clonedNamesLogged = ''; return; }
     let names = '';
     for (const actor of this._clones.keys()) {
       let n = '(unnamed)';
@@ -3894,11 +4008,10 @@ export class WindowCloneManager {
       // damage — then apply this frame's cull decision. setCloneCulled() is
       // a no-op when the state has not changed.
       setActorVisible(clone, true);
-      setCloneCulled(clone, culled,
-        culled
-          ? `src=(${Math.round(wX)},${Math.round(wY)},${Math.round(width * sxSafe)}x${Math.round(height * sySafe)}) ` +
-            `cullRect=[${this._cullRect!.map(Math.round)}] label=${this.label}`
-          : `label=${this.label}`);
+      setCloneCulled(clone, culled, () => culled
+        ? `src=(${Math.round(wX)},${Math.round(wY)},${Math.round(width * sxSafe)}x${Math.round(height * sySafe)}) ` +
+          `cullRect=[${this._cullRect!.map(Math.round)}] label=${this.label}`
+        : `label=${this.label}`);
 
       // [PERF] The WRITES below are now conditional (see
       // setTranslationIfChanged), but these removals stay unconditional on
@@ -4478,7 +4591,10 @@ export function syncGlassCaptureClip(opts: {
     uiSampler?.setCullRect(null);
     windowCloneManager?.setCullRect(null);
     windowCloneManager?.applyBgCloneClip(null);
-    if (effect) effect._lgCaptureClip = null;
+    if (effect) {
+      effect._lgCaptureClip = null;
+      effect._lgCaptureScreenRect = null;
+    }
   };
 
   if (!isCaptureClipEnabled() && !isCloneCullEnabled()) { clear(); return; }
@@ -4505,9 +4621,22 @@ export function syncGlassCaptureClip(opts: {
   // smeared across the whole panel (memo.md 追記4). The panel is full width,
   // so with the dock at the top edge this widens the clip to the full screen
   // — the height still collapses, which is where the saving is.
+  //
+  // [PERF B3] ...but only a replica this glass can actually SEE. The union
+  // used to be unconditional, so every glass — an OSD at the bottom edge, a
+  // dock at the bottom — carried the full-width panel band in its cull rect:
+  // every window touching the top of the screen (every maximized window) was
+  // exempt from ①b, and its nested glass ran inside this capture for nothing.
+  // A replica outside the glass's own reach contributes no visible pixel, so
+  // it is left out of the rect and UILayerSampler culls it like any other
+  // clone (see syncProperties()).
   const bmsRects = uiSampler?.getBmsScreenRects() ?? [];
+  const ownRect: GlassRect = [rect[0], rect[1], rect[2], rect[3]];
   for (const b of bmsRects) {
-    unionRectInto(rect, [b[0] - originX, b[1] - originY, b[2], b[3]]);
+    const local: GlassRect = [b[0] - originX, b[1] - originY, b[2], b[3]];
+    if (!isCullSiteEnabled('bms') ||
+        rectsIntersect(local[0], local[1], local[2], local[3], ownRect))
+      unionRectInto(rect, local);
   }
 
   const [resW, resH] = typeof effect.getResolution === 'function'
@@ -4541,4 +4670,9 @@ export function syncGlassCaptureClip(opts: {
 
   uiSampler?.setCullRect(screenRect);
   windowCloneManager?.setCullRect(screenRect);
+
+  // [PERF B2] The same rect, published for the glass's own capture: a window
+  // glass painted through a clone inside it clamps its composite to this.
+  // See _captureRoiStack in liquidEffect.ts.
+  effect._lgCaptureScreenRect = screenRect;
 }

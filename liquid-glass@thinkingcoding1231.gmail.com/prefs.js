@@ -153,6 +153,11 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
     const menuSampleIntervalRow = this._addSliderRow(menuGroup, settings, 'menu-sample-interval-ms', 'Sample Interval (ms)', 'Contrast update frequency', 100, 2000, 50);
     // Adaptive Text Color連動の非表示化
     settings.bind('menu-enable-adaptive-text-color', menuSampleIntervalRow, 'visible', Gio.SettingsBindFlags.GET);
+    const menuTextPrefRow = this._addChoiceRow(menuGroup, settings, 'menu-adaptive-text-preference',
+      'Preferred Text Color',
+      'Which color to settle on when the background favours neither. Also stops the text flickering between the two.',
+      [{ label: 'Automatic', value: 'auto' }, { label: 'Prefer Light Text', value: 'light' }, { label: 'Prefer Dark Text', value: 'dark' }]);
+    settings.bind('menu-enable-adaptive-text-color', menuTextPrefRow, 'visible', Gio.SettingsBindFlags.GET);
 
     this._addColorRow(menuGroup, settings, 'menu-tint-color', 'Tint Color', 'Color of the glass tint');
     this._addSliderRow(menuGroup, settings, 'menu-tint-strength', 'Tint Strength', 'Intensity of the color tint', 0.0, 1.0, 0.01);
@@ -175,7 +180,7 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
     const menuStiffnessRow = this._addSliderRow(menuAdvanced, settings, 'menu-spring-stiffness', 'Spring Stiffness', 'Spring stiffness', 0.0, 1000.0, 0.1);
     const menuDampingRow = this._addSliderRow(menuAdvanced, settings, 'menu-spring-damping', 'Spring Damping', 'Spring damping', 0.0, 1000.0, 0.1);
     const menuMassRow = this._addSliderRow(menuAdvanced, settings, 'menu-spring-mass', 'Spring Mass', 'Spring mass', 0.0, 1.0, 0.1);
-    const menuIntervalRow = this._addSliderRow(menuAdvanced, settings, 'menu-animation-interval-ms', 'Animation Interval (ms)', 'Animation interval', 0, 1000, 1);
+    const menuIntervalRow = this._addAnimationIntervalRow(menuAdvanced, settings, 'menu-animation-interval-ms');
 
     // アニメーションOFF時に項目を非表示にするバインド（Advanced内にあっても正常に動作します）
     settings.bind('enable-menu-animation', menuStiffnessRow, 'visible', Gio.SettingsBindFlags.GET);
@@ -270,6 +275,11 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
     this._addSwitchRow(panelAppearance, settings, 'panel-menu-enable-adaptive-text-color', 'Adaptive Text Color', 'Adjust text contrast automatically');
     const panelSampleIntervalRow = this._addSliderRow(panelAppearance, settings, 'panel-menu-sample-interval-ms', 'Sample Interval (ms)', 'Contrast update frequency', 100, 2000, 50);
     settings.bind('panel-menu-enable-adaptive-text-color', panelSampleIntervalRow, 'visible', Gio.SettingsBindFlags.GET);
+    const panelTextPrefRow = this._addChoiceRow(panelAppearance, settings, 'panel-menu-adaptive-text-preference',
+      'Preferred Text Color',
+      'Which color to settle on when the background favours neither. Also stops the text flickering between the two.',
+      [{ label: 'Automatic', value: 'auto' }, { label: 'Prefer Light Text', value: 'light' }, { label: 'Prefer Dark Text', value: 'dark' }]);
+    settings.bind('panel-menu-enable-adaptive-text-color', panelTextPrefRow, 'visible', Gio.SettingsBindFlags.GET);
 
     this._addColorRow(panelAppearance, settings, 'panel-menu-tint-color', 'Tint Color', 'Color of the glass tint');
     this._addSliderRow(panelAppearance, settings, 'panel-menu-tint-strength', 'Tint Strength', 'Intensity of the color tint', 0.0, 1.0, 0.01);
@@ -290,7 +300,7 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
     const panelStiffnessRow = this._addSliderRow(panelAdvanced, settings, 'panel-menu-spring-stiffness', 'Spring Stiffness', 'Spring stiffness', 0.0, 1000.0, 0.1);
     const panelDampingRow = this._addSliderRow(panelAdvanced, settings, 'panel-menu-spring-damping', 'Spring Damping', 'Spring damping', 0.0, 1000.0, 0.1);
     const panelMassRow = this._addSliderRow(panelAdvanced, settings, 'panel-menu-spring-mass', 'Spring Mass', 'Spring mass', 0.0, 1.0, 0.1);
-    const panelIntervalRow = this._addSliderRow(panelAdvanced, settings, 'panel-menu-animation-interval-ms', 'Animation Interval (ms)', 'Animation interval', 0, 1000, 1);
+    const panelIntervalRow = this._addAnimationIntervalRow(panelAdvanced, settings, 'panel-menu-animation-interval-ms');
 
     settings.bind('enable-panel-menu-animation', panelStiffnessRow, 'visible', Gio.SettingsBindFlags.GET);
     settings.bind('enable-panel-menu-animation', panelDampingRow, 'visible', Gio.SettingsBindFlags.GET);
@@ -324,6 +334,11 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
     const notifSampleIntervalRow = this._addSliderRow(notifGroup, settings, 'notification-sample-interval-ms', 'Sample Interval (ms)', 'Contrast update frequency', 100, 2000, 50);
     // Adaptive Text Color連動の非表示化
     settings.bind('notification-enable-adaptive-text-color', notifSampleIntervalRow, 'visible', Gio.SettingsBindFlags.GET);
+    const notifTextPrefRow = this._addChoiceRow(notifGroup, settings, 'notification-adaptive-text-preference',
+      'Preferred Text Color',
+      'Which color to settle on when the background favours neither. Also stops the text flickering between the two.',
+      [{ label: 'Automatic', value: 'auto' }, { label: 'Prefer Light Text', value: 'light' }, { label: 'Prefer Dark Text', value: 'dark' }]);
+    settings.bind('notification-enable-adaptive-text-color', notifTextPrefRow, 'visible', Gio.SettingsBindFlags.GET);
 
     this._addSliderRow(notifGroup, settings, 'notification-glass-expand', 'Glass Expand', 'Extra area for the effect', 0, 50, 1);
     this._addSliderRow(notifGroup, settings, 'notification-y-offset', 'Y Offset', 'Vertical offset adjustment', 0, 100, 1);
@@ -373,6 +388,11 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
     const qsSampleIntervalRow = this._addSliderRow(qsGroup, settings, 'quick-settings-sample-interval-ms', 'Sample Interval (ms)', 'Contrast update frequency', 100, 2000, 50);
     // Adaptive Text Color連動の非表示化
     settings.bind('quick-settings-enable-adaptive-text-color', qsSampleIntervalRow, 'visible', Gio.SettingsBindFlags.GET);
+    const qsTextPrefRow = this._addChoiceRow(qsGroup, settings, 'quick-settings-adaptive-text-preference',
+      'Preferred Text Color',
+      'Which color to settle on when the background favours neither. Also stops the text flickering between the two.',
+      [{ label: 'Automatic', value: 'auto' }, { label: 'Prefer Light Text', value: 'light' }, { label: 'Prefer Dark Text', value: 'dark' }]);
+    settings.bind('quick-settings-enable-adaptive-text-color', qsTextPrefRow, 'visible', Gio.SettingsBindFlags.GET);
 
     this._addSliderRow(qsGroup, settings, 'quick-settings-glass-expand', 'Glass Expand', 'Extra area for the effect', 0, 50, 1);
     const qsXOffsetRow = this._addSliderRow(qsGroup, settings, 'quick-settings-x-offset', 'X Offset', 'Horizontal offset adjustment', -100, 100, 1);
@@ -423,7 +443,7 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
     const quickSettingsStiffnessRow = this._addSliderRow(qsAdvanced, settings, 'quick-settings-spring-stiffness', 'Spring Stiffness', 'Spring stiffness', 0.0, 1000.0, 0.1);
     const quickSettingsDampingRow = this._addSliderRow(qsAdvanced, settings, 'quick-settings-spring-damping', 'Spring Damping', 'Spring damping', 0.0, 1000.0, 0.1);
     const quickSettingsMassRow = this._addSliderRow(qsAdvanced, settings, 'quick-settings-spring-mass', 'Spring Mass', 'Spring mass', 0.0, 1.0, 0.1);
-    const quickSettingsIntervalRow = this._addSliderRow(qsAdvanced, settings, 'quick-settings-animation-interval-ms', 'Animation Interval (ms)', 'Animation interval', 0, 1000, 1);
+    const quickSettingsIntervalRow = this._addAnimationIntervalRow(qsAdvanced, settings, 'quick-settings-animation-interval-ms');
 
     // アニメーションOFF、またはTogglesモードのときは非表示にする
     // (単純な settings.bind だと片方の条件しか見られないため関数化して両方の
@@ -465,6 +485,11 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
     const osdSampleIntervalRow = this._addSliderRow(osdGroup, settings, 'osd-sample-interval-ms', 'Sample Interval (ms)', 'Contrast update frequency', 100, 2000, 50);
     // Adaptive Text Color連動の非表示化
     settings.bind('osd-enable-adaptive-text-color', osdSampleIntervalRow, 'visible', Gio.SettingsBindFlags.GET);
+    const osdTextPrefRow = this._addChoiceRow(osdGroup, settings, 'osd-adaptive-text-preference',
+      'Preferred Text Color',
+      'Which color to settle on when the background favours neither. Also stops the text flickering between the two.',
+      [{ label: 'Automatic', value: 'auto' }, { label: 'Prefer Light Text', value: 'light' }, { label: 'Prefer Dark Text', value: 'dark' }]);
+    settings.bind('osd-enable-adaptive-text-color', osdTextPrefRow, 'visible', Gio.SettingsBindFlags.GET);
 
     this._addSliderRow(osdGroup, settings, 'osd-glass-expand', 'Glass Expand', 'Extra area for the effect', 0, 50, 1);
     this._addSliderRow(osdGroup, settings, 'osd-y-offset', 'Y Offset', 'Vertical offset adjustment', -100, 100, 1);
@@ -664,6 +689,7 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
     shaderPage.add(debugGroup);
 
     this._addSwitchRow(debugGroup, settings, 'output-logs', 'Output Logs', 'Output logs to the terminal');
+    this._addSwitchRow(debugGroup, settings, 'enable-dump-shortcut', 'Diagnostic Dump Shortcut (Ctrl+Alt+L)', 'For bug reports. While on, Ctrl+Alt+L writes the last few seconds and then 60 s of glass state to the system journal (press again to stop early). Off by default because it can clash with your own shortcuts. Turn on Render Diagnostics too for the most detailed capture.');
     this._addSwitchRow(debugGroup, settings, 'glass-debug-diagnostics', 'Render Diagnostics', 'Collect per-paint render state for global._lgGlass.dump(). This runs on every paint of every glass surface and costs performance even with logging off — leave it disabled unless you are debugging a rendering problem.');
 
     // Blur Methodの選択に応じて、各Blur Radiusの注釈（subtitle）を動的に切り替える処理
@@ -693,6 +719,35 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
     } else {
       container.add(row);
     }
+  }
+
+  // 文字列値を選ぶ ComboRow。Adw.ComboRow の `selected` は整数インデックスなので
+  // GSettings の文字列キーには直接 bind できず、双方向の対応づけを手で書いている
+  // （Blur Resolution の行と同じ事情）。
+  _addChoiceRow(container, settings, key, title, subtitle, options) {
+    const row = new Adw.ComboRow({
+      title,
+      subtitle,
+      model: Gtk.StringList.new(options.map(o => o.label)),
+    });
+    this._addRowToContainer(container, row);
+
+    const values = options.map(o => o.value);
+    const sync = () => {
+      const idx = values.indexOf(settings.get_string(key));
+      row.selected = idx < 0 ? 0 : idx;
+    };
+    sync();
+    row.connect('notify::selected', () => {
+      const value = values[row.selected];
+      if (value !== undefined && value !== settings.get_string(key))
+        settings.set_string(key, value);
+    });
+    // The handler outlives nothing: `settings` is created per preferences
+    // window and dies with it, so there is no disconnect to arrange here
+    // (and GTK4 gives no reliable per-row hook to hang one on).
+    settings.connect(`changed::${key}`, sync);
+    return row;
   }
 
   // ON/OFFスイッチ
@@ -750,6 +805,44 @@ export default class LiquidGlassPreferences extends ExtensionPreferences {
     // 設定とAdjustmentをバインド（これだけで両方が連動して保存・読み込みされます）
     settings.bind(key, adjustment, 'value', Gio.SettingsBindFlags.DEFAULT);
 
+    return row;
+  }
+
+  // Open/close animation update rate. Only values that mean something are
+  // offered: the animation is driven by the compositor's frame clock, so it can
+  // never update more often than once per frame — anything shorter than a frame
+  // (the old free slider allowed 1ms, and 0ms was a busy loop) just burned CPU
+  // without adding a single visible step. Larger values are a frame-rate cap.
+  // The physics is sub-stepped independently of this, so "Every frame" is
+  // already as smooth as the display can show.
+  _addAnimationIntervalRow(container, settings, key) {
+    const choices = [
+      { value: 16, label: 'Every frame (display refresh rate)' },
+      { value: 33, label: '30 fps' },
+      { value: 50, label: '20 fps' },
+    ];
+    const row = new Adw.ComboRow({
+      title: 'Animation Update Rate',
+      subtitle: 'How often the open/close animation redraws',
+      model: Gtk.StringList.new(choices.map(c => c.label)),
+    });
+    const indexFor = v => (v <= 16 ? 0 : v <= 33 ? 1 : 2);
+    let syncing = false;
+    const load = () => {
+      syncing = true;
+      row.set_selected(indexFor(settings.get_int(key)));
+      syncing = false;
+    };
+    load();
+    row.connect('notify::selected', () => {
+      if (syncing) return;
+      const choice = choices[row.get_selected()];
+      if (choice && settings.get_int(key) !== choice.value)
+        settings.set_int(key, choice.value);
+    });
+    const id = settings.connect(`changed::${key}`, load);
+    row.connect('destroy', () => settings.disconnect(id));
+    this._addRowToContainer(container, row);
     return row;
   }
 

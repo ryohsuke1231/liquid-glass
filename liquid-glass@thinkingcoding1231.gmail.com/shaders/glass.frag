@@ -73,6 +73,67 @@ uniform float blur_rect_x;
 uniform float blur_rect_y;
 uniform float blur_rect_w;
 uniform float blur_rect_h;
+// [FIX] The real texel grid of the texture bound to layer 1, in texels. The
+// blur chain runs at half (or quarter) resolution, so that texture is
+// MAGNIFIED when it is sampled back here — a 704x256 rect arrives as a
+// 352x128 image. Plain bilinear magnification is only C0: its first
+// derivative jumps at every texel boundary, which the eye reads as a
+// staircase along any diagonal edge in the background and as faint creases
+// across smooth gradients. That is the jaggedness that survives however much
+// the SHAPE's own antialiasing is turned up, because it is not the shape's
+// edge at all — it is the backdrop's reconstruction. blurUV() uses these to
+// reconstruct it smoothly instead; 0 (an unset uniform) disables that, which
+// is also the correct behaviour when layer 1 is the full-resolution capture.
+uniform float blur_tex_w;
+uniform float blur_tex_h;
+
+// ── The bevel's lens: two FIXED constants, deliberately not settings ───────
+//
+// EDGE_LENS_FALLOFF shapes the ramp: the raw refraction is multiplied by
+// (1 - depth/bevel)^falloff, so the displacement builds towards the rim and
+// dies where the bevel meets the flat interior.
+//
+// [!] It is a constant and must STAY one. It overlaps with profile_shape_n,
+// which is a real preferences slider, and shipping both would be two sliders
+// fighting over one effect with no way for anyone to reason about which to
+// reach for. Measured on the shipped configuration (bevel 30px, max_z 32.5,
+// displacement_scale 47, ior 2.4) — displacement in px at depth u:
+//
+//     u =            0     2     5     8    12    18
+//   falloff 2.4    66    47    23    12     5     1     <- this constant
+//   shape_n 6      82    46    14     5   1.5   0.1     <- the surface itself
+//   shape_n 12     84    34     4   0.8   0.1     0
+//
+// i.e. profile_shape_n reaches the same shape and further, because it is what
+// actually decides how square the dome is, and a square dome IS "the
+// refraction builds up abruptly at the rim". The three optical sliders divide
+// the job cleanly between them and none of them needs a fourth:
+//
+//   displacement_scale — the glass's optical thickness. Multiplies the whole
+//       field uniformly (47 -> 94 doubles every row above). Pure magnitude.
+//   max_z              — the dome's height, i.e. how steep the normals get.
+//       Magnitude too, but weighted towards wherever the profile is steep.
+//   profile_shape_n    — pure shape, no magnitude.
+//
+// The value here is the one the look was signed off with; changing it would
+// silently re-tune every surface behind the user's back.
+#define EDGE_LENS_FALLOFF 2.4
+
+// EDGE_LENS_REACH is not a look knob at all: it is the hard ceiling in pixels
+// on how far the rim may sample, and _computeBlurRect() on the JS side sizes
+// the blurred region from the same figure (LiquidEffect.EDGE_LENS_REACH).
+// Sampling past it would just read that region's clamped border and streak.
+// The two must be changed together.
+#define EDGE_LENS_REACH 96.0
+
+// [DEBUG] The footprint taps in sampleBackdrop(), 1.0 = on (normal).
+// Setting it to 0.0 forces the four-tap RGSS pattern everywhere, which is the
+// direct A/B for "is the edge antialiasing actually doing anything" — turn it
+// off and the rim should visibly break up over a busy background.
+// global._lgGlass.edgeTaps(false). Seeded to 1.0 in _init(); an unset Cogl
+// uniform reads 0.0, which would silently disable the taps.
+uniform float edge_taps_enabled;
+
 // [PERF/DEBUG] Master switch for the two early exits at the top of main().
 // 1.0 = on (normal). 0.0 = take the full per-pixel path everywhere, which is
 // what the shader did before those exits existed. Flipped at runtime from
@@ -358,17 +419,41 @@ vec2 getDisplacement(float d, vec3 normal, vec2 resolution) {
         return vec2(0.0);
 
     float minRes = max(min(resolution.x, resolution.y), 1.0);
-    float thicknessNorm = displacement_scale / minRes;
 
     // Safety clamp: Prevent infinite stretching artifacts near extreme curves
     // by ensuring the Z component never gets dangerously close to 0.
-    float safe_z = max(-refractedRay.z, 0.15); 
-    vec2 displacement = (refractedRay.xy / safe_z) * thicknessNorm;
-    float max_disp = 0.30;
-    if (length(displacement) > max_disp) {
-        displacement = normalize(displacement) * max_disp;
+    float safe_z = max(-refractedRay.z, 0.15);
+
+    // [FIX] displacement_scale is now in PIXELS, on both axes.
+    //
+    // It used to be divided by minRes — the SHORTER side of the actor — and
+    // the resulting UV offset then covered `resolution`, which is the longer
+    // side too. So the same refraction came out 1.78x stronger horizontally
+    // than vertically on a full-screen (1920x1080) FBO, and a different
+    // strength again on every differently-shaped application window: the
+    // surfaces that share one "Displacement Scale" slider were not sharing
+    // one displacement. Wide surfaces got their left and right edges
+    // over-refracted, which is precisely where the smeared, stretched-looking
+    // edge is worst.
+    //
+    // Dividing by `resolution` per axis makes the offset exactly
+    // displacement_scale pixels in every direction, on every surface — the
+    // same correction chroma_strength already received below (and the JS side
+    // derives the blur/capture margins from the same figure, see
+    // _computeBlurRect()).
+    vec2 displacement = (refractedRay.xy / safe_z) *
+                        (displacement_scale / max(resolution, vec2(1.0)));
+
+    // The cap is expressed in the same pixel terms. 0.30 of the shorter side
+    // is what the old UV-space clamp worked out to, so nothing that was
+    // previously in range starts clipping now.
+    float max_disp_px = 0.30 * minRes;
+    vec2 dispPx = displacement * resolution;
+    float dispLenPx = length(dispPx);
+    if (dispLenPx > max_disp_px) {
+        displacement *= max_disp_px / dispLenPx;
     }
-    
+
     return displacement;
 }
 
@@ -385,14 +470,102 @@ vec2 stabilizedUV(vec2 candidate, vec2 fallback) {
 // SAFE() macro kept from the capture's edge, just measured against the rect.
 // When the rect covers the whole actor this is exactly the old expression.
 vec2 blurUV(vec2 fullUV, vec2 resolution) {
+    vec2 uv;
+    vec2 size;
     if (blur_rect_w < 1.0 || blur_rect_h < 1.0) {
         vec2 mFull = vec2(1.2) / max(resolution, vec2(1.0));
-        return clamp(fullUV, mFull, vec2(1.0) - mFull);
+        uv = clamp(fullUV, mFull, vec2(1.0) - mFull);
+        size = max(resolution, vec2(1.0));
+    } else {
+        size = vec2(blur_rect_w, blur_rect_h);
+        vec2 m = vec2(1.2) / size;
+        uv = clamp((fullUV * resolution - vec2(blur_rect_x, blur_rect_y)) / size,
+                   m, vec2(1.0) - m);
     }
-    vec2 size = vec2(blur_rect_w, blur_rect_h);
-    vec2 m = vec2(1.2) / size;
-    return clamp((fullUV * resolution - vec2(blur_rect_x, blur_rect_y)) / size,
-                 m, vec2(1.0) - m);
+
+    // [FIX] Smooth-bilinear reconstruction (see the blur_tex_* uniforms).
+    //
+    // Bilinear filtering reconstructs a magnified texture with a tent kernel:
+    // continuous in value, discontinuous in slope exactly at every texel
+    // centre. Warping the coordinate inside its texel by a smoothstep before
+    // the hardware interpolates turns that tent into a cubic-like kernel with
+    // a continuous first derivative — the standard trick, and it costs four
+    // ALU ops rather than the 16 fetches a real bicubic would.
+    //
+    // Only applied where the texture is actually being magnified: at 1:1 the
+    // warp would MOVE samples away from their texel centres for no benefit.
+    vec2 texSize = vec2(blur_tex_w, blur_tex_h);
+    if (texSize.x >= 2.0 && texSize.y >= 2.0 &&
+        min(size.x / texSize.x, size.y / texSize.y) > 1.05) {
+        vec2 t = uv * texSize - 0.5;
+        vec2 f = fract(t);
+        f = f * f * (3.0 - 2.0 * f);
+        uv = (floor(t) + 0.5 + f) / texSize;
+    }
+    return uv;
+}
+
+// Averages the blurred backdrop over the area of the source this pixel
+// actually covers.
+//
+// [FIX] Why an anisotropic footprint is needed at all.
+//
+// Refraction is a MINIFICATION near the glass edge: the displacement grows
+// from zero to its maximum across a band only a few pixels wide, so those few
+// pixels between them have to represent everything the ray sweeps past — tens
+// of source pixels. Point-sampling that (which four RGSS taps spread over
+// 2.5px effectively are) is textbook undersampling, and it looks exactly like
+// what it is: the edge band sparkles and breaks up over high-frequency
+// backgrounds, and any strong colour boundary crossing it turns into a
+// jagged, unstable line. No amount of shape antialiasing touches it, because
+// the geometry is not what is aliasing — the texture lookup is.
+//
+// `ext` is HALF that footprint, as a UV vector pointing along the direction
+// the compression happens in (see the derivation in main()). vec2(0) selects
+// the original four-tap behaviour unchanged, which is what every pixel
+// outside the compressed band passes in.
+vec3 sampleBackdrop(vec2 uvc, vec2 ext, vec2 texel, vec2 resolution) {
+    vec2 o1 = vec2( 0.375, -0.125) * texel;
+    vec2 o2 = vec2( 0.125,  0.375) * texel;
+    vec2 o3 = vec2(-0.375,  0.125) * texel;
+    vec2 o4 = vec2(-0.125, -0.375) * texel;
+
+    vec3 sum =
+        texture2D(cogl_sampler1, blurUV(uvc + o1, resolution)).rgb +
+        texture2D(cogl_sampler1, blurUV(uvc + o2, resolution)).rgb +
+        texture2D(cogl_sampler1, blurUV(uvc + o3, resolution)).rgb +
+        texture2D(cogl_sampler1, blurUV(uvc + o4, resolution)).rgb;
+
+    if (dot(ext, ext) <= 0.0)
+        return sum * 0.25;
+
+    // Six more taps along the footprint, keeping the rotated-grid offsets so
+    // the line is not sampled on a single scanline. Uneven spacing (0.9 /
+    // 0.55 / 0.22) weights the centre a little more than a plain box filter
+    // would, which keeps the refraction from looking smeared while still
+    // covering the whole span.
+    sum +=
+        texture2D(cogl_sampler1, blurUV(uvc + ext * 0.90 + o1, resolution)).rgb +
+        texture2D(cogl_sampler1, blurUV(uvc + ext * 0.55 + o2, resolution)).rgb +
+        texture2D(cogl_sampler1, blurUV(uvc + ext * 0.22 + o3, resolution)).rgb +
+        texture2D(cogl_sampler1, blurUV(uvc - ext * 0.22 + o4, resolution)).rgb +
+        texture2D(cogl_sampler1, blurUV(uvc - ext * 0.55 + o1, resolution)).rgb +
+        texture2D(cogl_sampler1, blurUV(uvc - ext * 0.90 + o2, resolution)).rgb;
+
+    return sum * 0.1;
+}
+
+// Screen-static ordered-ish noise, +-0.5/255, added just before the result is
+// quantised to 8 bits.
+//
+// [NEW] The backdrop behind the glass is blurred, which means it is almost
+// always a very shallow gradient — and a shallow gradient in 8 bits banks up
+// into visible Mach bands (the "steps" across the glass over a smooth
+// wallpaper). One LSB of noise breaks the quantisation up into dithering
+// noise the eye integrates away instead. It is also, not coincidentally, part
+// of why the real thing reads as a material rather than as a gradient.
+float ditherLSB(vec2 p) {
+    return (fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453) - 0.5) / 255.0;
 }
 
 // [NEW] Adjust color saturation, contrast, brightness
@@ -627,6 +800,10 @@ void main() {
         }
         litFlat = max(litFlat, 0.0);
 
+        // [NEW] See ditherLSB(). The flat interior is where banding shows the
+        // most: it is a blurred gradient with nothing else drawn over it.
+        litFlat = max(litFlat + ditherLSB(pixel_coord), 0.0);
+
         // alpha == insideMask == 1, so the shadow and panel terms are both 0.
         cogl_color_out = vec4(litFlat, 1.0) * cogl_color_in;
         return;
@@ -819,9 +996,72 @@ void main() {
 
     vec2 disp = getDisplacement(d, normal, resolution);
 
-    // Dampen the refraction near the exact boundaries to eliminate jagged artifacts.
-    float edgeDampen = smoothstep(0.0, edgeFeather * 3.0, -d);
-    disp *= edgeDampen;
+    // ── Edge lensing ──────────────────────────────────────────────────────
+    //
+    // [FIX] The rim used to refract in the OPPOSITE direction to the band
+    // just inside it — "centre: barely refracts / middle: refracts / rim:
+    // refracts the other way".
+    //
+    // `disp` points inward, so a pixel at depth `u` inside the boundary shows
+    // the background from `u + D(u)`. What the eye reads as "which way does
+    // it bend" is the sign of dD/du, and the old `edgeDampen` ramp inverted
+    // it on purpose: it pulled the displacement back to ZERO at the boundary,
+    // so across the outermost few pixels the sample point swept back the way
+    // it came. Widening that ramp did not remove the reversal, it only made
+    // it big enough to name.
+    //
+    // The ramp is gone. What shapes the edge now is a weight that GROWS
+    // towards the rim, so D grows towards the rim too and there is one
+    // direction across the whole bevel:
+    //
+    //     D(u) = D_raw(u) * (1 - u/bevel)^falloff
+    //
+    // The raw refraction keeps its full magnitude at the rim — with the
+    // shipped settings that is ~66px, where the previous fraction-of-bevel
+    // envelope allowed 11px — and `falloff` decides how much of the bevel the
+    // build-up is packed into. Deeper in, the weight and the raw field fall
+    // off together, which is what leaves the middle flat.
+    //
+    // The mapping is allowed to fold (dD/du > 1, the image doubling back),
+    // because that is what a thick glass edge does and it is part of the look
+    // this is after. Folding costs sampling density, not correctness — so it
+    // is paid for in sampleBackdrop(), which spreads its taps over the
+    // footprint computed below.
+    float bevelPx = max(min(corner_radius, min(box_size.x, box_size.y)), 1.0);
+    float depthPx = max(-d, 0.0);
+    float edgeT = clamp(1.0 - depthPx / bevelPx, 0.0, 1.0);
+
+    float lensShape = pow(edgeT, EDGE_LENS_FALLOFF);
+
+    vec2 dispPx = disp * resolution * lensShape;
+    float dispLenPx = length(dispPx);
+    vec2 dispDirPx = dispPx / max(dispLenPx, 1.0e-4);
+    // The one hard limit left. It exists because the blurred region is sized
+    // from it (see _computeBlurRect), so sampling past it would just read the
+    // clamped border of that region and streak.
+    if (dispLenPx > EDGE_LENS_REACH) {
+        dispLenPx = EDGE_LENS_REACH;
+        dispPx = dispDirPx * EDGE_LENS_REACH;
+    }
+
+    // Inward, always. An outward bevel (the surroundings squeezed INTO the
+    // rim) was built and evaluated on 2026-09-23 and rejected outright — it
+    // is a different effect, not a stronger one. memo.md 追記28 keeps the
+    // geometry and the measurements; the code does not keep the branch.
+    disp = dispPx / max(resolution, vec2(1.0));
+
+    // How far the sample point travels per screen pixel — the width of this
+    // pixel's footprint in the source, and therefore how far the extra taps
+    // have to spread to stop it aliasing. Two contributions, both analytic
+    // (no dFdx/dFdy, which is not guaranteed on the GLES2 path Cogl can take):
+    // the weight's own derivative, falloff*(edgeT^(falloff-1))/bevel, and the
+    // raw field's, which spreads its change over roughly the bevel. The
+    // factor of 2 is headroom for the raw term's steepness right at the rim.
+    float shapeRate = EDGE_LENS_FALLOFF * pow(edgeT, EDGE_LENS_FALLOFF - 1.0) / bevelPx;
+    float footprintPx = 2.0 * dispLenPx * (shapeRate + 1.0 / bevelPx);
+    vec2 footprintExt = (footprintPx > 2.0 && edge_taps_enabled > 0.5)
+        ? dispDirPx * (min(footprintPx, 64.0) * 0.5) / resolution
+        : vec2(0.0);
 
     vec2 refractedUv = stabilizedUV(uv + disp, uv);
 
@@ -846,7 +1086,7 @@ void main() {
     //
     // The schema default and the prefs range are rescaled to match (1.5px
     // default, 0-5px range).
-    vec2 chromaVec = chromaDir * (chroma_strength / resolution) * edgeDampen;
+    vec2 chromaVec = chromaDir * (chroma_strength / resolution) * lensShape;
     vec2 uvG = refractedUv;
 
     // [PERF] Is the channel split large enough to change any sampled texel?
@@ -865,47 +1105,36 @@ void main() {
     // provides significantly better anti-aliasing for both horizontal and vertical edges.
     float edgeProximity = 1.0 - smoothstep(0.0, edgeFeather * 4.0, -d);
     float aa_spread = mix(0.75, 2.5, edgeProximity);
+    // The four rotated-grid offsets themselves live in sampleBackdrop(); this
+    // is the scale they are applied at.
     vec2 texel = vec2(aa_spread) / resolution;
 
-    vec2 off1 = vec2( 0.375, -0.125) * texel;
-    vec2 off2 = vec2( 0.125,  0.375) * texel;
-    vec2 off3 = vec2(-0.375,  0.125) * texel;
-    vec2 off4 = vec2(-0.125, -0.375) * texel;
-
     // Hard limit sampling coordinates to 1.2px inside the texture bounds.
-    // This prevents bilinear filtering from accidentally pulling in black/transparent 
+    // This prevents bilinear filtering from accidentally pulling in black/transparent
     // pixels from the void outside the texture space.
     // [PERF] SAFE() used to clamp against the capture's own edge; blurUV()
     // does the same job against the blurred sub-rect (see its definition).
-    #define SAFE(u) blurUV(u, resolution)
+    // [FIX] Both the clamping and the tap pattern now live in
+    // sampleBackdrop(), which additionally spreads the taps across the
+    // pixel's real source footprint wherever the refraction compresses the
+    // background (footprintExt above). Outside that band footprintExt is
+    // vec2(0) and this is the same four-tap RGSS average as before.
 
-    // Step 2: Multi-tap Sampling (Averaging 4 sub-pixels to smooth out the image)
+    // Step 2: Multi-tap Sampling (Averaging sub-pixels to smooth out the image)
     vec3 refractedRgb;
     if (chromaActive) {
-        // Each channel walks its own refracted path — 3 channels x 4 RGSS
-        // taps = 12 fetches.
+        // Each channel walks its own refracted path.
         vec2 uvR = stabilizedUV(refractedUv + chromaVec, refractedUv);
         vec2 uvB = stabilizedUV(refractedUv - chromaVec, refractedUv);
 
         refractedRgb = vec3(
-            (texture2D(cogl_sampler1, SAFE(uvR + off1)).r +
-             texture2D(cogl_sampler1, SAFE(uvR + off2)).r +
-             texture2D(cogl_sampler1, SAFE(uvR + off3)).r +
-             texture2D(cogl_sampler1, SAFE(uvR + off4)).r) * 0.25,
-
-            (texture2D(cogl_sampler1, SAFE(uvG + off1)).g +
-             texture2D(cogl_sampler1, SAFE(uvG + off2)).g +
-             texture2D(cogl_sampler1, SAFE(uvG + off3)).g +
-             texture2D(cogl_sampler1, SAFE(uvG + off4)).g) * 0.25,
-
-            (texture2D(cogl_sampler1, SAFE(uvB + off1)).b +
-             texture2D(cogl_sampler1, SAFE(uvB + off2)).b +
-             texture2D(cogl_sampler1, SAFE(uvB + off3)).b +
-             texture2D(cogl_sampler1, SAFE(uvB + off4)).b) * 0.25
+            sampleBackdrop(uvR, footprintExt, texel, resolution).r,
+            sampleBackdrop(uvG, footprintExt, texel, resolution).g,
+            sampleBackdrop(uvB, footprintExt, texel, resolution).b
         );
     } else {
-        // [PERF] Same 4 RGSS taps, all three channels taken from each — 4
-        // fetches instead of 12, and bit-for-bit the same result.
+        // [PERF] Same taps, all three channels taken from each — a third of
+        // the fetches, and bit-for-bit the same result.
         //
         // Why the coordinates really are identical, not merely close: with
         // chromaVec == 0 the R/B coordinate is stabilizedUV(refractedUv,
@@ -913,13 +1142,10 @@ void main() {
         // keep), which equals refractedUv (== uvG) for every refractedUv
         // already inside [.001, .999] — i.e. everywhere except within one
         // thousandth of the texture border. In that last sliver the two
-        // differ by at most 0.001 in UV, and SAFE() then clamps both to the
+        // differ by at most 0.001 in UV, and blurUV() then clamps both to the
         // same 1.2-texel margin inside the blurred rect. So the sampled
         // texels match on both sides of the branch.
-        refractedRgb = (texture2D(cogl_sampler1, SAFE(uvG + off1)).rgb +
-                        texture2D(cogl_sampler1, SAFE(uvG + off2)).rgb +
-                        texture2D(cogl_sampler1, SAFE(uvG + off3)).rgb +
-                        texture2D(cogl_sampler1, SAFE(uvG + off4)).rgb) * 0.25;
+        refractedRgb = sampleBackdrop(uvG, footprintExt, texel, resolution);
     }
 
     // Apply color saturation, contrast, brightness
@@ -1142,6 +1368,11 @@ void main() {
     vec4 panelTerm = panelFallback(pixel_coord, finalAlpha);
     finalRgb += panelTerm.rgb;
     finalAlpha += panelTerm.a;
+
+    // [NEW] See ditherLSB(). Scaled by the coverage because finalRgb is
+    // premultiplied — dithering a transparent pixel's colour would break that
+    // invariant and show up as a faint haze outside the glass.
+    finalRgb = max(finalRgb + ditherLSB(pixel_coord) * finalAlpha, 0.0);
 
     // Output with premultiplied alpha format, required by Clutter/Cogl pipeline.
     cogl_color_out = vec4(finalRgb, finalAlpha) * cogl_color_in;

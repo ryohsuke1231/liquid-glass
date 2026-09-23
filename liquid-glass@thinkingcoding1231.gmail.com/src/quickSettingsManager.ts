@@ -5,7 +5,7 @@ import St from 'gi://St';
 import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import { LiquidEffect } from './liquidEffect.js';
-import { StageContrastSampler, AdaptiveContrastConfig } from './contrastSampler.js';
+import { StageContrastSampler, AdaptiveContrastConfig, sanitizeColorPreference } from './contrastSampler.js';
 import Gio from 'gi://Gio';
 import {
   UnpickableActor,
@@ -20,7 +20,8 @@ import {
   UnpickableStyledWidget,
   getAllocatedSize,
   getTransformedRect, isFrameSyncFrozen, setClipIfChanged, syncGlassCaptureClip,
-  resolveCrossFade, adaptiveColorTweener } from './utils.js';
+  resolveCrossFade, adaptiveColorTweener, addFrameTicker, removeFrameTicker,
+  normalizeAnimationIntervalMs } from './utils.js';
 
 import { Logger } from './logger.js';
 
@@ -459,6 +460,11 @@ export class QuickSettingsManager {
       this._adaptiveConfig.enabled = this._settings.get_boolean('quick-settings-enable-adaptive-text-color');
     });
 
+    connectSetting('quick-settings-adaptive-text-preference', () => {
+      this._adaptiveConfig.preference = sanitizeColorPreference(
+        this._settings.get_string('quick-settings-adaptive-text-preference'));
+    });
+
     connectSetting('quick-settings-sample-interval-ms', () => {
       this._adaptiveConfig.sampleIntervalMs = this._settings.get_int('quick-settings-sample-interval-ms');
     });
@@ -527,6 +533,8 @@ export class QuickSettingsManager {
       enabled: this._settings.get_boolean('quick-settings-enable-adaptive-text-color'),
       samplePerElement: SAMPLE_PER_ELEMENT,
       sampleIntervalMs: this._settings.get_int('quick-settings-sample-interval-ms'),
+      preference: sanitizeColorPreference(
+        this._settings.get_string('quick-settings-adaptive-text-preference')),
     };
 
     // ── 1. bgActor: full monitor, no effect ──────────────────────────────────
@@ -785,6 +793,8 @@ export class QuickSettingsManager {
       enabled: this._settings.get_boolean('quick-settings-enable-adaptive-text-color'),
       samplePerElement: SAMPLE_PER_ELEMENT,
       sampleIntervalMs: this._settings.get_int('quick-settings-sample-interval-ms'),
+      preference: sanitizeColorPreference(
+        this._settings.get_string('quick-settings-adaptive-text-preference')),
     };
 
     // ── 1. bgActor: full monitor, no effect ──────────────────────────────────
@@ -2530,7 +2540,10 @@ export class QuickSettingsManager {
     this._adaptiveInFlight = true;
 
     this._contrastSampler
-      .chooseColorsForActors(targets, this._adaptiveConfig)
+      .chooseColorsForActors(targets, this._adaptiveConfig,
+        // [PERF B4] Skip the capture while the glass under the text has not
+        // been repainted since the last one. See chooseColorsForActors().
+        () => (this.effect as any)?._diagPaintCount ?? NaN)
       .then(colorMap => {
         this._applyAdaptiveColorMap(colorMap, skipAnimations);
       })
@@ -2764,7 +2777,7 @@ export class QuickSettingsManager {
 
   _startAnimation(targetValue: number) {
     if (this._tickId !== 0) {
-      GLib.source_remove(this._tickId);
+      removeFrameTicker(this._tickId);
       this._tickId = 0;
     }
 
@@ -2790,7 +2803,10 @@ export class QuickSettingsManager {
     if (this._tickId === 0) {
       let lastTime = GLib.get_monotonic_time();
 
-      this._tickId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, this._animationInterval, () => {
+      // [PERF C1] Stepped by the frame clock, once per frame at most — see
+      // addFrameTicker(). The spring itself sub-steps, so the motion is as
+      // fine as the old 1ms timer's while the actors are written once a frame.
+      this._tickId = addFrameTicker(() => {
         if (!this.bgActor || !this.targetActor) {
           this._tickId = 0;
           return GLib.SOURCE_REMOVE;
@@ -2802,7 +2818,7 @@ export class QuickSettingsManager {
 
         let isClosing = (this._springScale.target === 0);
         let dt = elapsedMs / 1000;
-        if (dt > 0.033) dt = 0.033;
+        if (dt > 0.066) dt = 0.066; // [PERF C1] covers a 20fps cap; the physics sub-steps, so no blow-up
 
         let stopped = false;
         let s: number, p: number;
@@ -2865,7 +2881,7 @@ export class QuickSettingsManager {
           return GLib.SOURCE_REMOVE;
         }
         return GLib.SOURCE_CONTINUE;
-      });
+      }, normalizeAnimationIntervalMs(this._animationInterval));
     }
   }
 
@@ -3161,20 +3177,26 @@ class Spring {
   update(elapsedMs: number) {
     // Cap max delta time to prevent the spring from violently exploding during heavy CPU load
     let dt = elapsedMs / 1000;
-    if (dt > 0.033) dt = 0.033;
+    if (dt > 0.066) dt = 0.066; // [PERF C1] covers a 20fps cap; the physics sub-steps, so no blow-up
 
-    // F = -k * x
-    let springForce = -this.stiffness * (this.value - this.target);
-
-    // F = -c * v
-    let dampingForce = -this.damping * this.velocity;
-
-    // a = F / m
-    let acceleration = (springForce + dampingForce) / this.mass;
-
-    // Update velocity and position using Euler integration
-    this.velocity += acceleration * dt;
-    this.value += this.velocity * dt;
+    // [PERF C1] Sub-stepped: see the same change in uiManager.ts. The explicit
+    // integrator needs a fine step at the stiffness the preferences allow,
+    // which the old 1ms timer provided by also repainting at 1kHz.
+    const mass = this.mass > 1e-3 ? this.mass : 1e-3;
+    let remaining = dt;
+    while (remaining > 1e-6) {
+      const h = Math.min(remaining, 0.002);
+      // F = -k * x
+      let springForce = -this.stiffness * (this.value - this.target);
+      // F = -c * v
+      let dampingForce = -this.damping * this.velocity;
+      // a = F / m
+      let acceleration = (springForce + dampingForce) / mass;
+      // Semi-implicit Euler
+      this.velocity += acceleration * h;
+      this.value += this.velocity * h;
+      remaining -= h;
+    }
 
     // Return true if the spring has virtually stopped moving and reached its destination
     return Math.abs(this.velocity) < 0.01 && Math.abs(this.value - this.target) < 0.001;

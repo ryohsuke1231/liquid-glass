@@ -72,8 +72,10 @@
       <summary>Spring mass</summary>
     </key>
     <key name="menu-animation-interval-ms" type="i">
+      <range min="0" max="50"/>
       <default>16</default>
       <summary>Animation interval (ms)</summary>
+      <description>Minimum time between open/close animation updates. The animation is driven by the frame clock, so anything up to one frame (16) means every frame; 33 and 50 cap it at 30 and 20 fps.</description>
     </key>
     <key name="menu-x-offset" type="i">
       <default>0</default>
@@ -85,6 +87,11 @@
     <key name="menu-enable-adaptive-text-color" type="b">
       <default>true</default>
       <summary>Enable adaptive text color</summary>
+    </key>
+    <key name="menu-adaptive-text-preference" type="s">
+      <default>"auto"</default>
+      <summary>Preferred text color</summary>
+      <description>Which text color to settle on when the background does not clearly favour either one: "auto", "light" or "dark".</description>
     </key>
     <key name="menu-sample-per-element" type="b">
       <default>false</default>
@@ -125,6 +132,11 @@
          capture of a misbehaving animation can be taken the moment it happens
          without Looking Glass or unsafe_mode. Press once to start, again to
          stop early; it stops on its own after DUMP_LOOP_TICKS. -->
+    <key name="enable-dump-shortcut" type="b">
+      <default>false</default>
+      <summary>Enable the diagnostic dump shortcut</summary>
+      <description>Registers dump-loop-keybinding (Ctrl+Alt+L by default). Off by default so it cannot collide with the user's own shortcuts; turn it on only when capturing a problem for a bug report.</description>
+    </key>
     <key name="dump-loop-keybinding" type="as">
       <default><![CDATA[['<Control><Alt>l']]]></default>
       <summary>Toggle the periodic diagnostic dump</summary>
@@ -161,8 +173,10 @@
       <summary>Spring mass</summary>
     </key>
     <key name="panel-menu-animation-interval-ms" type="i">
+      <range min="0" max="50"/>
       <default>16</default>
       <summary>Animation interval (ms)</summary>
+      <description>Minimum time between open/close animation updates. The animation is driven by the frame clock, so anything up to one frame (16) means every frame; 33 and 50 cap it at 30 and 20 fps.</description>
     </key>
     <key name="panel-menu-tint-color" type="s">
       <default>"#ffffff"</default>
@@ -218,6 +232,11 @@
       <default>true</default>
       <summary>Enable adaptive text color</summary>
     </key>
+    <key name="panel-menu-adaptive-text-preference" type="s">
+      <default>"auto"</default>
+      <summary>Preferred text color</summary>
+      <description>Which text color to settle on when the background does not clearly favour either one: "auto", "light" or "dark".</description>
+    </key>
     <key name="panel-menu-sample-interval-ms" type="i">
       <default>400</default>
       <summary>Sample interval (ms)</summary>
@@ -259,6 +278,11 @@
     <key name="notification-enable-adaptive-text-color" type="b">
       <default>true</default>
       <summary>Enable adaptive text color</summary>
+    </key>
+    <key name="notification-adaptive-text-preference" type="s">
+      <default>"auto"</default>
+      <summary>Preferred text color</summary>
+      <description>Which text color to settle on when the background does not clearly favour either one: "auto", "light" or "dark".</description>
     </key>
     <key name="notification-sample-per-element" type="b">
       <default>false</default>
@@ -333,12 +357,19 @@
       <summary>Spring mass</summary>
     </key>
     <key name="quick-settings-animation-interval-ms" type="i">
+      <range min="0" max="50"/>
       <default>16</default>
       <summary>Animation interval (ms)</summary>
+      <description>Minimum time between open/close animation updates. The animation is driven by the frame clock, so anything up to one frame (16) means every frame; 33 and 50 cap it at 30 and 20 fps.</description>
     </key>
     <key name="quick-settings-enable-adaptive-text-color" type="b">
       <default>false</default>
       <summary>Enable adaptive text color</summary>
+    </key>
+    <key name="quick-settings-adaptive-text-preference" type="s">
+      <default>"auto"</default>
+      <summary>Preferred text color</summary>
+      <description>Which text color to settle on when the background does not clearly favour either one: "auto", "light" or "dark".</description>
     </key>
     <key name="quick-settings-sample-per-element" type="b">
       <default>false</default>
@@ -415,6 +446,11 @@
     <key name="osd-enable-adaptive-text-color" type="b">
       <default>true</default>
       <summary>Enable adaptive text color</summary>
+    </key>
+    <key name="osd-adaptive-text-preference" type="s">
+      <default>"auto"</default>
+      <summary>Preferred text color</summary>
+      <description>Which text color to settle on when the background does not clearly favour either one: "auto", "light" or "dark".</description>
     </key>
     <key name="osd-sample-interval-ms" type="i">
       <default>400</default>

@@ -11,7 +11,7 @@ import { WindowListService } from './dist/windowListService.js';
 import { Logger } from './dist/logger.js';
 import { setUtilsLogger, adaptiveColorTweener, destroySharedBackgroundSource,
   releaseAllClonedWindowActors } from './dist/utils.js';
-import { startGlassRingSampler, flushGlassRing } from './dist/liquidEffect.js';
+import { startGlassRingSampler, stopGlassRingSampler, flushGlassRing } from './dist/liquidEffect.js';
 import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import Shell from 'gi://Shell';
@@ -276,25 +276,64 @@ export default class LiquidGlassExtension extends Extension {
   // because Eval needs unsafe_mode, which resets on every login — exactly when
   // a capture is most likely to be wanted. Toggling: press once to start,
   // again to stop early; it also stops by itself after DUMP_LOOP_TICKS.
+  //
+  // Opt-in (enable-dump-shortcut, default off): a global shortcut shipped
+  // switched on can collide with one the user already relies on. It is kept,
+  // rather than removed, because it is the one way to capture the seconds
+  // around a glitch for a bug report without Looking Glass or unsafe_mode.
   _installDumpLoopKeybinding() {
     this._dumpLoopId = 0;
+    this._dumpKeybindingInstalled = false;
     // [anim-stall] The rolling record starts with the extension and writes
     // nothing until the capture key is pressed. See startGlassRingSampler().
-    this._ringSamplerId = startGlassRingSampler(50);
-    Main.wm.addKeybinding(
-      'dump-loop-keybinding',
-      this.getSettings('org.gnome.shell.extensions.liquid-glass@thinkingcoding1231.gmail.com'),
-      Meta.KeyBindingFlags.NONE,
-      Shell.ActionMode.NORMAL | Shell.ActionMode.OVERVIEW,
-      () => this._toggleDumpLoop()
-    );
+    // The timer itself only exists while the recorder is armed.
+    startGlassRingSampler(50);
+
+    this._dumpSettings = this.getSettings('org.gnome.shell.extensions.liquid-glass@thinkingcoding1231.gmail.com');
+    this._dumpSettingsId = this._dumpSettings.connect('changed::enable-dump-shortcut',
+      () => this._syncDumpLoopKeybinding());
+    this._syncDumpLoopKeybinding();
+  }
+
+  // Adds or removes the keybinding to match enable-dump-shortcut.
+  _syncDumpLoopKeybinding() {
+    const wanted = !!this._dumpSettings?.get_boolean('enable-dump-shortcut');
+    if (wanted && !this._dumpKeybindingInstalled) {
+      Main.wm.addKeybinding(
+        'dump-loop-keybinding',
+        this._dumpSettings,
+        Meta.KeyBindingFlags.NONE,
+        Shell.ActionMode.NORMAL | Shell.ActionMode.OVERVIEW,
+        () => this._toggleDumpLoop()
+      );
+      this._dumpKeybindingInstalled = true;
+    } else if (!wanted && this._dumpKeybindingInstalled) {
+      try { Main.wm.removeKeybinding('dump-loop-keybinding'); } catch (e) { }
+      this._dumpKeybindingInstalled = false;
+      // Switching the shortcut off also stops a dump it started.
+      if (this._dumpLoopId) {
+        try { GLib.source_remove(this._dumpLoopId); } catch (e) { }
+        this._dumpLoopId = 0;
+        console.log('[Liquid Glass][dump-loop] STOPPED (shortcut disabled)');
+      }
+    }
+  }
+
+  // The accelerator as the user sees it, for the notifications.
+  _dumpShortcutLabel() {
+    try {
+      const accel = this._dumpSettings?.get_strv('dump-loop-keybinding')?.[0];
+      if (accel) return accel.replace(/<Control>/gi, 'Ctrl+').replace(/<Alt>/gi, 'Alt+')
+        .replace(/<Shift>/gi, 'Shift+').replace(/<Super>/gi, 'Super+').replace(/\+([a-z])$/, (_, k) => `+${k.toUpperCase()}`);
+    } catch (e) { }
+    return 'the shortcut';
   }
 
   _toggleDumpLoop() {
     if (this._dumpLoopId) {
       GLib.source_remove(this._dumpLoopId);
       this._dumpLoopId = 0;
-      console.log('[Liquid Glass][dump-loop] STOPPED early by Ctrl+Alt+L');
+      console.log(`[Liquid Glass][dump-loop] STOPPED early by ${this._dumpShortcutLabel()}`);
       Main.notify('Liquid Glass', 'Diagnostic dump stopped');
       return;
     }
@@ -318,7 +357,7 @@ export default class LiquidGlassExtension extends Extension {
     // guessing at timestamps.
     console.log(`[Liquid Glass][dump-loop] STARTED ${TICKS} ticks @ ${INTERVAL_MS}ms, ends ${hhmmss(endsAt)}`);
     Main.notify('Liquid Glass',
-      `Diagnostic dump running ${seconds}s — ends at ${hhmmss(endsAt)} (Ctrl+Alt+L to stop)`);
+      `Diagnostic dump running ${seconds}s — ends at ${hhmmss(endsAt)} (${this._dumpShortcutLabel()} to stop)`);
 
     this._dumpLoopId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, INTERVAL_MS, () => {
       try {
@@ -334,15 +373,20 @@ export default class LiquidGlassExtension extends Extension {
   }
 
   _removeDumpLoopKeybinding() {
-    if (this._ringSamplerId) {
-      try { GLib.source_remove(this._ringSamplerId); } catch (e) { }
-      this._ringSamplerId = 0;
-    }
+    try { stopGlassRingSampler(); } catch (e) { }
     if (this._dumpLoopId) {
       try { GLib.source_remove(this._dumpLoopId); } catch (e) { }
       this._dumpLoopId = 0;
     }
-    try { Main.wm.removeKeybinding('dump-loop-keybinding'); } catch (e) { }
+    if (this._dumpSettings && this._dumpSettingsId) {
+      try { this._dumpSettings.disconnect(this._dumpSettingsId); } catch (e) { }
+    }
+    this._dumpSettingsId = 0;
+    if (this._dumpKeybindingInstalled) {
+      try { Main.wm.removeKeybinding('dump-loop-keybinding'); } catch (e) { }
+      this._dumpKeybindingInstalled = false;
+    }
+    this._dumpSettings = null;
   }
 
   disable() {

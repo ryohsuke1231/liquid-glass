@@ -5,7 +5,7 @@ import St from 'gi://St';
 import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import { LiquidEffect } from './liquidEffect.js';
-import { StageContrastSampler, AdaptiveContrastConfig } from './contrastSampler.js';
+import { StageContrastSampler, AdaptiveContrastConfig, sanitizeColorPreference } from './contrastSampler.js';
 import { UnpickableActor, UILayerSampler, WindowCloneManager, reportFrameLoopError, ensureGlassAllocated, getTransformedRect, resolveMonitorGeometry, isFrameSyncFrozen, setClipIfChanged, syncGlassCaptureClip, resolveCrossFade, adaptiveColorTweener, } from './utils.js';
 // ========== Configuration Parameters (Defaults, overridden by settings) ==========
 const SHADER_PADDING = 20;
@@ -44,6 +44,10 @@ export class NotificationManager {
     _lastBgY;
     _lastScreenW;
     _lastScreenH;
+    // Monitor origin the last _syncGeometry() resolved, so the paint-time hook
+    // can rebuild the glass rect without re-resolving the monitor. See
+    // _syncGlassGeometryLive().
+    _liveMonitorOrigin = null;
     _contrastSampler;
     _adaptiveConfig;
     _adaptiveTimerId;
@@ -154,8 +158,12 @@ export class NotificationManager {
         connectSetting('notification-enable-adaptive-text-color', () => {
             this._adaptiveConfig.enabled = this._settings.get_boolean('notification-enable-adaptive-text-color');
         });
+        connectSetting('notification-adaptive-text-preference', () => {
+            this._adaptiveConfig.preference = sanitizeColorPreference(this._settings.get_string('notification-adaptive-text-preference'));
+        });
         connectSetting('notification-sample-interval-ms', () => {
             this._adaptiveConfig.sampleIntervalMs = this._settings.get_int('notification-sample-interval-ms');
+            this._adaptiveConfig.preference = sanitizeColorPreference(this._settings.get_string('notification-adaptive-text-preference'));
         });
         connectSetting('notification-y-offset', () => {
             this._notificationYOffset = this._settings.get_int('notification-y-offset');
@@ -288,6 +296,13 @@ export class NotificationManager {
         this.effect.setContrast(contrast);
         this.effect.setBlurRadius(blurRadius);
         this.liquidBox.add_effect(this.effect);
+        // [FIX] Banner-follows-glass lag. messageTray.js eases `_bannerBin.y`,
+        // which queues a relayout, and the frame tick below runs before this
+        // frame's relayout — so the rect it computes comes from the previous
+        // frame's allocation. This recomputes the shader's glass rect at paint
+        // time, which is after the relayout. See
+        // LiquidEffect.setLiveGeometryHook().
+        this.effect.setLiveGeometryHook(() => this._syncGlassGeometryLive());
         // ── 5. WindowCloneManager + UILayerSampler ────────────────────────────────
         this._windowCloneManager = new WindowCloneManager(this.liquidBox, this._cloneContainer, 'lg-notification');
         this._uiSampler = new UILayerSampler(this.bgActor, this.liquidBox, [bannerRoot, global.windowGroup, global.window_group], this._cloneContainer, 'notification');
@@ -376,6 +391,8 @@ export class NotificationManager {
         // Monitor-local coordinates (shader uses these)
         let localBgX = bgX_abs - monitorX;
         let localBgY = bgY_abs - monitorY;
+        // The only part of the rect the paint-time hook cannot derive on its own.
+        this._liveMonitorOrigin = [monitorX, monitorY];
         // ── Update actors only when geometry actually changed ────────────────────
         if (this._lastBgW !== bgW || this._lastBgH !== bgH ||
             this._lastBgX !== bgX_abs || this._lastBgY !== bgY_abs ||
@@ -426,6 +443,36 @@ export class NotificationManager {
         });
         this._uiSampler?.sync(monitorX, monitorY, screenW, screenH);
         this._windowCloneManager?.sync();
+    }
+    // ── Paint-time geometry (see LiquidEffect.setLiveGeometryHook) ─────────────
+    //
+    // Runs inside the paint phase, once per paint of the glass. The banner's
+    // entry/exit eases `_bannerBin.y` (messageTray.js), and setting `y` queues
+    // a relayout rather than moving a paint-time transform — so the banner's
+    // ALLOCATION, which is what get_transformed_extents() reports, only catches
+    // up in the stage's relayout phase. That phase runs after the
+    // BEFORE_REDRAW laters _syncGeometry() lives in, and before the paint this
+    // hook runs in. Here it is current.
+    //
+    // This deliberately repeats only the cheap, stateless half of
+    // _syncGeometry(): the shader's glass rect, which is pure arithmetic on the
+    // banner's transformed rect. Everything else it does — resizing actors,
+    // re-clipping, moving clones — is actor state that must not be touched
+    // mid-paint, and none of it is what the eye is tracking.
+    _syncGlassGeometryLive() {
+        const banner = this.currentBanner;
+        const origin = this._liveMonitorOrigin;
+        if (!banner || !this.effect || !origin)
+            return;
+        if (!banner.mapped)
+            return;
+        const [absX, absY, w, h] = getTransformedRect(banner);
+        if (![absX, absY, w, h].every(Number.isFinite) || w <= 0 || h <= 0)
+            return;
+        // Identical derivation to _syncGeometry()'s.
+        const bgW = w + this._glassExpand * 2 + SHADER_PADDING * 2;
+        const bgH = h + this._glassExpand * 2 + SHADER_PADDING * 2;
+        this.effect.setGlassGeometry(absX - this._glassExpand - SHADER_PADDING - origin[0], absY - this._glassExpand - SHADER_PADDING - origin[1], bgW, bgH);
     }
     // Called once when the banner effect is first set up (and after monitor changes).
     // Applies mutual exclusions between multiple Liquid Glass bgActors, then
@@ -536,6 +583,9 @@ export class NotificationManager {
     }
     cleanup() {
         this._torndown = true;
+        // Nothing for a late paint-time hook to act on. (The effect drops the
+        // hook itself in its own cleanup(); this covers the window before that.)
+        this._liveMonitorOrigin = null;
         this._teardownStep('frameSync', () => {
             if (this._frameSyncId !== 0) {
                 if (global.compositor?.get_laters)
@@ -648,7 +698,10 @@ export class NotificationManager {
         this._adaptiveInFlight = true;
         const generation = this._bannerGeneration;
         this._contrastSampler
-            .chooseColorsForActors(targets, this._adaptiveConfig)
+            .chooseColorsForActors(targets, this._adaptiveConfig, 
+        // [PERF B4] Skip the capture while the glass under the text has not
+        // been repainted since the last one. See chooseColorsForActors().
+        () => this.effect?._diagPaintCount ?? NaN)
             .then(colorMap => {
             if (generation !== this._bannerGeneration || !this.currentBanner)
                 return;
