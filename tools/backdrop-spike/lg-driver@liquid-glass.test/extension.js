@@ -1760,7 +1760,28 @@ export default class LgDriver extends Extension {
         await shot(`topbar-${style}-menu`, [m.x, m.y, m.width, 700]);
         dateMenu.close(true);
         await sleep(1000);
+        const sides = ['top', 'bottom', 'left', 'right'];
+        const before = Main.panel.height;
+        sides.forEach((side, i) => {
+          settings.set_int(`top-bar-margin-${side}`, [10, 6, 24, 24][i]);
+          settings.set_int(`top-bar-padding-${side}`, [4, 4, 12, 12][i]);
+        });
+        await sleep(1500);
+        const boxes = [Main.panel._leftBox, Main.panel._centerBox, Main.panel._rightBox];
+        log(`topbar ${style} spacing: panel ${before} -> ${Main.panel.height}, ` +
+          `boxes ${boxes.map(b => `${b.get_allocation_box().x1},${b.get_allocation_box().x2}`).join(' ')}, ` +
+          `first button ${boxes[0].get_first_child()?.get_allocation_box().y1}..${boxes[0].get_first_child()?.get_allocation_box().y2}, ` +
+          `workarea y ${Main.layoutManager.getWorkAreaForMonitor(Main.layoutManager.primaryIndex).y}`);
+        await shot(`topbar-${style}-spacing`, [m.x, m.y, m.width, 80]);
+        for (const side of sides) {
+          settings.reset(`top-bar-margin-${side}`);
+          settings.reset(`top-bar-padding-${side}`);
+        }
+        await sleep(1000);
       }
+      settings.set_string('top-bar-style', 'off');
+      await sleep(1000);
+      log(`topbar off: panel ${Main.panel.height}, styles ${[Main.panel._leftBox, Main.panel._centerBox, Main.panel._rightBox].map(b => b.get_style()).join('|')}`);
     }
     if (parts.includes('widgets')) {
       // A town GNOME Weather has no location for.

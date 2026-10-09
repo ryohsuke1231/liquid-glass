@@ -35,7 +35,10 @@ export const LAYOUT = {
   osd: [['glass-expand', 'Glass expansion', 0, 50, 1], ['y-offset', 'Vertical offset', -100, 100, 1]],
   application: [],
   'desktop-menu': [['content-opacity', 'Content opacity', 0, 1, 0.01]],
-  'top-bar': [],
+  'top-bar': [['margin-top', 'Margin top', 0, 50, 1], ['margin-bottom', 'Margin bottom', 0, 50, 1],
+    ['margin-left', 'Margin left', 0, 50, 1], ['margin-right', 'Margin right', 0, 50, 1],
+    ['padding-top', 'Padding top', 0, 50, 1], ['padding-bottom', 'Padding bottom', 0, 50, 1],
+    ['padding-left', 'Padding left', 0, 50, 1], ['padding-right', 'Padding right', 0, 50, 1]],
   'desktop-widget': [],
   launcher: [],
 };
