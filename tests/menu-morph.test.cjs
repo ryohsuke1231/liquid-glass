@@ -172,3 +172,25 @@ test('the glass never jumps from one frame to the next', () => {
     });
   }
 });
+
+test('closing, the refraction and blur are all the way down when the glass reaches the button', () => {
+  const motion = new MenuMorphMotion(false, BUTTON, MENU, RADIUS);
+  let touchedAt = null, softAt = null, last = 0;
+  run(motion, (f, time) => {
+    assert.ok(f.soften >= last, `soften went back to ${f.soften} at ${time}s`);
+    last = f.soften;
+    if (softAt === null && f.soften === 1) softAt = time;
+    if (touchedAt === null && f.body[1] <= BUTTON[1] + BUTTON[3]) touchedAt = time;
+  });
+  assert.equal(motion.frame.soften, 1);
+  assert.ok(softAt !== null && softAt <= touchedAt, `soft at ${softAt}s, on the button at ${touchedAt}s`);
+  assert.ok(new MenuMorphMotion(false, BUTTON, MENU, RADIUS).step(1 / 60).soften === 0);
+});
+
+test('closing, the glass rounds off while it shrinks, as the opening squares off while it grows', () => {
+  const motion = new MenuMorphMotion(false, BUTTON, MENU, RADIUS);
+  let frame = null;
+  for (let i = 0; i < 6; i++) frame = motion.step(1 / 60);
+  const [, , w, h] = frame.body;
+  assert.ok(frame.bodyRadius > 0.6 * Math.min(w, h) / 2, `radius ${frame.bodyRadius} on ${w}x${h}`);
+});
