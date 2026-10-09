@@ -45,8 +45,8 @@ const BOXPOINTER_MOVES = BOXPOINTER_EASED.slice(1);
 const CONTENT_LENS = 'liquid-glass-content-lens';
 // What the refraction (displacement scale) and the blur radius come down to,
 // whatever they are set to, as the closing glass settles on the button.
-const SOFT_REFRACTION = 2;
-const SOFT_BLUR_RADIUS = 2;
+const SOFT_REFRACTION = 0.3;
+const SOFT_BLUR_RADIUS = 0;
 
 // The glass travelling between the panel button and the menu.
 interface MenuMorph {
@@ -1411,11 +1411,14 @@ export class UIManager {
       this.animActor.add_effect_with_name(CONTENT_LENS, lens);
     }
     const blurRadius = this._settings.get_int(this._key('blur-radius'));
+    // Opened again while closing: the glass is the menu's again at once, not from the next frame.
+    if (open && prev && prev.shownBlurRadius !== blurRadius) this.glass.setBlurRadius(blurRadius);
+    if (open) this.glass.setAnimationScale(1);
     this._morph = {
       opening: open, motion: null, button, lens, lastUs: 0, waitFrames: 0,
       from: prev?.motion?.frame ?? null, velocities: prev?.motion?.velocities ?? null,
       refraction: this._settings.get_double('glass-displacement-scale'), blurRadius,
-      shownBlurRadius: prev?.shownBlurRadius ?? blurRadius,
+      shownBlurRadius: open ? blurRadius : prev?.shownBlurRadius ?? blurRadius,
     };
     this.animActor.remove_all_transitions();
     this.glass.remove_all_transitions();
