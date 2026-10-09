@@ -4,7 +4,7 @@ import Shell from 'gi://Shell';
 import St from 'gi://St';
 import { isActorValid } from '../actors/lifecycle.js';
 import { resetHoverCursor, setHoverCursor } from '../shellVersion.js';
-import { resizeRect } from './placement.js';
+import { placeBeside, resizeRect } from './placement.js';
 // Room between the item and its frame, px.
 const FRAME_GAP = 8;
 const HANDLE_SIZE = 14;
@@ -116,7 +116,28 @@ export class EditFrame {
             this._handles[i]?.set_position(Math.round(cx - half), Math.round(cy - half));
         });
         const [, doneW] = this._done.get_preferred_width(-1);
-        this._done.set_position(Math.round(f.x + (f.width - doneW) / 2), Math.round(f.y + f.height + HANDLE_SIZE));
+        const [, doneH] = this._done.get_preferred_height(doneW);
+        this._done.set_position(...placeBeside(f, [doneW, doneH], HANDLE_SIZE, this._workArea(f), this._docks()));
+    }
+
+    // The work area of the monitor the frame's centre is on.
+    _workArea(f) {
+        const cx = f.x + f.width / 2, cy = f.y + f.height / 2;
+        const layout = Main.layoutManager;
+        const monitor = layout.monitors.find(m => cx >= m.x && cx < m.x + m.width && cy >= m.y && cy < m.y + m.height);
+        return layout.getWorkAreaForMonitor(monitor?.index ?? layout.primaryIndex);
+    }
+
+    // Dash to Dock's docks. One that hides itself leaves the work area as it is
+    // but still covers the Done button when it slides in.
+    _docks() {
+        return Main.layoutManager.uiGroup.get_children()
+            .filter(actor => actor.get_name() === 'dashtodockContainer' && actor.visible)
+            .map(actor => {
+            const [x, y] = actor.get_transformed_position();
+            const [width, height] = actor.get_transformed_size();
+            return { x, y, width, height };
+        });
     }
 
     // What a press at (x, y) takes: the handle there [hx, hy], the frame

@@ -36,3 +36,22 @@ test('widget anchors keep only known places', () => {
   assert.deepEqual(placement.parseAnchors('{"weather":"bottom-left","events":"middle","media":3}'), { weather: 'bottom-left' });
   assert.deepEqual(placement.parseAnchors('not json'), {});
 });
+
+test('the Done button goes below its frame, or above, right or left when that is off the work area or on a dock', () => {
+  const area = { x: 0, y: 32, width: 1920, height: 1048 };
+  const frame = { x: 800, y: 400, width: 300, height: 150 };
+  assert.deepEqual(placement.placeBeside(frame, [80, 30], 14, area, []), [910, 564]);
+  const dock = { x: 96, y: 520, width: 1728, height: 80 };
+  const low = { ...frame, y: 380 };
+  assert.deepEqual(placement.placeBeside(low, [80, 30], 14, area, [dock]), [910, 336]);
+  const tall = { x: 800, y: 40, width: 300, height: 1030 };
+  assert.deepEqual(placement.placeBeside(tall, [80, 30], 14, area, []), [1114, 540]);
+  const wide = { x: 1500, y: 40, width: 410, height: 1030 };
+  assert.deepEqual(placement.placeBeside(wide, [80, 30], 14, area, []), [1406, 540]);
+});
+
+test('the Done button stays on the work area when nowhere beside its frame is free', () => {
+  const area = { x: 0, y: 32, width: 1920, height: 1048 };
+  const full = { x: -10, y: 20, width: 1940, height: 1070 };
+  assert.deepEqual(placement.placeBeside(full, [80, 30], 14, area, []), [920, 1050]);
+});
