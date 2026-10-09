@@ -1306,6 +1306,21 @@ export default class LgDriver extends Extension {
     await shot('clock-edit', [m.x, m.y, m.width, m.height]);
     if (!layer) return;
 
+    // Down onto the dock: the Done button moves off it.
+    const doneButton = layer.get_children().find(c => c.has_style_class_name('liquid-glass-edit-done'));
+    const rectOf = a => [...a.get_transformed_position(), ...a.get_transformed_size()].map(Math.round);
+    const frameActor = layer.get_children().find(c => c.has_style_class_name('liquid-glass-edit-frame'));
+    const lower = m.y + m.height - 40 - (frameActor.get_transformed_position()[1] + frameActor.height);
+    await drag(centre, [0, lower]);
+    await sleep(800);
+    const docks = Main.layoutManager.uiGroup.get_children().filter(c => c.get_name() === 'dashtodockContainer');
+    log(`edit: low frame=${rectOf(frameActor)} done=${rectOf(doneButton)} docks=${docks.map(d => `[${rectOf(d)}]`).join(',')}`);
+    await shot('clock-edit-low', [m.x, m.y, m.width, m.height]);
+    const [lx, ly] = clock.get_transformed_position();
+    await drag([centre[0] + lx - cx, centre[1] + ly - cy], [cx - lx, cy - ly]);
+    await sleep(800);
+    log(`edit: back frame=${rectOf(frameActor)} done=${rectOf(doneButton)}`);
+
     await drag(centre, [-300, -100]);
     await sleep(800);
     log(`edit: moved by ${Math.round(clock.get_transformed_position()[0] - cx)},` +

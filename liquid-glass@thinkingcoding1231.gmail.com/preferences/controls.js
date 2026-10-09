@@ -52,7 +52,7 @@ export class PreferenceControls {
   choice(group, title, choices, subtitle = '', custom = true) {
     const row = new Adw.ComboRow({title, subtitle,
       model: Gtk.StringList.new([...choices.map(choice => choice.title), ...(custom ? ['Custom'] : [])])});
-    if (custom) row.list_factory = this._choiceListFactory(row, choices.length);
+    if (custom) row.list_factory = this.readoutListFactory(row, choices.length);
     group.add(row);
     let syncing = false;
     const refresh = () => {
@@ -72,11 +72,17 @@ export class PreferenceControls {
     return row;
   }
 
-  // "Custom" only reports that the values were edited by hand; it cannot be
-  // picked. Replaces the combo row's popup list so that entry is greyed out
-  // and inert, keeping the checkmark the default list draws on the selection.
-  _choiceListFactory(row, customIndex) {
+  // An entry such as "Custom" only reports how the values came to be; it
+  // cannot be picked. Replaces the combo row's popup list so that entry is
+  // greyed out and inert, keeping the checkmark the default list draws on the selection.
+  readoutListFactory(row, readoutIndex) {
     const factory = new Gtk.SignalListItemFactory();
+    // One handler on the row for every list item, rather than one per bound
+    // item undone on unbind: unbind also runs while the window is collected,
+    // when JS callbacks are blocked.
+    const items = new Set();
+    const syncCheck = item => { item._check.opacity = row.selected === item.position ? 1 : 0; };
+    row.connect('notify::selected', () => items.forEach(syncCheck));
     factory.connect('setup', (_factory, item) => {
       const box = new Gtk.Box({spacing: 6});
       const label = new Gtk.Label({xalign: 0, hexpand: true});
@@ -86,20 +92,15 @@ export class PreferenceControls {
       item.child = box;
       item._label = label;
       item._check = check;
+      items.add(item);
     });
     factory.connect('bind', (_factory, item) => {
-      const isCustom = item.position === customIndex;
+      const isReadout = item.position === readoutIndex;
       item._label.label = item.item.string;
-      item.child.sensitive = !isCustom;
-      item.activatable = !isCustom;
-      item.selectable = !isCustom;
-      const sync = () => { item._check.opacity = row.selected === item.position ? 1 : 0; };
-      item._selectedId = row.connect('notify::selected', sync);
-      sync();
-    });
-    factory.connect('unbind', (_factory, item) => {
-      if (item._selectedId) row.disconnect(item._selectedId);
-      item._selectedId = 0;
+      item.child.sensitive = !isReadout;
+      item.activatable = !isReadout;
+      item.selectable = !isReadout;
+      syncCheck(item);
     });
     return factory;
   }

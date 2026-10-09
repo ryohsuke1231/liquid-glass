@@ -35,8 +35,6 @@ function jsonSetting(settings, key) {
 
 const movedPositions = settings => jsonSetting(settings, 'desktop-item-positions');
 
-// A place on the desktop for `key`. The item `id` may have been moved
-// elsewhere, which the row reports; picking a place puts it back there.
 // A place on the desktop for `key`: the clock's (`id` "clock") or the one
 // the widgets share (`id` null). Moved items, and widgets given a place of
 // their own from their menu, are reported; picking a place puts them back.
@@ -44,6 +42,7 @@ function placeRow(group, controls, title, key, id) {
   const settings = controls.settings;
   const row = new Adw.ComboRow({title,
     model: Gtk.StringList.new([...PLACES.map(([, name]) => name), id ? 'Where it was moved' : 'Where each was put'])});
+  row.list_factory = controls.readoutListFactory(row, PLACES.length);
   group.add(row);
   let syncing = false;
   const refresh = () => {
@@ -58,7 +57,6 @@ function placeRow(group, controls, title, key, id) {
   };
   row.connect('notify::selected', () => {
     if (syncing) return;
-    // The last entry only reports; it cannot be picked.
     if (row.selected >= PLACES.length) {
       refresh();
       return;

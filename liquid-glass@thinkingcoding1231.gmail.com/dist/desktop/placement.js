@@ -108,3 +108,32 @@ export function parseAnchors(json) {
     }
     return out;
 }
+
+function overlaps(a, b) {
+    return a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
+}
+
+/**
+ * The top left corner of a button of `size` beside `frame`, `gap` px off it:
+ * below, above, right or left of it, whichever comes first that is inside
+ * `area` and clear of `obstacles`. Kept inside `area` when none is.
+ */
+export function placeBeside(frame, size, gap, area, obstacles) {
+    const [w, h] = size;
+    const clamp = (v, lo, span) => Math.min(Math.max(v, lo), lo + Math.max(span, 0));
+    const cx = clamp(frame.x + (frame.width - w) / 2, area.x, area.width - w);
+    const cy = clamp(frame.y + (frame.height - h) / 2, area.y, area.height - h);
+    const candidates = [
+        [cx, frame.y + frame.height + gap],
+        [cx, frame.y - gap - h],
+        [frame.x + frame.width + gap, cy],
+        [frame.x - gap - w, cy],
+    ];
+    const fits = ([x, y]) => {
+        const r = { x, y, width: w, height: h };
+        return x >= area.x && y >= area.y && x + w <= area.x + area.width && y + h <= area.y + area.height &&
+            !obstacles.some(o => overlaps(r, o));
+    };
+    const [x, y] = candidates.find(fits) ?? [cx, clamp(candidates[0][1], area.y, area.height - h)];
+    return [Math.round(x), Math.round(y)];
+}
