@@ -73,6 +73,11 @@ const ARRIVE_MAX_S = 0.6;
 const CLOSE_CAPSULE_S = 0.16;
 const FADE_DELAY_S = 0.14;
 const FADE_S = 0.12;
+// Over the button the bent, blurred clock looks muddy, so the refraction and
+// the blur are taken down (MorphFrame.soften) from SOFTEN_FROM_S after it
+// starts to turn into the capsule, over SOFTEN_S.
+const SOFTEN_FROM_S = 0.08;
+const SOFTEN_S = 0.1;
 
 function cubicBezier(x1: number, y1: number, x2: number, y2: number): (t: number) => number {
   const at = (t: number, a: number, b: number) => 3 * a * t * (1 - t) ** 2 + 3 * b * t * t * (1 - t) + t ** 3;
@@ -112,6 +117,8 @@ export interface MorphFrame {
   // How deep in the glass the content looks, 0 (at the surface) to 1.
   lens: number;
   glassOpacity: number;
+  // How far the refraction and the blur are taken down, 0 (as set) to 1.
+  soften: number;
   // Opening: at rest on the menu. Closing: faded out on the button.
   done: boolean;
 }
@@ -145,9 +152,9 @@ export class MenuMorphMotion {
     random: () => number = Math.random) {
     const start: MorphFrame = from ?? (opening
       ? { body: [..._buttonRect], bodyRadius: _buttonRect[3] / 2, contentScale: CONTENT_CLOSED_SCALE,
-        contentOpacity: 0, lens: 1, glassOpacity: 1, done: false }
+        contentOpacity: 0, lens: 1, glassOpacity: 1, soften: 0, done: false }
       : { body: [..._menu], bodyRadius: _menuRadius, contentScale: 1, contentOpacity: 1, lens: 0, glassOpacity: 1,
-        done: false });
+        soften: 0, done: false });
     this._frame = start;
     this._capsuleS = opening && !from ? CAPSULE_S : 0;
 
@@ -234,7 +241,7 @@ export class MenuMorphMotion {
       const w = lerp(bw, drop, k), h = lerp(bh, drop, k);
       const y = by + bh / 2 + this._fall() * t ** 1.5;
       return { body: [bx + bw / 2 - w / 2, y - h / 2, w, h], bodyRadius: Math.min(w, h) / 2,
-        contentScale: CONTENT_CLOSED_SCALE, contentOpacity: 0, lens: 1, glassOpacity: 1, done: false };
+        contentScale: CONTENT_CLOSED_SCALE, contentOpacity: 0, lens: 1, glassOpacity: 1, soften: 0, done: false };
     }
     this._stepSprings(Math.min(dt, this._t - this._capsuleS));
     const t = this._t - this._capsuleS;
@@ -254,6 +261,7 @@ export class MenuMorphMotion {
       contentOpacity: clamp01(this._opacity.value),
       lens: this._lensFrom * (1 - clamp01(t / LENS_S) ** 2),
       glassOpacity: 1,
+      soften: 0,
       done: !moving && t >= OPEN_SIZE_S,
     };
   }
@@ -276,6 +284,7 @@ export class MenuMorphMotion {
       this._arrivedSize = [w, h];
     }
     let glassOpacity = 1;
+    let soften = 0;
     if (this._arrivedAt >= 0) {
       // Into the capsule as it rises, ending on the button wherever the springs are.
       const since = t - this._arrivedAt;
@@ -287,6 +296,7 @@ export class MenuMorphMotion {
       body = [cx - cw / 2, cy - ch / 2, cw, ch];
       bodyRadius = Math.min(cw, ch) / 2;
       glassOpacity = 1 - easeInOut(clamp01((since - FADE_DELAY_S) / FADE_S));
+      soften = clamp01((since - SOFTEN_FROM_S) / SOFTEN_S);
     }
     return {
       body,
@@ -295,6 +305,7 @@ export class MenuMorphMotion {
       contentOpacity: clamp01(this._opacity.value),
       lens: 0,
       glassOpacity,
+      soften,
       done: glassOpacity === 0,
     };
   }

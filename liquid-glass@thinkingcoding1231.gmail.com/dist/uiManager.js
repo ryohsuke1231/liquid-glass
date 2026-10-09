@@ -30,6 +30,10 @@ const MORPH_WAIT_FRAMES = 30;
 const BOXPOINTER_EASED = ['opacity', 'translation-x', 'translation-y', 'scale-x', 'scale-y'];
 const BOXPOINTER_MOVES = BOXPOINTER_EASED.slice(1);
 const CONTENT_LENS = 'liquid-glass-content-lens';
+// What the refraction (displacement scale) and the blur radius come down to,
+// whatever they are set to, as the closing glass settles on the button.
+const SOFT_REFRACTION = 2;
+const SOFT_BLUR_RADIUS = 2;
 const MENU_MEASURE_FRAMES = 30;
 const MENU_MEASURE_STABLE_FRAMES = 3;
 // Quick Settings' open height, measured once for every menu that matches it,
@@ -1293,9 +1297,12 @@ export class UIManager {
             lens = new ContentLens();
             this.animActor.add_effect_with_name(CONTENT_LENS, lens);
         }
+        const blurRadius = this._settings.get_int(this._key('blur-radius'));
         this._morph = {
             opening: open, motion: null, button, lens, lastUs: 0, waitFrames: 0,
             from: prev?.motion?.frame ?? null, velocities: prev?.motion?.velocities ?? null,
+            refraction: this._settings.get_double('glass-displacement-scale'), blurRadius,
+            shownBlurRadius: prev?.shownBlurRadius ?? blurRadius,
         };
         this.animActor.remove_all_transitions();
         this.glass.remove_all_transitions();
@@ -1326,7 +1333,7 @@ export class UIManager {
             if (!menu) {
                 // Not laid out yet: hold the glass on the button for a few frames.
                 this._placeMorph({ body: m.button, bodyRadius: m.button[3] / 2, contentScale: 1,
-                    contentOpacity: 0, lens: 0, glassOpacity: 1, done: false });
+                    contentOpacity: 0, lens: 0, glassOpacity: 1, soften: 0, done: false });
                 if (++m.waitFrames < MORPH_WAIT_FRAMES)
                     return true;
                 this._morphTickId = 0;
@@ -1369,9 +1376,23 @@ export class UIManager {
             glass.show();
         glass.opacity = Math.round(255 * f.glassOpacity);
         this._applyGlassBounds(glass, body[0] - p, body[1] - p, body[2] + p * 2, body[3] + p * 2, mx, my, Math.max(1, monitor?.width ?? 1), Math.max(1, monitor?.height ?? 1));
-        applyGlassScale(glass, f.bodyRadius, 1, 1);
+        glass.setCornerRadius(f.bodyRadius);
+        this._softenGlass(glass, f.soften);
         this._placeContent(f);
         glass.syncSources();
+    }
+
+    // Takes the refraction and the blur from their settings towards
+    // SOFT_REFRACTION and SOFT_BLUR_RADIUS, by `soften` (0 to 1).
+    _softenGlass(glass, soften) {
+        const m = this._morph;
+        const toward = (from, to) => from + (Math.min(from, to) - from) * soften;
+        glass.setAnimationScale(m.refraction > 0 ? toward(m.refraction, SOFT_REFRACTION) / m.refraction : 1);
+        const blur = Math.round(toward(m.blurRadius, SOFT_BLUR_RADIUS));
+        if (blur !== m.shownBlurRadius) {
+            m.shownBlurRadius = blur;
+            glass.setBlurRadius(blur);
+        }
     }
 
     // Draws the menu's items `f.contentScale` times their size around the
@@ -1408,9 +1429,15 @@ export class UIManager {
     // Leaves the glass and the menu as the rest of the manager expects them.
     _endMorph() {
         this._stopMorphTicker();
-        if (!this._morph)
+        const m = this._morph;
+        if (!m)
             return;
         this._morph = null;
+        if (this.glass) {
+            this.glass.setAnimationScale(1);
+            if (m.shownBlurRadius !== m.blurRadius)
+                this.glass.setBlurRadius(m.blurRadius);
+        }
         if (!this._actorDestroyed && this.animActor) {
             this.animActor.remove_effect_by_name(CONTENT_LENS);
             this.animActor.remove_clip();
