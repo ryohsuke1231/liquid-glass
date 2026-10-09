@@ -65,13 +65,13 @@ const LENS_S = 0.3;
 // Closing: the drop starts to turn into the capsule once it is this many
 // button heights from where the capsule rests, or this long after closing
 // began whatever, and rises into place as it does over CLOSE_CAPSULE_S. It
-// fades over FADE_S from FADE_DELAY_S after it starts to, so it is still
-// plainly seen as the capsule, and then goes: on the button it only hides
+// fades over FADE_S from FADE_DELAY_S after it starts to, so it stays a
+// moment as the capsule, and then goes: on the button it only hides
 // the clock, bent by the glass.
 const ARRIVE_HEIGHTS = 2;
 const ARRIVE_MAX_S = 0.6;
 const CLOSE_CAPSULE_S = 0.16;
-const FADE_DELAY_S = 0.14;
+const FADE_DELAY_S = 0.24;
 const FADE_S = 0.12;
 // Over the button the bent, blurred clock looks muddy, so the refraction and
 // the blur are taken down (MorphFrame.soften) as the drop comes back to the
