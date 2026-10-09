@@ -32,9 +32,14 @@ export class AdaptiveTextColor {
         this._label = _label;
     }
 
-    start(intervalMs, preference) {
+    /**
+     * @param preferredMinContrast When above 0, `preference` is kept while it
+     *   reads at least this well; see AdaptiveContrastConfig.
+     */
+    start(intervalMs, preference, preferredMinContrast = 0) {
         this._config.sampleIntervalMs = intervalMs;
         this._config.preference = preference;
+        this._config.preferredMinContrast = preferredMinContrast;
         this.stop();
         this._first = true;
         this._sampler.reset();

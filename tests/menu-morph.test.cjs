@@ -103,13 +103,16 @@ test('each opening is pushed somewhere downwards, never far', () => {
   }
 });
 
-test('closing fades out as it settles into the button\'s capsule', () => {
+test('closing stays in sight until it is the button\'s capsule, then fades out', () => {
   const motion = new MenuMorphMotion(false, BUTTON, MENU, RADIUS);
   assert.ok(near(motion.frame.body, MENU, 0), `body ${motion.frame.body}`);
-  let capsuleAt = null, fadingAt = null;
+  let capsuleAt = null, fadingAt = null, opacityAtCapsule = null;
   const { frame, t } = run(motion, (f, time) => {
     if (fadingAt === null && f.glassOpacity < 1) fadingAt = time;
-    if (capsuleAt === null && near(f.body, BUTTON, 0.01)) capsuleAt = time;
+    if (capsuleAt === null && near(f.body, BUTTON, 0.01)) {
+      capsuleAt = time;
+      opacityAtCapsule = f.glassOpacity;
+    }
     // One body: never taller than the button once it is down there.
     if (capsuleAt !== null) assert.ok(f.body[3] <= BUTTON[3] + 0.01);
   });
@@ -117,7 +120,8 @@ test('closing fades out as it settles into the button\'s capsule', () => {
   assert.ok(t < 0.9, `took ${t}s`);
   assert.equal(frame.glassOpacity, 0);
   assert.ok(fadingAt < capsuleAt, `fades from ${fadingAt}s, on the button at ${capsuleAt}s`);
-  assert.ok(t - capsuleAt <= 0.05, `${t - capsuleAt}s on the button`);
+  assert.ok(opacityAtCapsule >= 0.85, `${opacityAtCapsule} when it is the capsule`);
+  assert.ok(t - capsuleAt <= 0.12, `${t - capsuleAt}s on the button`);
 });
 
 test('opening, the corners square off while the glass grows, not after', () => {

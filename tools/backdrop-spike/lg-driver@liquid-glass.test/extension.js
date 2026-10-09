@@ -21,7 +21,7 @@
 //              widgets, the glass clock and the launcher, on a photo wallpaper
 //              ($LG_DRV_WALLPAPER); LG_DRV_FEATURES picks parts (comma
 //              separated: morph, topbar, widgets, clock, launcher; default all;
-//              also morphtrace, qssub, clockshot, media)
+//              also morphtrace, qssub, clockshot, media, guides)
 //   bench      global._lgBench.run() (run-glass.sh with LG_BENCH=1); LG_DRV_BENCH
 //              picks scenarios (comma separated, default all), LG_DRV_BENCH_SECONDS
 //              the seconds per scenario (default 3), LG_DRV_BENCH_AB=1 adds a run without UI glass
@@ -1232,6 +1232,77 @@ export default class LgDriver extends Extension {
     }
   }
 
+  // Moves the weather card through its menu until its centre is a few px
+  // off the clock's, and reports the guides shown while it is held there.
+  async _editGuides(settings, m) {
+    settings.set_string('desktop-item-positions', '{}');
+    settings.set_boolean('enable-glass-clock', true);
+    settings.set_string('glass-clock-position', 'center');
+    settings.set_strv('desktop-widgets', ['weather', 'events']);
+    settings.set_boolean('enable-desktop-widgets', true);
+    await sleep(4000);
+    const clock = findActor(global.window_group, 'liquid-glass-desktop-clock');
+    const weather = findActor(global.window_group, 'liquid-glass-desktop-weather');
+    if (!clock || !weather?.mapped) {
+      log(`guides: clock=${!!clock} weather=${weather?.mapped}`);
+      return;
+    }
+    new Gio.Settings({schema_id: 'org.gnome.desktop.interface'}).set_boolean('enable-hot-corners', false);
+    const backend = SHELL_MAJOR >= 48 ? global.stage.context.get_backend() : Clutter.get_default_backend();
+    const pointer = backend.get_default_seat().create_virtual_device(Clutter.InputDeviceType.POINTER_DEVICE);
+    await sleep(300);
+    if (Main.overview.visible) {
+      Main.overview.hide();
+      await sleep(1500);
+    }
+    const t = () => GLib.get_monotonic_time();
+    const move = async (x, y) => {
+      pointer.notify_absolute_motion(t(), x, y);
+      await sleep(60);
+    };
+    const button = async state => {
+      pointer.notify_button(t(), Clutter.BUTTON_PRIMARY, state);
+      await sleep(60);
+    };
+    const rectOf = a => [...a.get_transformed_position(), ...a.get_transformed_size()].map(Math.round);
+    const [wx, wy, ww, wh] = rectOf(weather);
+    await move(wx + 40, wy + 40);
+    pointer.notify_button(t(), Clutter.BUTTON_SECONDARY, Clutter.ButtonState.PRESSED);
+    await sleep(60);
+    pointer.notify_button(t(), Clutter.BUTTON_SECONDARY, Clutter.ButtonState.RELEASED);
+    await sleep(500);
+    const entry = Main.layoutManager.uiGroup.get_children()
+      .flatMap(c => findActors(c, a => a instanceof PopupMenu.PopupMenuItem && a.mapped)).find(i => i.label.text === 'Move');
+    if (!entry) return;
+    const [ex, ey] = entry.get_transformed_position();
+    await move(ex + 20, ey + 10);
+    await button(Clutter.ButtonState.PRESSED);
+    await button(Clutter.ButtonState.RELEASED);
+    await sleep(500);
+    const layer = Main.layoutManager.uiGroup.get_children().find(c => c.get_name() === 'liquid-glass-edit');
+    if (!layer) return;
+    const [cx, cy, cw] = rectOf(clock);
+    const guides = () => layer.get_children().filter(c => c.has_style_class_name('liquid-glass-edit-guide') && c.visible)
+      .map(c => `[${rectOf(c)}]`).join(',');
+    // The weather card's shown part is the card itself; its centre goes 4 px right of the clock's.
+    const start = [wx + ww / 2, wy + wh / 2];
+    const to = [cx + cw / 2 + 4, Math.max(m.y + 60 + wh / 2, cy - wh)];
+    await move(...start);
+    await button(Clutter.ButtonState.PRESSED);
+    for (let i = 1; i <= 12; i++) await move(start[0] + (to[0] - start[0]) * i / 12, start[1] + (to[1] - start[1]) * i / 12);
+    await sleep(300);
+    const [nx, , nw] = rectOf(weather);
+    log(`guides: clock centre=${cx + cw / 2} weather centre=${nx + nw / 2} (pointer +4) guides=${guides()}`);
+    await shot('guides-centre', [m.x, m.y, m.width, m.height]);
+    await button(Clutter.ButtonState.RELEASED);
+    await sleep(300);
+    log(`guides: after release guides=${guides() || 'none'} positions=${settings.get_string('desktop-item-positions')}`);
+    await move(m.x + 40, m.y + m.height - 60);
+    await button(Clutter.ButtonState.PRESSED);
+    await button(Clutter.ButtonState.RELEASED);
+    await sleep(300);
+  }
+
   // Moves and resizes the clock through its menu and edit frame, with a
   // virtual pointer. With Desktop Icons (run-glass.sh with
   // LG_EXTRA_EXTENSIONS=ding@rastersoft.com) the clock has to be above its window.
@@ -1522,7 +1593,13 @@ export default class LgDriver extends Extension {
           Gio.BusNameOwnerFlags.NONE, resolve, null);
       });
       settings.set_boolean('output-logs', true);
-      settings.set_strv('desktop-widgets', ['media']);
+      settings.set_strv('desktop-widgets', GLib.getenv('LG_DRV_MEDIA_WITH')?.split(',') ?? ['media']);
+      settings.set_boolean('media-visualizer', true);
+      // Settings to measure under, as "key=gvariant;key=gvariant".
+      for (const pair of (GLib.getenv('LG_DRV_MEDIA_SETTINGS') ?? '').split(';').filter(Boolean)) {
+        const at = pair.indexOf('=');
+        settings.set_value(pair.slice(0, at), GLib.Variant.parse(null, pair.slice(at + 1), null, null));
+      }
       settings.set_boolean('enable-desktop-widgets', true);
       let card = null;
       for (let i = 0; i < 40 && !card?.mapped; i++) {
@@ -1554,6 +1631,26 @@ export default class LgDriver extends Extension {
         log(`media: ${buttons.length} buttons clicked, the player got: ${calls.join(',') || 'nothing'}`);
         const [cx, cy] = card.get_transformed_position();
         const [cw, ch] = card.get_transformed_size();
+        if (GLib.getenv('LG_DRV_MEDIA_BARS')) {
+          // Bars that jump between silent and loudest, without a sound server.
+          const {MediaWidget} = await this._lgModule('desktop/media.js');
+          const draw = MediaWidget.prototype._drawBars;
+          let loud = false;
+          MediaWidget.prototype._drawBars = function () {
+            this._levels = this._levels.map(() => loud ? 1 : 0);
+            draw.call(this);
+          };
+          const bars = findActors(card, a => a instanceof St.DrawingArea)[0];
+          for (let i = 0; i < 40; i++) {
+            loud = i % 8 < 4;
+            for (let f = 0; f < 6; f++) {
+              bars.queue_repaint();
+              await sleep(16);
+            }
+            if (i % 4 === 0) log(`media: bars ${loud ? 'loud' : 'silent'} title colour=${findActors(card, a => a instanceof St.Label)[0].get_theme_node().get_foreground_color().to_string()}`);
+          }
+          MediaWidget.prototype._drawBars = draw;
+        }
         // With PULSE_SERVER set to a running sound server, the bars follow what it plays.
         for (let i = 0; i < 4; i++) {
           await shot(`media-${i}`, [cx - 20, cy - 20, cw + 40, ch + 40]);
@@ -1686,6 +1783,8 @@ export default class LgDriver extends Extension {
       }
       await this._editClock(settings, m);
     }
+    if (parts.includes('guides'))
+      await this._editGuides(settings, m);
     if (parts.includes('launcher')) {
       settings.set_boolean('enable-launcher', true);
       await sleep(1000);

@@ -9,7 +9,7 @@ import { isActorValid } from '../actors/lifecycle.js';
 import { hexToColorArray } from '../animation/colors.js';
 import { AdaptiveTextColor } from '../adaptiveText.js';
 import { sanitizeColorPreference } from '../contrastSampler.js';
-import { connectClicks } from './desktopItem.js';
+import { connectClicks, PREFERRED_MIN_CONTRAST } from './desktopItem.js';
 import { FIELD_RANGE } from './digits.js';
 import { DigitsSource } from './digitsSource.js';
 import { coglContext } from '../shellVersion.js';
@@ -110,7 +110,7 @@ export class GlassClock {
             this._adaptive.clear();
             return;
         }
-        this._adaptive.start(s.get_int('desktop-widget-sample-interval-ms'), sanitizeColorPreference(s.get_string('desktop-widget-adaptive-text-preference')));
+        this._adaptive.start(s.get_int('desktop-widget-sample-interval-ms'), sanitizeColorPreference(s.get_string('desktop-widget-adaptive-text-preference')), PREFERRED_MIN_CONTRAST);
     }
 
     // The font the digits are cut from: the chosen one, or the interface font in bold.

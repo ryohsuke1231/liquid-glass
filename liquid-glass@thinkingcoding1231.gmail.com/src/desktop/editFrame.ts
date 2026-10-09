@@ -1,4 +1,5 @@
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import Cairo from 'cairo';
 import Clutter from 'gi://Clutter';
 import Shell from 'gi://Shell';
 import St from 'gi://St';
@@ -6,6 +7,7 @@ import St from 'gi://St';
 import { isActorValid } from '../actors/lifecycle.js';
 import { type CursorShape, resetHoverCursor, setHoverCursor } from '../shellVersion.js';
 import type { DesktopItem } from './desktopItem.js';
+import { type Guide, snapMove } from './guides.js';
 import { type HandleSide, type Rect, placeBeside, resizeRect } from './placement.js';
 
 // Room between the item and its frame, px.
@@ -15,6 +17,11 @@ const HANDLE_SIZE = 14;
 const HANDLE_REACH = 12;
 // The smallest the frame can be resized to, px.
 const MIN_SIZE = 48;
+// A moved item this near (px) to a guide goes onto it.
+const SNAP_REACH = 6;
+// How thick a guide is drawn, and how long the ticks at the ends of a gap are, px.
+const GUIDE_WIDTH = 2;
+const GAP_TICK = 9;
 
 // The handles: which edges each one moves, and its cursor.
 const HANDLES: [HandleSide, HandleSide, CursorShape][] = [
@@ -27,6 +34,8 @@ export interface EditCallbacks {
   moved: (x: number, y: number) => void;
   // The item's shown part was resized from `from` to `to`, stage coordinates.
   resized?: (from: Rect, to: Rect) => void;
+  // The shown parts of the other items, stage coordinates, to line the item up with.
+  others: () => Rect[];
   // The frame is gone.
   ended: () => void;
 }
@@ -54,6 +63,9 @@ export class EditFrame {
   private _drag: Drag | null = null;
   // The frame being resized, while it is.
   private _resizing: Rect | null = null;
+  // Drawn guides, reused from one move to the next, and what each one shows.
+  private _guideActors: St.DrawingArea[] = [];
+  private _guides: Guide[] = [];
 
   constructor(readonly item: DesktopItem, private _callbacks: EditCallbacks) {
     this._layer = new St.Widget({ name: 'liquid-glass-edit', reactive: true, x: 0, y: 0 });
@@ -99,23 +111,9 @@ export class EditFrame {
     this.sync();
   }
 
-  // The item's top left corner, stage coordinates. Its x and y, not its
-  // allocation, which lags a frame behind a new position.
-  private _itemOrigin(): [number, number] {
-    const [px, py] = this.item.actor.get_parent()!.get_transformed_position();
-    return [px + this.item.actor.x, py + this.item.actor.y];
-  }
-
-  // The item's shown part, stage coordinates.
-  private _itemRect(): Rect {
-    const [x, y] = this._itemOrigin();
-    const [bx, by, width, height] = this.item.bounds();
-    return { x: x + bx, y: y + by, width, height };
-  }
-
   // The frame round the item, or round the size it is being resized to.
   private _frameRect(): Rect {
-    const r = this._resizing ?? this._itemRect();
+    const r = this._resizing ?? itemRect(this.item);
     const g = FRAME_GAP;
     return { x: r.x - g, y: r.y - g, width: r.width + g * 2, height: r.height + g * 2 };
   }
@@ -136,6 +134,61 @@ export class EditFrame {
     const [, doneW] = this._done.get_preferred_width(-1);
     const [, doneH] = this._done.get_preferred_height(doneW);
     this._done.set_position(...placeBeside(f, [doneW, doneH], HANDLE_SIZE, this._workArea(f), this._docks()));
+  }
+
+  private _showGuides(guides: Guide[]): void {
+    this._guides = guides;
+    while (this._guideActors.length < guides.length) {
+      const actor = new St.DrawingArea({ style_class: 'liquid-glass-edit-guide' });
+      const index = this._guideActors.length;
+      actor.connect('repaint', () => this._drawGuide(actor, this._guides[index]));
+      this._layer.insert_child_below(actor, this._frame);
+      this._guideActors.push(actor);
+    }
+    this._guideActors.forEach((actor, i) => {
+      const g = guides[i];
+      actor.visible = !!g;
+      if (!g) return;
+      const thick = g.kind === 'spacing' ? GAP_TICK : GUIDE_WIDTH;
+      const at = Math.round(g.at - thick / 2), from = Math.round(g.from), length = Math.max(Math.round(g.to - g.from), 1);
+      if (g.vertical) {
+        actor.set_position(at, from);
+        actor.set_size(thick, length);
+      } else {
+        actor.set_position(from, at);
+        actor.set_size(length, thick);
+      }
+      actor.queue_repaint();
+    });
+  }
+
+  // A dotted line along the guide; a gap also gets a tick across each end.
+  private _drawGuide(actor: St.DrawingArea, g: Guide | undefined): void {
+    if (!g) return;
+    const cr = actor.get_context();
+    const [w, h] = actor.get_surface_size();
+    const color = actor.get_theme_node().get_foreground_color();
+    cr.setSourceRGBA(color.red / 255, color.green / 255, color.blue / 255, color.alpha / 255);
+    cr.setLineWidth(GUIDE_WIDTH);
+    const [long, across] = g.vertical ? [h, w] : [w, h];
+    const line = (a0: number, b0: number, a1: number, b1: number) => {
+      if (g.vertical) {
+        cr.moveTo(b0, a0);
+        cr.lineTo(b1, a1);
+      } else {
+        cr.moveTo(a0, b0);
+        cr.lineTo(a1, b1);
+      }
+    };
+    if (g.kind === 'spacing') {
+      line(GUIDE_WIDTH / 2, 0, GUIDE_WIDTH / 2, across);
+      line(long - GUIDE_WIDTH / 2, 0, long - GUIDE_WIDTH / 2, across);
+      cr.stroke();
+    }
+    cr.setDash([4, 4], 0);
+    line(0, across / 2, long, across / 2);
+    cr.stroke();
+    cr.$dispose();
   }
 
   // The work area of the monitor the frame's centre is on.
@@ -178,7 +231,7 @@ export class EditFrame {
       this.end();
       return Clutter.EVENT_STOP;
     }
-    this._drag = { start: [x, y], origin: this._itemOrigin(), rect: this._itemRect(), hx: hit[0], hy: hit[1] };
+    this._drag = { start: [x, y], origin: itemOrigin(this.item), rect: itemRect(this.item), hx: hit[0], hy: hit[1] };
     return Clutter.EVENT_STOP;
   }
 
@@ -189,7 +242,11 @@ export class EditFrame {
     const dx = x - drag.start[0], dy = y - drag.start[1];
     if (drag.hx === 0 && drag.hy === 0) {
       const [px, py] = this.item.actor.get_parent()!.get_transformed_position();
-      this.item.actor.set_position(Math.round(drag.origin[0] + dx - px), Math.round(drag.origin[1] + dy - py));
+      const moved = { ...drag.rect, x: drag.rect.x + dx, y: drag.rect.y + dy };
+      const snap = snapMove(moved, this._callbacks.others(), this._workArea(moved), SNAP_REACH);
+      this.item.actor.set_position(Math.round(drag.origin[0] + dx + snap.dx - px),
+        Math.round(drag.origin[1] + dy + snap.dy - py));
+      this._showGuides(snap.guides);
     } else {
       this._resizing = resizeRect(drag.rect, drag.hx, drag.hy, dx, dy, MIN_SIZE);
     }
@@ -201,10 +258,11 @@ export class EditFrame {
     const drag = this._drag;
     if (!drag || event.get_button() !== Clutter.BUTTON_PRIMARY) return Clutter.EVENT_PROPAGATE;
     this._drag = null;
+    this._showGuides([]);
     const resized = this._resizing;
     this._resizing = null;
     if (resized) this._callbacks.resized?.(drag.rect, resized);
-    else this._callbacks.moved(...this._itemOrigin());
+    else this._callbacks.moved(...itemOrigin(this.item));
     this.sync();
     return Clutter.EVENT_STOP;
   }
@@ -219,4 +277,18 @@ export class EditFrame {
     resetHoverCursor();
     this._callbacks.ended();
   }
+}
+
+// An item's top left corner, stage coordinates. Its x and y, not its
+// allocation, which lags a frame behind a new position.
+function itemOrigin(item: DesktopItem): [number, number] {
+  const [px, py] = item.actor.get_parent()!.get_transformed_position();
+  return [px + item.actor.x, py + item.actor.y];
+}
+
+/** An item's shown part, stage coordinates. */
+export function itemRect(item: DesktopItem): Rect {
+  const [x, y] = itemOrigin(item);
+  const [bx, by, width, height] = item.bounds();
+  return { x: x + bx, y: y + by, width, height };
 }

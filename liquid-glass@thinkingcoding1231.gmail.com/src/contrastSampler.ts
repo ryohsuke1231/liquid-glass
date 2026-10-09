@@ -27,6 +27,9 @@ const BACKDROP_COVERS_GLASS_ALPHA = 190;
 const READABILITY_FLIP_COOLDOWN = 3;
 const BACKGROUND_REALLY_MOVED = 0.15;
 const BACKDROP_SEARCH_DEPTH = 8;
+// With preferredMinContrast set, the preferred colour comes back once it
+// reads this many times better than that.
+const PREFERRED_RETURN = 1.15;
 
 export const AdaptiveContrastConfig = {
   enabled: true,
@@ -37,6 +40,9 @@ export const AdaptiveContrastConfig = {
   darkTextColor: '#1a1a1a',
   // 'light'/'dark' name the text colour to favour; 'auto' favours neither.
   preference: 'auto' as AdaptiveColorPreference,
+  // When above 0, the preferred colour is kept while its contrast ratio is
+  // at least this, not only when the background favours neither colour.
+  preferredMinContrast: 0,
 };
 
 /** Which text colour the user wants the ambiguous cases resolved to. */
@@ -362,7 +368,7 @@ function _readSignature(paintSignature?: () => number): number | null {
 function _skipKey(rects: SampleRect[], config: typeof AdaptiveContrastConfig): string {
   return rects
     .map(r => `${Math.round(r.x)},${Math.round(r.y)},${Math.round(r.width)},${Math.round(r.height)}`)
-    .join(';') + `|${config.samplePerElement ? 'e' : 'm'}|${config.preference ?? 'auto'}|${config.lightTextColor}|${config.darkTextColor}`;
+    .join(';') + `|${config.samplePerElement ? 'e' : 'm'}|${config.preference ?? 'auto'}|${config.preferredMinContrast}|${config.lightTextColor}|${config.darkTextColor}`;
 }
 
 type LuminanceShot = { data: ArrayLike<number>, width: number, height: number, stride: number, channels: number, step: number };
@@ -509,10 +515,14 @@ export class StageContrastSampler {
     const preferDark = preference === 'dark';
     // From the raw contrasts, so it reflects what is on screen now.
     const ambiguous = Math.max(rawLight, rawDark) < Math.min(rawLight, rawDark) * AMBIGUOUS_RATIO;
+    const floor = hasPreference ? config.preferredMinContrast : 0;
+    // The contrast a colour needs to be called readable.
+    const readableAt = (bright: boolean) => floor > 0 && bright === preferDark ? floor : MIN_READABLE_CONTRAST;
     // Per-element decisions keep no history, so the preference is the only
     // stabiliser.
     if (config.samplePerElement) {
-      if (ambiguous && hasPreference) return preferDark ? config.darkTextColor : config.lightTextColor;
+      const preferredReads = floor > 0 && (preferDark ? rawDark : rawLight) >= floor;
+      if ((ambiguous || preferredReads) && hasPreference) return preferDark ? config.darkTextColor : config.lightTextColor;
       return rawDark > rawLight ? config.darkTextColor : config.lightTextColor;
     }
 
@@ -520,7 +530,7 @@ export class StageContrastSampler {
     // colour is unreadable and the other one is not. A configuration change
     // ends the hold: it should apply at once.
     const now = GLib.get_monotonic_time();
-    const holdConfig = `${preference}|${config.lightTextColor}|${config.darkTextColor}`;
+    const holdConfig = `${preference}|${floor}|${config.lightTextColor}|${config.darkTextColor}`;
     if (holdConfig !== this._holdConfig) {
       this._holdConfig = holdConfig;
       this._lastSwitchAt = null;
@@ -528,7 +538,7 @@ export class StageContrastSampler {
     if (this._lastIsBright !== null && this._inSettleHold(now)) {
       const heldContrast = this._lastIsBright ? rawDark : rawLight;
       const otherContrast = this._lastIsBright ? rawLight : rawDark;
-      const heldUnreadable = heldContrast < MIN_READABLE_CONTRAST && otherContrast >= MIN_READABLE_CONTRAST;
+      const heldUnreadable = heldContrast < readableAt(this._lastIsBright) && otherContrast >= readableAt(!this._lastIsBright);
       if (!heldUnreadable)
         return this._lastIsBright ? config.darkTextColor : config.lightTextColor;
     }
@@ -539,7 +549,11 @@ export class StageContrastSampler {
     const lightContrast = contrast(smoothed, light);
     const darkContrast = contrast(smoothed, dark);
     let isBright: boolean;
-    if (ambiguous && hasPreference) {
+    if (floor > 0) {
+      const preferred = preferDark ? darkContrast : lightContrast;
+      const onPreferred = this._lastIsBright === null || this._lastIsBright === preferDark;
+      isBright = preferred >= (onPreferred ? floor : floor * PREFERRED_RETURN) ? preferDark : !preferDark;
+    } else if (ambiguous && hasPreference) {
       // Decided by the measurement alone, so it cannot oscillate.
       isBright = preferDark;
     } else if (this._lastIsBright === null) {
@@ -564,7 +578,7 @@ export class StageContrastSampler {
     this._lastRawLuma = luminance;
 
     const wasBright = isBright;
-    if (rawCurrent < MIN_READABLE_CONTRAST && rawAlternative >= MIN_READABLE_CONTRAST &&
+    if (rawCurrent < readableAt(isBright) && rawAlternative >= readableAt(!isBright) &&
         (jumped || this._roundsSinceFlip >= READABILITY_FLIP_COOLDOWN))
       isBright = !isBright;
 

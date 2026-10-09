@@ -29,9 +29,14 @@ export class AdaptiveTextColor {
   constructor(private _roots: () => Clutter.Actor[], private _glasses: () => BackdropSource[],
     private _logger: Logger, private _label: string) {}
 
-  start(intervalMs: number, preference: AdaptiveColorPreference): void {
+  /**
+   * @param preferredMinContrast When above 0, `preference` is kept while it
+   *   reads at least this well; see AdaptiveContrastConfig.
+   */
+  start(intervalMs: number, preference: AdaptiveColorPreference, preferredMinContrast = 0): void {
     this._config.sampleIntervalMs = intervalMs;
     this._config.preference = preference;
+    this._config.preferredMinContrast = preferredMinContrast;
     this.stop();
     this._first = true;
     this._sampler.reset();
