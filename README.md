@@ -20,6 +20,12 @@ I love the look of Apple's Liquid Glass, but since I don't own any Apple product
 
 ![Liquid Glass Overview Screenshot](assets/whole.png)
 
+Top Bar (one pill / three pills, off by default):
+
+![Top Bar One Pill Screenshot](assets/topbar-one-pill.png)
+
+![Top Bar Three Pills Screenshot](assets/topbar-three-pills.png)
+
 Dash to Dock:
 
 ![Dash to Dock Screenshot](assets/dock.png)
@@ -28,9 +34,12 @@ Notifications:
 
 ![Notifications Screenshot](assets/notification.png)
 
-Panel Menus:
+Panel Menus (right: menus growing from their button, off by default):
 
-![Panel Menu Screenshot](assets/calendar.png)
+<p>
+  <img src="assets/calendar.png" alt="Panel Menu Screenshot" width="49%">
+  <img src="assets/calendar-morphing.gif" alt="Calendar Menu Growing From Its Button" width="49%">
+</p>
 
 Top Bar Menu:
 
@@ -61,6 +70,14 @@ Application Windows:
 OSD:
 
 ![OSD Screenshot](assets/osd.png)
+
+Glass Clock (off by default):
+
+![Glass Clock Screenshot](assets/clock.png)
+
+Desktop Widgets (off by default):
+
+![Desktop Widgets Screenshot](assets/widgets.png)
 
 
 ## Installation (GNOME Extension)
