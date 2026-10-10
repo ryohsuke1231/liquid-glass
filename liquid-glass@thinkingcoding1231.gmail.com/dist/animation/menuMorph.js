@@ -42,11 +42,12 @@ const CONTENT_FADE = [137, 20];
 // throw is that many times the distance, per second.
 const THROW = 16;
 // The push each opening gets on top of the throw, px/s per px of the menu's
-// shorter side, at its strongest: the menu swings aside or dips by at most
-// about 6% of that side before it settles. Its strength is drawn from
-// PUSH_MIN to 1 of that, its direction from anywhere in the lower half.
-const PUSH = 1.3;
-const PUSH_MIN = 0.3;
+// shorter side, at its strongest: the menu swings aside or dips by up to
+// about 15% of that side before it settles. Its strength is drawn from
+// PUSH_MIN to 1 of that (about 10% at the weakest), its direction from
+// anywhere in the lower half.
+const PUSH = 3.65;
+const PUSH_MIN = 0.67;
 // The capsule draws into a drop this many times the button's height across,
 // while it drops this many heights below the button.
 const DROP_SIZE = 1.15;
