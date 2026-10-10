@@ -41,10 +41,10 @@ const CONTENT_FADE = [137, 20];
 const THROW = 16;
 // The push each opening gets on top of the throw, px/s per px of the menu's
 // shorter side, at its strongest: the menu swings aside or dips by up to
-// about 30% of that side before it settles. Its strength is drawn from
-// PUSH_MIN to 1 of that (about 20% at the weakest), its direction from
+// about 15% of that side before it settles. Its strength is drawn from
+// PUSH_MIN to 1 of that (about 10% at the weakest), its direction from
 // anywhere in the lower half.
-const PUSH = 7.3;
+const PUSH = 3.65;
 const PUSH_MIN = 0.67;
 // The capsule draws into a drop this many times the button's height across,
 // while it drops this many heights below the button.
