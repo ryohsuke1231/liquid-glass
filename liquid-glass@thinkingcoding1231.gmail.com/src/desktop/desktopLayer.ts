@@ -12,7 +12,7 @@ import type { Logger } from '../logger.js';
 import { MENU_ANIMATION } from '../shellVersion.js';
 import { UIManager } from '../uiManager.js';
 import { type DesktopItem, type ItemEnv } from './desktopItem.js';
-import { EditFrame } from './editFrame.js';
+import { EditFrame, itemRect } from './editFrame.js';
 import { type Anchor, type Rect, parseAnchors, parsePositions, placeAtFraction, fractionOf, sanitizeAnchor, stackAt } from './placement.js';
 import { WeatherWidget } from './weather.js';
 import { EventsWidget } from './events.js';
@@ -298,6 +298,7 @@ export class DesktopLayer {
     const edit = new EditFrame(item, {
       moved: (x, y) => this._savePosition(item, [x, y], item.size()),
       resized: clock ? (from, to) => this._resized(clock, from, to) : undefined,
+      others: () => [...this._items.values()].filter(other => other !== item && other.shown).map(itemRect),
       ended: () => {
         if (this._edit === edit) this._edit = null;
       },

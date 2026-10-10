@@ -103,21 +103,25 @@ test('each opening is pushed somewhere downwards, never far', () => {
   }
 });
 
-test('closing fades out as it settles into the button\'s capsule', () => {
+test('closing stays a while as the button\'s capsule, then fades out', () => {
   const motion = new MenuMorphMotion(false, BUTTON, MENU, RADIUS);
   assert.ok(near(motion.frame.body, MENU, 0), `body ${motion.frame.body}`);
-  let capsuleAt = null, fadingAt = null;
+  let capsuleAt = null, fadingAt = null, opacityAtCapsule = null;
   const { frame, t } = run(motion, (f, time) => {
     if (fadingAt === null && f.glassOpacity < 1) fadingAt = time;
-    if (capsuleAt === null && near(f.body, BUTTON, 0.01)) capsuleAt = time;
+    if (capsuleAt === null && near(f.body, BUTTON, 0.01)) {
+      capsuleAt = time;
+      opacityAtCapsule = f.glassOpacity;
+    }
     // One body: never taller than the button once it is down there.
     if (capsuleAt !== null) assert.ok(f.body[3] <= BUTTON[3] + 0.01);
   });
   assert.ok(capsuleAt !== null && capsuleAt < 0.8, `capsule at ${capsuleAt}`);
   assert.ok(t < 0.9, `took ${t}s`);
   assert.equal(frame.glassOpacity, 0);
-  assert.ok(fadingAt < capsuleAt, `fades from ${fadingAt}s, on the button at ${capsuleAt}s`);
-  assert.ok(t - capsuleAt <= 0.05, `${t - capsuleAt}s on the button`);
+  assert.ok(fadingAt > capsuleAt, `fades from ${fadingAt}s, on the button at ${capsuleAt}s`);
+  assert.equal(opacityAtCapsule, 1);
+  assert.ok(t - capsuleAt <= 0.25, `${t - capsuleAt}s on the button`);
 });
 
 test('opening, the corners square off while the glass grows, not after', () => {
@@ -167,4 +171,26 @@ test('the glass never jumps from one frame to the next', () => {
       last = f;
     });
   }
+});
+
+test('closing, the refraction and blur are all the way down when the glass reaches the button', () => {
+  const motion = new MenuMorphMotion(false, BUTTON, MENU, RADIUS);
+  let touchedAt = null, softAt = null, last = 0;
+  run(motion, (f, time) => {
+    assert.ok(f.soften >= last, `soften went back to ${f.soften} at ${time}s`);
+    last = f.soften;
+    if (softAt === null && f.soften === 1) softAt = time;
+    if (touchedAt === null && f.body[1] <= BUTTON[1] + BUTTON[3]) touchedAt = time;
+  });
+  assert.equal(motion.frame.soften, 1);
+  assert.ok(softAt !== null && softAt <= touchedAt, `soft at ${softAt}s, on the button at ${touchedAt}s`);
+  assert.ok(new MenuMorphMotion(false, BUTTON, MENU, RADIUS).step(1 / 60).soften === 0);
+});
+
+test('closing, the glass rounds off while it shrinks, as the opening squares off while it grows', () => {
+  const motion = new MenuMorphMotion(false, BUTTON, MENU, RADIUS);
+  let frame = null;
+  for (let i = 0; i < 6; i++) frame = motion.step(1 / 60);
+  const [, , w, h] = frame.body;
+  assert.ok(frame.bodyRadius > 0.6 * Math.min(w, h) / 2, `radius ${frame.bodyRadius} on ${w}x${h}`);
 });

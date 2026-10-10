@@ -43,6 +43,31 @@ test('noise near the crossover does not alternate text polarity', () => {
   const first = sampler.decideTextColor(0.18);
   for (let i = 0; i < 100; i++) assert.equal(sampler.decideTextColor(i % 2 ? 0.18 : 0.195), first);
 });
+test('with a contrast floor, the preferred colour stays while it reads that well', () => {
+  const light = { ...config, preference: 'light', preferredMinContrast: 3 };
+  // Dark reads better here, but light still reads 3.3:1.
+  const background = 0.94 / 3.3 - 0.05;
+  assert.equal(new Sampler().decideTextColor(background, { ...light, preferredMinContrast: 0 }), config.darkTextColor);
+  const sampler = new Sampler();
+  for (let i = 0; i < 20; i++) assert.equal(sampler.decideTextColor(background, light), config.lightTextColor);
+  assert.equal(new Sampler().decideTextColor(0.3, light), config.darkTextColor);
+});
+test('the preferred colour comes back only once it reads clearly better than the floor', () => {
+  const light = { ...config, preference: 'light', preferredMinContrast: 3 };
+  const sampler = new Sampler();
+  assert.equal(sampler.decideTextColor(0.3, light), config.darkTextColor);
+  // Light reads 3.1:1: enough to stay on it, not to go back to it.
+  for (let i = 0; i < 30; i++) assert.equal(sampler.decideTextColor(0.25, light), config.darkTextColor);
+  let colour = null;
+  for (let i = 0; i < 30; i++) colour = sampler.decideTextColor(0.18, light);
+  assert.equal(colour, config.lightTextColor);
+});
+test('with a contrast floor, unreadable preferred text still switches at once', () => {
+  const light = { ...config, preference: 'light', preferredMinContrast: 3 };
+  const sampler = new Sampler();
+  for (let i = 0; i < 10; i++) sampler.decideTextColor(0.1, light);
+  assert.equal(sampler.decideTextColor(0.6, light), config.darkTextColor);
+});
 test('sampling uses transformed bounds, clips screen edges, ignores hidden actors', () => {
   assert.deepEqual(_getActorRect({ mapped: true, rect: [100.5, 50.25, 80, 20] }), { x: 100, y: 50, width: 81, height: 21 });
   assert.deepEqual(_getActorRect({ mapped: true, rect: [-10, 10, 30, 20] }), { x: 0, y: 10, width: 20, height: 20 });

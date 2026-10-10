@@ -231,6 +231,29 @@ test('advanced surface edit changes only its own setting', () => {
   assert.equal(group.visible, false);
 });
 
+test('advanced top bar group owns its style and shows spacing only for pills', () => {
+  const f = fixture({'preferences-advanced': true});
+  const effects = f.window.children.find(page => page.title === 'Effects').children
+    .find(group => group.title === 'Individual effects');
+  assert.ok(!effects.children.some(row => row.title === 'Top bar'));
+  f.row('Surface').selected = 8;
+  const group = f.window.children[0].children.find(group => group.title === 'Top bar');
+  const style = group.children.find(row => row.title === 'Style');
+  const margin = group.children.find(row => row.title === 'Margin top');
+  const padding = group.children.find(row => row.title === 'Padding right');
+  assert.equal(margin.visible, false);
+  style.selected = 1;
+  assert.deepEqual(f.writes.at(-1), {'top-bar-style': 'pill'});
+  assert.equal(margin.visible, true);
+  assert.equal(padding.visible, true);
+  margin.value = 12;
+  assert.deepEqual(f.writes.at(-1), {'top-bar-margin-top': 12});
+  style.selected = 2;
+  assert.equal(margin.visible, true);
+  style.selected = 0;
+  assert.equal(padding.visible, false);
+});
+
 test('advanced animation intervals stay within their schema ranges on every animated surface', () => {
   const f = fixture({'preferences-advanced': true});
   for (const [index, title, surface] of [[1, 'Calendar', 'menu'], [2, 'Other top bar menus', 'panel-menu'],

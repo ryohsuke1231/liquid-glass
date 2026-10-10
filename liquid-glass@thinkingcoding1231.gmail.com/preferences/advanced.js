@@ -33,6 +33,12 @@ function addLayout(group, controls, surface, appearance) {
     controls.toggle(group, 'Match quick settings height', key);
     controls.watch([key], () => { rows.get('scale').sensitive = !controls.settings.get_boolean(key); });
   }
+  if (surface === 'top-bar') {
+    controls.watch(['top-bar-style'], () => {
+      const shown = controls.settings.get_value('top-bar-style').deep_unpack() !== 'off';
+      for (const row of rows.values()) row.visible = shown;
+    });
+  }
   if (surface === 'quick-settings') {
     controls.watch(['quick-settings-apply-to'], () => {
       const buttons = controls.settings.get_value('quick-settings-apply-to').deep_unpack() === 1;
@@ -45,6 +51,7 @@ function addLayout(group, controls, surface, appearance) {
 
 function addSurface(page, controls, surface, title) {
   const group = controls.group(page, title);
+  if (surface === 'top-bar') controls.choice(group, 'Style', TOP_BAR, 'The bar itself; menus have their own entries', false);
   const appearance = addNumbers(group, controls, APPEARANCE, `${surface}-`);
   controls.color(group, 'Tint', [`${surface}-tint-color`]);
   addLayout(group, controls, surface, appearance);
@@ -97,10 +104,8 @@ export function buildAdvancedPreferences(pages, controls) {
   selectorGroup.add(selector);
   const surfaces = new Map();
   const effects = controls.group(pages.effects, 'Individual effects');
-  for (const [surface, title, key, hint] of SURFACE_OPTIONS) {
+  for (const [surface, title, key, hint] of SURFACE_OPTIONS)
     if (key && surface !== 'application') controls.toggle(effects, title, key, hint ?? '');
-    else if (surface === 'top-bar') controls.choice(effects, title, TOP_BAR, 'The bar itself; menus are below', false);
-  }
   const groups = [selectorGroup, effects, addPanelMenus(pages.effects, controls),
     ...addRendering(pages.rendering, controls)];
   let visible = false;

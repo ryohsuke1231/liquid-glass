@@ -65,8 +65,9 @@ export class MediaWidget extends GlassCard {
         this._bars = new St.DrawingArea({ width: BAR_COUNT * BAR_WIDTH + (BAR_COUNT - 1) * BAR_GAP, height: BAR_MAX,
             y_align: Clutter.ActorAlign.CENTER });
         this._bars.connect('repaint', () => this._drawBars());
-        // The text's colour, which automatic contrast changes.
-        this._bars.connect('style-changed', () => this._bars.queue_repaint());
+        // The bars are drawn in the title's colour, which automatic contrast sets
+        // on the labels only.
+        this._title.connect('style-changed', () => this._bars.queue_repaint());
         row.add_child(this._art);
         row.add_child(text);
         row.add_child(this._bars);
@@ -222,11 +223,11 @@ export class MediaWidget extends GlassCard {
         }, 16);
     }
 
-    // Rounded lines standing on the same baseline, in the text's colour.
+    // Rounded lines standing on the same baseline, in the title's colour.
     _drawBars() {
         const cr = this._bars.get_context();
         const [, height] = this._bars.get_surface_size();
-        const color = this._bars.get_theme_node().get_foreground_color();
+        const color = this._title.get_theme_node().get_foreground_color();
         cr.setSourceRGBA(color.red / 255, color.green / 255, color.blue / 255, color.alpha / 255);
         cr.setLineCap(Cairo.LineCap.ROUND);
         cr.setLineWidth(BAR_WIDTH);

@@ -1,6 +1,7 @@
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import Clutter from 'gi://Clutter';
 import Gio from 'gi://Gio';
+import St from 'gi://St';
 
 import { BackdropGlass } from './rendering/backdropGlass.js';
 import type { GlassRegion } from './rendering/glassRenderer.js';
@@ -18,10 +19,8 @@ export type TopBarStyle = 'off' | 'pill' | 'islands';
 const SHADER_PADDING = 20;
 // Room below the bar for the single pill's shadow.
 const SHADOW_ROOM = 48;
-// The pills sit this far inside the bar's height, px.
-const INSET_Y = 3;
-// Room on either side of an island's buttons, px.
-const ISLAND_PAD_X = 4;
+const SIDES = ['top', 'bottom', 'left', 'right'] as const;
+type Insets = Record<typeof SIDES[number], number>;
 
 function sanitizeStyle(value: string): TopBarStyle {
   return value === 'pill' || value === 'islands' ? value : 'off';
@@ -40,6 +39,11 @@ export class TopBarManager {
   private _frameSignalId = 0;
   private _lastKey = '';
   private _text: AdaptiveTextColor;
+  // The bar and its boxes, with the inline styles they had before ours.
+  private _savedStyles: [St.Widget, string | null][] = [];
+  private _panelStyleId = 0;
+  private _margin: Insets = { top: 0, bottom: 0, left: 0, right: 0 };
+  private _padding: Insets = { top: 0, bottom: 0, left: 0, right: 0 };
 
   constructor(private _path: string, private _settings: Gio.Settings, private _logger: Logger) {
     this._text = new AdaptiveTextColor(() => this._textRoots(), () => (this._glass ? [this._glass] : []),
@@ -54,6 +58,10 @@ export class TopBarManager {
       watch(`top-bar-${key}`, () => this._applyMaterial());
     for (const key of ['enable-adaptive-text-color', 'sample-interval-ms', 'adaptive-text-preference'])
       watch(`top-bar-${key}`, () => this._syncText());
+    for (const side of SIDES) {
+      watch(`top-bar-margin-${side}`, () => this._applyLayout());
+      watch(`top-bar-padding-${side}`, () => this._applyLayout());
+    }
     this._apply();
   }
 
@@ -86,6 +94,10 @@ export class TopBarManager {
     Main.layoutManager.uiGroup.insert_child_below(glass, panelBox);
     this._applyMaterial();
     this._lastKey = '';
+    this._savedStyles = [panel, panel._leftBox, panel._centerBox, panel._rightBox].map(actor => [actor, actor.get_style()]);
+    // The theme can change the bar's height under us.
+    this._panelStyleId = panel.connect('style-changed', () => this._applyLayout());
+    this._applyLayout();
 
     startSyncLoop(this._frameSignalSlot, this._frameSlot, {
       // At shell shutdown the stage destroys the glass before we are told.
@@ -110,6 +122,38 @@ export class TopBarManager {
     glass.setBrightness(this._settings.get_double(this._key('brightness')));
     glass.setContrast(this._settings.get_double(this._key('contrast')));
     glass.setSaturation(this._settings.get_double(this._key('saturation')));
+  }
+
+  private _insets(kind: 'margin' | 'padding'): Insets {
+    return Object.fromEntries(SIDES.map(side => [side, this._settings.get_int(this._key(`${kind}-${side}`))])) as Insets;
+  }
+
+  // The bar grows by the margin and padding so the buttons keep the theme's
+  // height, and its boxes are padded to put the buttons inside the pills.
+  private _applyLayout(): void {
+    if (!this._glass) return;
+    const panel = Main.panel as any;
+    const margin = this._margin = this._insets('margin');
+    const padding = this._padding = this._insets('padding');
+    const top = margin.top + padding.top, bottom = margin.bottom + padding.bottom;
+    const rtl = panel.get_text_direction() === Clutter.TextDirection.RTL;
+    const [first, last] = rtl ? [panel._rightBox, panel._leftBox] : [panel._leftBox, panel._rightBox];
+    const islands = this._style === 'islands';
+    for (const [actor, original] of this._savedStyles) {
+      let style;
+      if (actor === panel) {
+        // A theme height caps the bar's natural height before St adds the padding;
+        // without one, the padded boxes already make the bar tall enough.
+        if (panel.get_theme_node().get_height() < 0) continue;
+        style = `padding-top: ${top}px; padding-bottom: ${bottom}px;`;
+      } else {
+        const left = actor === first ? margin.left + padding.left : islands ? padding.left : 0;
+        const right = actor === last ? margin.right + padding.right : islands ? padding.right : 0;
+        style = `padding: ${top}px ${right}px ${bottom}px ${left}px;`;
+      }
+      const own = original?.trim().replace(/;$/, '');
+      actor.set_style(own ? `${own}; ${style}` : style);
+    }
   }
 
   private _syncText(): void {
@@ -157,18 +201,19 @@ export class TopBarManager {
     const height = Math.round(panel.height);
     if (!Number.isFinite(x) || !Number.isFinite(y) || width < 1 || height < 1) return;
 
-    const inset = Math.min(INSET_Y, height / 4);
+    const { top, bottom } = this._margin;
+    const pillHeight = height - top - bottom;
+    const left = this._margin.left, right = width - this._margin.right;
     const rects: number[][] = [];
     if (this._style === 'pill') {
-      rects.push([inset * 2, inset, width - inset * 4, height - inset * 2]);
+      rects.push([left, top, right - left, pillHeight]);
     } else {
       for (const box of [panel._leftBox, panel._centerBox, panel._rightBox]) {
-        const extent = box ? this._boxExtent(box) : null;
+        const extent = this._boxExtent(box);
         if (!extent) continue;
-        // The outer buttons reach the screen's edges; their islands keep the single pill's margin.
-        const x0 = Math.max(extent[0] - ISLAND_PAD_X, inset * 2);
-        const x1 = Math.min(extent[1] + ISLAND_PAD_X, width - inset * 2);
-        if (x1 > x0) rects.push([x0, inset, x1 - x0, height - inset * 2]);
+        const x0 = Math.max(extent[0] - this._padding.left, left);
+        const x1 = Math.min(extent[1] + this._padding.right, right);
+        if (x1 > x0) rects.push([x0, top, x1 - x0, pillHeight]);
       }
     }
 
@@ -205,6 +250,11 @@ export class TopBarManager {
       if (isActorValid(glass)) glass.destroy();
       (Main.panel as any).remove_style_class_name('liquid-glass-transparent');
     }
+    if (this._panelStyleId) Main.panel.disconnect(this._panelStyleId);
+    this._panelStyleId = 0;
+    for (const [actor, style] of this._savedStyles)
+      if (isActorValid(actor)) actor.set_style(style);
+    this._savedStyles = [];
     this._style = 'off';
   }
 

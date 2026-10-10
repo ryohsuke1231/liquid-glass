@@ -809,6 +809,54 @@
       <default>1.5</default>
       <summary>Saturation</summary>
     </key>
+    <key name="top-bar-margin-top" type="i">
+      <range min="0" max="100"/>
+      <default>3</default>
+      <summary>Margin top (px)</summary>
+      <description>Space between the pills and the screen's edge; the bar grows to make room for it.</description>
+    </key>
+    <key name="top-bar-margin-bottom" type="i">
+      <range min="0" max="100"/>
+      <default>3</default>
+      <summary>Margin bottom (px)</summary>
+      <description>Space between the pills and the screen's edge; the bar grows to make room for it.</description>
+    </key>
+    <key name="top-bar-margin-left" type="i">
+      <range min="0" max="100"/>
+      <default>6</default>
+      <summary>Margin left (px)</summary>
+      <description>Space between the pills and the screen's edge; the bar grows to make room for it.</description>
+    </key>
+    <key name="top-bar-margin-right" type="i">
+      <range min="0" max="100"/>
+      <default>6</default>
+      <summary>Margin right (px)</summary>
+      <description>Space between the pills and the screen's edge; the bar grows to make room for it.</description>
+    </key>
+    <key name="top-bar-padding-top" type="i">
+      <range min="0" max="100"/>
+      <default>0</default>
+      <summary>Padding top (px)</summary>
+      <description>Space between the pills' edge and the buttons inside them.</description>
+    </key>
+    <key name="top-bar-padding-bottom" type="i">
+      <range min="0" max="100"/>
+      <default>0</default>
+      <summary>Padding bottom (px)</summary>
+      <description>Space between the pills' edge and the buttons inside them.</description>
+    </key>
+    <key name="top-bar-padding-left" type="i">
+      <range min="0" max="100"/>
+      <default>4</default>
+      <summary>Padding left (px)</summary>
+      <description>Space between the pills' edge and the buttons inside them.</description>
+    </key>
+    <key name="top-bar-padding-right" type="i">
+      <range min="0" max="100"/>
+      <default>4</default>
+      <summary>Padding right (px)</summary>
+      <description>Space between the pills' edge and the buttons inside them.</description>
+    </key>
     <key name="top-bar-enable-adaptive-text-color" type="b">
       <default>true</default>
       <summary>Adapt the top bar's text color to what is behind it</summary>

@@ -65,13 +65,21 @@ const LENS_S = 0.3;
 // Closing: the drop starts to turn into the capsule once it is this many
 // button heights from where the capsule rests, or this long after closing
 // began whatever, and rises into place as it does over CLOSE_CAPSULE_S. It
-// fades over FADE_S from FADE_DELAY_S after it starts to: on the button it
-// only hides the clock, bent by the glass.
+// fades over FADE_S from FADE_DELAY_S after it starts to, so it stays a
+// moment as the capsule, and then goes: on the button it only hides
+// the clock, bent by the glass.
 const ARRIVE_HEIGHTS = 2;
 const ARRIVE_MAX_S = 0.6;
 const CLOSE_CAPSULE_S = 0.16;
-const FADE_DELAY_S = 0.04;
-const FADE_S = 0.14;
+const FADE_DELAY_S = 0.24;
+const FADE_S = 0.12;
+// Over the button the bent, blurred clock looks muddy, so the refraction and
+// the blur are taken down (MorphFrame.soften) as the drop comes back to the
+// button, from this many button heights away, and are all the way down when
+// it touches the button. Once on its way into the capsule, they are down
+// SOFTEN_S after that at the latest.
+const SOFTEN_HEIGHTS = 1.5;
+const SOFTEN_S = 0.1;
 
 function cubicBezier(x1: number, y1: number, x2: number, y2: number): (t: number) => number {
   const at = (t: number, a: number, b: number) => 3 * a * t * (1 - t) ** 2 + 3 * b * t * t * (1 - t) + t ** 3;
@@ -111,6 +119,8 @@ export interface MorphFrame {
   // How deep in the glass the content looks, 0 (at the surface) to 1.
   lens: number;
   glassOpacity: number;
+  // How far the refraction and the blur are taken down, 0 (as set) to 1.
+  soften: number;
   // Opening: at rest on the menu. Closing: faded out on the button.
   done: boolean;
 }
@@ -132,6 +142,10 @@ export class MenuMorphMotion {
   // Closing: when the drop came near the button, and its size then.
   private _arrivedAt = -1;
   private _arrivedSize: number[] = [];
+  // Closing: the furthest the body has been from the button, and how far the
+  // refraction and blur are down; they never come back up.
+  private _furthest = 0;
+  private _soften = 0;
   private _frame: MorphFrame;
 
   /**
@@ -144,9 +158,9 @@ export class MenuMorphMotion {
     random: () => number = Math.random) {
     const start: MorphFrame = from ?? (opening
       ? { body: [..._buttonRect], bodyRadius: _buttonRect[3] / 2, contentScale: CONTENT_CLOSED_SCALE,
-        contentOpacity: 0, lens: 1, glassOpacity: 1, done: false }
+        contentOpacity: 0, lens: 1, glassOpacity: 1, soften: 0, done: false }
       : { body: [..._menu], bodyRadius: _menuRadius, contentScale: 1, contentOpacity: 1, lens: 0, glassOpacity: 1,
-        done: false });
+        soften: 0, done: false });
     this._frame = start;
     this._capsuleS = opening && !from ? CAPSULE_S : 0;
 
@@ -233,7 +247,7 @@ export class MenuMorphMotion {
       const w = lerp(bw, drop, k), h = lerp(bh, drop, k);
       const y = by + bh / 2 + this._fall() * t ** 1.5;
       return { body: [bx + bw / 2 - w / 2, y - h / 2, w, h], bodyRadius: Math.min(w, h) / 2,
-        contentScale: CONTENT_CLOSED_SCALE, contentOpacity: 0, lens: 1, glassOpacity: 1, done: false };
+        contentScale: CONTENT_CLOSED_SCALE, contentOpacity: 0, lens: 1, glassOpacity: 1, soften: 0, done: false };
     }
     this._stepSprings(Math.min(dt, this._t - this._capsuleS));
     const t = this._t - this._capsuleS;
@@ -253,6 +267,7 @@ export class MenuMorphMotion {
       contentOpacity: clamp01(this._opacity.value),
       lens: this._lensFrom * (1 - clamp01(t / LENS_S) ** 2),
       glassOpacity: 1,
+      soften: 0,
       done: !moving && t >= OPEN_SIZE_S,
     };
   }
@@ -264,7 +279,8 @@ export class MenuMorphMotion {
     const k = easeOut(clamp01(t / CLOSE_SIZE_S));
     const w = lerp(this._sizeFrom[0], drop, k);
     const h = lerp(this._sizeFrom[1], drop, k);
-    const radius = lerp(this._radiusFrom, drop / 2, k);
+    // Rounding off into the drop as it shrinks, as the opening squares off as it grows.
+    const radius = lerp(this._radiusFrom, Math.min(w, h) / 2, k);
     let body = [this._x.value - w / 2, this._y.value - h / 2, w, h];
     let bodyRadius = Math.min(radius, w / 2, h / 2);
 
@@ -275,9 +291,10 @@ export class MenuMorphMotion {
       this._arrivedSize = [w, h];
     }
     let glassOpacity = 1;
+    let since = -1;
     if (this._arrivedAt >= 0) {
       // Into the capsule as it rises, ending on the button wherever the springs are.
-      const since = t - this._arrivedAt;
+      since = t - this._arrivedAt;
       const c = easeInOut(clamp01(since / CLOSE_CAPSULE_S));
       const [aw, ah] = this._arrivedSize;
       const [, , bw, bh] = this._buttonRect;
@@ -285,8 +302,16 @@ export class MenuMorphMotion {
       const cx = lerp(this._x.value, hx, c), cy = lerp(this._y.value, hy, c);
       body = [cx - cw / 2, cy - ch / 2, cw, ch];
       bodyRadius = Math.min(cw, ch) / 2;
-      glassOpacity = 1 - clamp01((since - FADE_DELAY_S) / FADE_S);
+      glassOpacity = 1 - easeInOut(clamp01((since - FADE_DELAY_S) / FADE_S));
     }
+    // Measured from the furthest it got, so a menu that opened right below
+    // the button does not start out half way down.
+    const gap = rectGap(body, this._buttonRect);
+    this._furthest = Math.max(this._furthest, gap);
+    const ramp = Math.min(this._buttonRect[3] * SOFTEN_HEIGHTS, this._furthest);
+    const closeness = ramp > 0 ? 1 - gap / ramp : 1;
+    this._soften = Math.max(this._soften, clamp01(closeness), since >= 0 ? clamp01(since / SOFTEN_S) : 0);
+    const soften = this._soften;
     return {
       body,
       bodyRadius,
@@ -294,9 +319,17 @@ export class MenuMorphMotion {
       contentOpacity: clamp01(this._opacity.value),
       lens: 0,
       glassOpacity,
+      soften,
       done: glassOpacity === 0,
     };
   }
+}
+
+// How far apart two rects are, 0 when they touch or overlap.
+function rectGap(a: Rect, b: Rect): number {
+  const dx = Math.max(b[0] - (a[0] + a[2]), a[0] - (b[0] + b[2]), 0);
+  const dy = Math.max(b[1] - (a[1] + a[3]), a[1] - (b[1] + b[3]), 0);
+  return Math.hypot(dx, dy);
 }
 
 function centre(r: Rect): number[] {

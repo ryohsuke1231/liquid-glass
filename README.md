@@ -20,6 +20,12 @@ I love the look of Apple's Liquid Glass, but since I don't own any Apple product
 
 ![Liquid Glass Overview Screenshot](assets/whole.png)
 
+Top Bar (one pill / three pills, off by default):
+
+![Top Bar One Pill Screenshot](assets/topbar-one-pill.png)
+
+![Top Bar Three Pills Screenshot](assets/topbar-three-pills.png)
+
 Dash to Dock:
 
 ![Dash to Dock Screenshot](assets/dock.png)
@@ -28,9 +34,12 @@ Notifications:
 
 ![Notifications Screenshot](assets/notification.png)
 
-Panel Menus:
+Panel Menus (right: menus growing from their button, off by default):
 
-![Panel Menu Screenshot](assets/calendar.png)
+<p>
+  <img src="assets/calendar.png" alt="Panel Menu Screenshot" width="49%">
+  <img src="assets/calendar-morphing.gif" alt="Calendar Menu Growing From Its Button" width="49%">
+</p>
 
 Top Bar Menu:
 
@@ -61,6 +70,14 @@ Application Windows:
 OSD:
 
 ![OSD Screenshot](assets/osd.png)
+
+Glass Clock (off by default):
+
+![Glass Clock Screenshot](assets/clock.png)
+
+Desktop Widgets (off by default):
+
+![Desktop Widgets Screenshot](assets/widgets.png)
 
 
 ## Installation (GNOME Extension)
@@ -96,9 +113,9 @@ The effect can be enabled or disabled per UI element on the **Effects** page. In
 
 | Element | Notes / Special features |
 | --- | --- |
-| **Top Bar** | The bar itself, as **one pill** across the screen or **three pills** behind its groups of buttons (activities, clock, status icons), chosen on the Effects page. Off by default. Supports **adaptive text coloring**. |
+| **Top Bar** | The bar itself, as **one pill** across the screen or **three pills** behind its groups of buttons (activities, clock, status icons), chosen on the Effects page (Appearance → Top bar in the Advanced view). The space around the pills (**margin**) and between their edges and the buttons (**padding**) can be set per side in the Advanced view; the bar grows to make room, and maximized windows stay below it. Off by default. Supports **adaptive text coloring**. |
 | **Dash to Dock** | Glass behind the dock. Adds a bottom margin control so the dock can float above the screen edge. Works with the Dash to Dock / Ubuntu Dock extension. |
-| **Calendar & Other Top Bar Menus** | Glass behind the calendar (clock) menu and behind the menus of the other top bar indicators — the keyboard layout and accessibility menus, and the indicators other extensions add, including [ArcMenu](https://gitlab.com/arcmenu/ArcMenu)'s menu and its right-click menu. Each detected menu can be switched off on its own. Menus **grow out of their button**, after [liquid-dom](https://github.com/AndrewPrifer/liquid-dom)'s menu demo: the button's highlight drops out of the button and rounds off into a drop of glass, which is thrown out to where the menu will be — each time with a small push in a random downward direction — and swells into the menu, its items coming up through the glass, seen bent by its rim at first. Closing runs it back: the menu shrinks into a drop that rises into the button, widening into its highlight on the way, and fades as it settles. Off by default (Appearance → Behavior → "Menus grow from their button"). With that off, a **custom spring animation** (stiffness / damping / mass) scales the menu instead. Also supports **adaptive text coloring**. |
+| **Calendar & Other Top Bar Menus** | Glass behind the calendar (clock) menu and behind the menus of the other top bar indicators — the keyboard layout and accessibility menus, and the indicators other extensions add, including [ArcMenu](https://gitlab.com/arcmenu/ArcMenu)'s menu and its right-click menu. Each detected menu can be switched off on its own. Menus **grow out of their button**, after [liquid-dom](https://github.com/AndrewPrifer/liquid-dom)'s menu demo: the button's highlight drops out of the button and rounds off into a drop of glass, which is thrown out to where the menu will be — each time with a small push in a random downward direction — and swells into the menu, its items coming up through the glass, seen bent by its rim at first. Closing runs it back: the menu shrinks into a drop that rises into the button, widening into its highlight on the way, and fades once it has become the highlight. Off by default (Appearance → Behavior → "Menus grow from their button"). With that off, a **custom spring animation** (stiffness / damping / mass) scales the menu instead. Also supports **adaptive text coloring**. |
 | **Notifications** | Glass behind notification banners. Supports **adaptive text coloring** and a hide safety margin to avoid flicker while the banner is dismissed. |
 | **Quick Settings** | Two modes: **Whole menu** applies one sheet of glass behind the whole panel, and **Individual buttons** turns every toggle button into its own piece of glass, keeping each toggle's own accent color (see "Button base color"). Also supports spring animation and adaptive text coloring. |
 | **OSD** | Glass behind the on-screen displays (volume, brightness, and so on), with adaptive text coloring. |
@@ -133,6 +150,8 @@ Cards of glass on the desktop, stacked in a corner or the center of the primary 
 - **Weather** — the current weather and the next hours, for a city or town searched for in the preferences, down to small towns that GNOME Weather has no location for; without one, for the location set in [GNOME Weather](https://apps.gnome.org/Weather/), as the calendar menu shows it. With GNOME Weather installed the forecast comes from libgweather (MET Norway), as in GNOME Weather; without it, from [Open-Meteo](https://open-meteo.com/). The card names its source. Click the card to open GNOME Weather.
 - **Up next** — the rest of today's events and tomorrow's, from the calendars the calendar menu shows. Click it to open GNOME Calendar.
 - **Now playing** — the track a music or video player is playing (any MPRIS player), with its cover art, previous, play/pause and next buttons, and five bars beside the title that follow the sound being played (an FFT of the default output, through GStreamer). GNOME shows its microphone indicator while the bars listen; they can be switched off in the preferences (**Sound bars**). Hidden while no player is running.
+
+While one is moved, dotted guides show where it lines up with the others and the clock (the same edge, or the same center line), with the middle of the screen, and where it sits as far from one item as that item is from the next; near such a place it snaps onto it. Their text takes the light or dark color set as preferred in the preferences for as long as that stays readable on the wallpaper behind it, so it does not keep flipping on a busy background.
 
 The widgets and the clock are hidden in the overview, together with the windows. With desktop icons ([Desktop Icons NG](https://gitlab.com/rastersoft/desktop-icons-ng)) they sit above the icons, so they can be clicked.
 
@@ -258,6 +277,7 @@ A significant part of this codebase was written with the help of AI coding assis
 - [x] Menus that grow out of their button as in liquid-dom, with their items seen through the glass; tall clock digits that keep their stroke width
 - [x] Sound bars on the Now playing widget; menus that grow as one drop of glass; tall clock digits that grow evenly
 - [x] Choose how the clock's digits grow taller (evenly or along their upright strokes), and make them in a process of their own so the shell never stalls for them
+- [x] Snapping guides for moving the clock and the widgets
 
 ### Next
 - [ ] Publish to extensions.gnome.org (not approved yet)
