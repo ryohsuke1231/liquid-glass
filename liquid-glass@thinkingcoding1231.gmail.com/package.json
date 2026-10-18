@@ -5,17 +5,19 @@
   "scripts": {
     "build": "tsc && node build/space-output.cjs dist",
     "watch": "tsc -w",
+    "lint": "oxlint",
     "pack": "rm -rf dist && npm run build && gnome-extensions pack --force --extra-source=dist --extra-source=preferences --extra-source=shaders --extra-source=fonts --extra-source=media --out-dir=. ."
   },
   "devDependencies": {
-    "@girs/gnome-shell": "^50.0.0",
-    "typescript": "^6.0.3"
+    "@girs/gnome-shell": "^50.0.4",
+    "typescript": "^6.0.3",
+    "oxlint": "^0.16.0"
   },
   "dependencies": {
     "@girs/clutter-17": "^17.0.0-4.0.0-rc.15",
-    "@girs/gio-2.0": "^2.88.0-4.0.0-rc.15",
+    "@girs/gio-2.0": "^5.5.0",
     "@girs/meta-17": "^17.0.0-4.0.0-rc.15",
     "@girs/st-13": "^13.0.0-4.0.0-rc.15",
-    "@girs/gjs": "^5.4.0"
+    "@girs/gjs": "^5.5.0"
   }
 }
