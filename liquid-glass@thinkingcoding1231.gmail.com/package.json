@@ -10,7 +10,7 @@
   },
   "devDependencies": {
     "@girs/gnome-shell": "^50.0.4",
-    "typescript": "^6.0.3",
+    "typescript": "6.0.3",
     "oxlint": "^0.16.0"
   },
   "dependencies": {

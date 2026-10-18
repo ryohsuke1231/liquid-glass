@@ -193,7 +193,7 @@ class AdaptiveColorTweener {
     this._laterId = 0;
     const now = GLib.get_monotonic_time();
 
-    for (const [actor, e] of [...this._entries]) {
+    for (const [actor, e] of this._entries) {
       if (!isActorValid(actor)) { this._entries.delete(actor); continue; }
 
       const progress = this._applyEntry(e, now);

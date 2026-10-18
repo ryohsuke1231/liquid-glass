@@ -10,6 +10,7 @@ import { buildStyleMap } from './styleMap.js';
 import { serveRequests } from '../workers/workerProcess.js';
 // The size the analysis is tuned at; the symbol is taken from the icon drawn at twice that.
 const ANALYSIS_SIZE = 128;
+
 function write(path, bytes) {
     GLib.mkdir_with_parents(GLib.path_get_dirname(path), 0o700);
     const file = Gio.File.new_for_path(path);
@@ -25,6 +26,7 @@ function write(path, bytes) {
         });
     });
 }
+
 await serveRequests(async ({ file, cache }) => {
     const analysis = analyzeIcon(await drawIcon(file, ANALYSIS_SIZE));
     const map = buildStyleMap(analysis, await drawIcon(file, ANALYSIS_SIZE * 2));

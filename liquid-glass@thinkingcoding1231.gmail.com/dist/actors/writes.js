@@ -5,14 +5,18 @@
 // reading the GObject properties back.
 // global._lgGlass.diffWrites(false) restores unconditional writes.
 let _diffWritesEnabled = true;
+
 export function setDiffWritesEnabled(enabled) {
     _diffWritesEnabled = !!enabled;
 }
+
 export function isDiffWritesEnabled() {
     return _diffWritesEnabled;
 }
+
 // What each actor was last given, per setter.
 const _lastWritten = new WeakMap();
+
 // Runs `write` unless `values` equal what the same setter last wrote to the
 // actor.
 function writeIfChanged(actor, setter, values, write) {
@@ -28,21 +32,26 @@ function writeIfChanged(actor, setter, values, write) {
     write();
     return true;
 }
+
 export function setTranslationIfChanged(actor, x, y) {
     return writeIfChanged(actor, 'translation', [x, y], () => {
         actor.translation_x = x;
         actor.translation_y = y;
     });
 }
+
 export function setSizeIfChanged(actor, width, height) {
     return writeIfChanged(actor, 'size', [width, height], () => actor.set_size(width, height));
 }
+
 export function setScaleIfChanged(actor, scaleX, scaleY) {
     return writeIfChanged(actor, 'scale', [scaleX, scaleY], () => actor.set_scale(scaleX, scaleY));
 }
+
 export function setClipIfChanged(actor, x, y, width, height) {
     return writeIfChanged(actor, 'clip', [x, y, width, height], () => actor.set_clip(x, y, width, height));
 }
+
 export function setPositionIfChanged(actor, x, y) {
     return writeIfChanged(actor, 'position', [x, y], () => actor.set_position(x, y));
 }

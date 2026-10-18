@@ -18,6 +18,7 @@ const ANCHOR_NAMES = [
     ['top-left', 'Top Left'], ['top-right', 'Top Right'], ['bottom-left', 'Bottom Left'], ['bottom-right', 'Bottom Right'],
     ['center', 'Center'],
 ];
+
 /**
  * The glass clock and the desktop widgets, above the wallpaper and below
  * every window, so they are hidden with the windows in the overview. Each
@@ -44,6 +45,7 @@ export class DesktopLayer {
     _menuManager = null;
     _menuGlass = null;
     _edit = null;
+
     constructor(_path, _settings, _logger, _openPreferences) {
         this._path = _path;
         this._settings = _settings;
@@ -55,6 +57,7 @@ export class DesktopLayer {
             relayout: () => this._queueLayout(),
         };
     }
+
     setup() {
         const watch = (key, fn) => this._settingsIds.push(this._settings.connect(`changed::${key}`, fn));
         for (const key of ['enable-desktop-widgets', 'desktop-widgets', 'enable-glass-clock'])
@@ -63,6 +66,7 @@ export class DesktopLayer {
             watch(key, () => this._queueLayout());
         this._sync();
     }
+
     _wanted() {
         const ids = [];
         if (this._settings.get_boolean('enable-glass-clock'))
@@ -73,6 +77,7 @@ export class DesktopLayer {
         }
         return ids;
     }
+
     _create(id) {
         switch (id) {
             case 'clock': return new GlassClock(this._env);
@@ -81,6 +86,7 @@ export class DesktopLayer {
             default: return new MediaWidget(this._env);
         }
     }
+
     _sync() {
         const wanted = this._wanted();
         for (const [id, item] of this._items) {
@@ -105,6 +111,7 @@ export class DesktopLayer {
         }
         this._queueLayout();
     }
+
     _ensureContainer() {
         if (this._container)
             return;
@@ -137,6 +144,7 @@ export class DesktopLayer {
         this._menuGlass = new UIManager(this._path, this._settings, this._logger, { menu }, false, 'enable-extra-menu-glass', 'panel-menu', 'menu:desktop', false);
         this._menuGlass.setup();
     }
+
     _removeContainer() {
         this._edit?.end();
         stopStageLoop(this._frameSignalSlot, this._frameSlot);
@@ -155,6 +163,7 @@ export class DesktopLayer {
         if (container && isActorValid(container))
             container.destroy();
     }
+
     // The topmost window of desktop icons (DING and the like): it covers the
     // whole desktop and would take every click meant for the items. DING hides
     // its window from global.get_window_actors(), hence the window group.
@@ -169,6 +178,7 @@ export class DesktopLayer {
         }
         return top;
     }
+
     // Right above the desktop icons' window when there is one, so the items
     // get the pointer; otherwise on top of the wallpaper.
     _restack() {
@@ -189,6 +199,7 @@ export class DesktopLayer {
             parent.set_child_above_sibling(container, null);
         }
     }
+
     // Lays the items out before the next frame, and makes sure there is one.
     _queueLayout() {
         this._needsLayout = true;
@@ -201,6 +212,7 @@ export class DesktopLayer {
             return GLib.SOURCE_REMOVE;
         });
     }
+
     _step() {
         for (const item of this._items.values()) {
             if (item.sync())
@@ -212,15 +224,18 @@ export class DesktopLayer {
         }
         this._edit?.sync();
     }
+
     _workArea() {
         return Main.layoutManager.getWorkAreaForMonitor(Main.layoutManager.primaryIndex);
     }
+
     _anchorOf(id) {
         if (id === 'clock')
             return sanitizeAnchor(this._settings.get_string('glass-clock-position'), 'center');
         return parseAnchors(this._settings.get_string('desktop-widget-anchors'))[id] ??
             sanitizeAnchor(this._settings.get_string('desktop-widgets-position'));
     }
+
     // Places every item: where it was moved to, or stacked at its anchor.
     _layout() {
         const area = this._workArea();
@@ -256,16 +271,19 @@ export class DesktopLayer {
             items.forEach((item, i) => item.actor.set_position(...stacked[i]));
         }
     }
+
     _savePosition(item, pos, size) {
         const positions = parsePositions(this._settings.get_string('desktop-item-positions'));
         positions[item.id] = [...fractionOf(pos, this._workArea(), size), size[1]];
         this._settings.set_string('desktop-item-positions', JSON.stringify(positions));
     }
+
     _resetPosition(id) {
         const positions = parsePositions(this._settings.get_string('desktop-item-positions'));
         delete positions[id];
         this._settings.set_string('desktop-item-positions', JSON.stringify(positions));
     }
+
     // Puts an item back in the stack at `anchor`. A widget alone gets its own
     // anchor; the others keep the one they share.
     _placeAt(id, anchor) {
@@ -279,6 +297,7 @@ export class DesktopLayer {
         }
         this._resetPosition(id);
     }
+
     _openMenu(item, x, y) {
         const menu = this._menu;
         if (!menu || this._edit)
@@ -301,6 +320,7 @@ export class DesktopLayer {
         Main.layoutManager.setDummyCursorGeometry(x, y, 0, 0);
         menu.open(MENU_ANIMATION);
     }
+
     _startEdit(item) {
         if (this._edit || !this._items.has(item.id))
             return;
@@ -317,6 +337,7 @@ export class DesktopLayer {
         this._edit = edit;
         edit.start();
     }
+
     // Keeps the clock's center where the resized frame's is, as far as the
     // frame and the clock's shown part differ.
     _resized(clock, from, to) {
@@ -329,6 +350,7 @@ export class DesktopLayer {
         this._savePosition(clock, [center[0] - size[0] / 2, center[1] - size[1] / 2], size);
         clock.resizeBy(sx, sy);
     }
+
     cleanup() {
         for (const id of this._settingsIds)
             this._settings.disconnect(id);
@@ -339,9 +361,11 @@ export class DesktopLayer {
         this._items.clear();
         this._removeContainer();
     }
+
     get _frameSlot() {
         return { get: () => this._frameSyncId, set: (id) => { this._frameSyncId = id; } };
     }
+
     get _frameSignalSlot() {
         return { get: () => this._frameSignalId, set: (id) => { this._frameSignalId = id; } };
     }

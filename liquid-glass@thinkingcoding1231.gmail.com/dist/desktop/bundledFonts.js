@@ -8,6 +8,7 @@ export const BUNDLED_FAMILIES = {
     'Sofia Sans Extra Condensed': 'SofiaSansExtraCondensed',
 };
 const WEIGHTS = [[300, 'Light'], [400, 'Regular'], [600, 'SemiBold'], [700, 'Bold']];
+
 /**
  * The file in `extensionPath`/fonts for a font description such as
  * "Antonio SemiBold" (the nearest weight it has), or null when the extension

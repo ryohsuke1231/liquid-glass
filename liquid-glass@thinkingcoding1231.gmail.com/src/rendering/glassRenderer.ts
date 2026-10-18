@@ -260,14 +260,14 @@ export class GlassRenderer {
   setGlassRegions(regions: GlassRegion[]): void {
     const clamped = regions.slice(0, MAX_GLASS_REGIONS);
 
-    const rx = new Array(MAX_GLASS_REGIONS).fill(0.0);
-    const ry = new Array(MAX_GLASS_REGIONS).fill(0.0);
-    const rw = new Array(MAX_GLASS_REGIONS).fill(0.0);
-    const rh = new Array(MAX_GLASS_REGIONS).fill(0.0);
-    const rTintR = new Array(MAX_GLASS_REGIONS).fill(1.0);
-    const rTintG = new Array(MAX_GLASS_REGIONS).fill(1.0);
-    const rTintB = new Array(MAX_GLASS_REGIONS).fill(1.0);
-    const rBaseStrength = new Array(MAX_GLASS_REGIONS).fill(0.0);
+    const rx = Array.from({ length: MAX_GLASS_REGIONS }, () => 0.0);
+    const ry = Array.from({ length: MAX_GLASS_REGIONS }, () => 0.0);
+    const rw = Array.from({ length: MAX_GLASS_REGIONS }, () => 0.0);
+    const rh = Array.from({ length: MAX_GLASS_REGIONS }, () => 0.0);
+    const rTintR = Array.from({ length: MAX_GLASS_REGIONS }, () => 1.0);
+    const rTintG = Array.from({ length: MAX_GLASS_REGIONS }, () => 1.0);
+    const rTintB = Array.from({ length: MAX_GLASS_REGIONS }, () => 1.0);
+    const rBaseStrength = Array.from({ length: MAX_GLASS_REGIONS }, () => 0.0);
 
     clamped.forEach((region, i) => {
       rx[i] = region.x;

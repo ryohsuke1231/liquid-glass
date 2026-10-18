@@ -3,24 +3,36 @@ import { configureSamplerLayer } from './pipelines.js';
 import { setPipelineFloat, setPipelineVec2 } from './passes.js';
 import { computeGaussianKernel, buildGaussianSnippet } from './shaderSource.js';
 import { uniformDeclarations } from '../shellVersion.js';
+
 export class BlurRenderer {
     _pipelines;
     _passes;
     _repaint;
+
     constructor(_pipelines, _passes, _repaint) {
         this._pipelines = _pipelines;
         this._passes = _passes;
         this._repaint = _repaint;
     }
+
     get radius() { return this._targetRadius; }
+
     get downscale() { return this._blurDownscale; }
+
     get passCount() { return this.PASS_COUNT; }
+
     get result() { return this._blurResultTex; }
+
     get width() { return this._poolWidth; }
+
     get height() { return this._poolHeight; }
+
     get ready() { return this.PASS_COUNT === 0 || this._blurFbos.length > 0; }
+
     get needsCompile() { return this._gaussianPipelineDirty && this._pendingGaussianKernel !== null; }
+
     invalidate() { this._destroyTexturePool(); }
+
     compilePending(ctx) {
         if (!this.needsCompile)
             return;
@@ -28,6 +40,7 @@ export class BlurRenderer {
         this._gaussianVPipeline = null;
         this._compileGaussianPipelines(ctx, this._pendingGaussianKernel);
     }
+
     render(parent, source, uv, inputKey) {
         this._blurResultTex = null;
         this._renderedKey = null;
@@ -44,6 +57,7 @@ export class BlurRenderer {
         if (inputKey && this._blurResultTex !== null)
             this._renderedKey = [...inputKey, ...this._configKey()];
     }
+
     canReuse(inputKey) {
         const stored = this._renderedKey;
         if (stored === null || this._blurResultTex === null || this.PASS_COUNT <= 0)
@@ -59,7 +73,9 @@ export class BlurRenderer {
                 return false;
         return true;
     }
+
     _renderedKey = null;
+
     _configKey() {
         const p = this._pipelines;
         return [this._blurFbos[0] ?? null, this._blurMethod, this.PASS_COUNT, this._blurDownscale,
@@ -67,6 +83,7 @@ export class BlurRenderer {
             this._gaussianHPipeline, this._gaussianVPipeline,
             p.downsample, p.upsample, p.passthrough, p.boxDown];
     }
+
     setDownscale(factor) {
         if (factor === this._blurDownscale)
             return;
@@ -76,6 +93,7 @@ export class BlurRenderer {
         this.setBlurRadius(this._targetRadius);
         this._repaint();
     }
+
     reload() {
         this._gaussianHPipeline = null;
         this._gaussianVPipeline = null;
@@ -83,6 +101,7 @@ export class BlurRenderer {
         this._gaussianFetchPairs = 0;
         this.setBlurRadius(this._targetRadius);
     }
+
     clear() {
         this._destroyTexturePool();
         this._gaussianHPipeline = null;
@@ -94,6 +113,7 @@ export class BlurRenderer {
         this._gaussianScale = 1;
         this._gaussianFetchPairs = 0;
     }
+
     describe() {
         const result = this._blurResultTex;
         return {
@@ -104,6 +124,7 @@ export class BlurRenderer {
             gaussianPipelines: !!(this._gaussianHPipeline && this._gaussianVPipeline),
         };
     }
+
     // The texture pool; see resize() for the sizes.
     _blurTextures = [];
     _blurFbos = [];
@@ -142,6 +163,7 @@ export class BlurRenderer {
     _blurRadiusUp = 1.0;
     // The requested radius, before the per-method mapping.
     _targetRadius = 15.0;
+
     // The caller drops the previous pipelines first.
     _compileGaussianPipelines(ctx, kernel) {
         this._gaussianHPipeline = Cogl.Pipeline.new(ctx);
@@ -160,6 +182,7 @@ export class BlurRenderer {
         this._gaussianPipelineDirty = false;
         this._pendingGaussianKernel = null;
     }
+
     /**
      * Allocates the pool for a (w, h) source. Level i is w >> (i + 1) wide
      * (level 0 at half resolution); glass-blur-downscale = 4 shifts every level
@@ -186,6 +209,7 @@ export class BlurRenderer {
         this._poolWidth = w;
         this._poolHeight = h;
     }
+
     // Dual Kawase: downsample srcTex through every level, then upsample back
     // into the _up* targets.
     _runDualKawaseBlur(parentNode, srcTex, srcUV) {
@@ -234,6 +258,7 @@ export class BlurRenderer {
         }
         this._blurResultTex = this._upTextures[0];
     }
+
     // Separable Gaussian on pool level 0 only: a downsampling pre-pass into
     // _blurTextures[0], the horizontal pass into the temp texture, and the
     // vertical pass into _upTextures[0].
@@ -269,6 +294,7 @@ export class BlurRenderer {
         this._passes.add(parentNode, outFbo, vPipeline, destW, destH, [0, 0, 1, 1]);
         this._blurResultTex = this._upTextures[0];
     }
+
     // Dropping the references frees the textures; GJS owns them, so
     // run_dispose() would free them twice.
     _destroyTexturePool() {
@@ -284,6 +310,7 @@ export class BlurRenderer {
         this._poolWidth = 0;
         this._poolHeight = 0;
     }
+
     // Both methods share the pool, and the Gaussian kernel is compiled on the
     // next paint, so a repaint is all a switch needs.
     setBlurMethod(method) {
@@ -293,6 +320,7 @@ export class BlurRenderer {
         this.setBlurRadius(this._targetRadius);
         this._repaint();
     }
+
     setBlurRadius(radius) {
         this._targetRadius = radius;
         if (this._blurMethod === 0) {
@@ -301,6 +329,7 @@ export class BlurRenderer {
         }
         this._setDualKawaseBlurRadius(radius);
     }
+
     /**
      * The Gaussian uses one pool level, so a radius change never rebuilds the
      * pool. The tap count follows a 4-sigma cutoff; while it stays the same,
@@ -351,6 +380,7 @@ export class BlurRenderer {
         }
         this._repaint();
     }
+
     // An empirical mapping (the preferences say a Dual Kawase radius is not
     // pixel-accurate). It is not scaled for glass-blur-downscale, since that
     // would also change the pass count; at quarter resolution the same value

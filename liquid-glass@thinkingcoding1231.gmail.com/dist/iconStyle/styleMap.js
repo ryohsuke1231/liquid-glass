@@ -58,6 +58,7 @@ const SLIVER_INSIDE = 0.1;
 // a part of a plate's surface differs from the plate.
 const TONE_GAIN = 2.5;
 const SURFACE_GAIN = 5;
+
 function smoothCorners(shape) {
     if (shape.kind !== 'roundrect')
         return shape;
@@ -67,12 +68,14 @@ function smoothCorners(shape) {
     // From the midpoint condition sqrt(2) * k * (1 - 2^(-1/n)) = sqrt(2) - 1, as in glass.frag's cornerShape().
     return { ...shape, radius: r * k, corner: -1 / Math.log2(1 - 0.29289322 / k) };
 }
+
 function isSquare(shape, width) {
     const roundEnough = shape.kind === 'roundrect' ? shape.radius <= Math.min(shape.rx, shape.ry) * SQUARE_RADIUS
         : shape.exponent >= SQUARE_EXPONENT;
     return roundEnough && !shape.ripple && Math.abs(shape.rx - shape.ry) <= Math.max(shape.rx, shape.ry) * SQUARE_ASPECT &&
         Math.min(shape.rx, shape.ry) * 2 >= width * SQUARE_FILL;
 }
+
 // How much of what is drawn lies outside `shape`.
 function outsideShare(pixels, scale, shape) {
     let outside = 0, total = 0;
@@ -86,6 +89,7 @@ function outsideShare(pixels, scale, shape) {
     }
     return total ? outside / total : 0;
 }
+
 function dropSliver(symbol, pixels, scale, shape) {
     const { width: w, height: h } = pixels;
     const reach = Math.ceil(1.5 / scale);
@@ -108,6 +112,7 @@ function dropSliver(symbol, pixels, scale, shape) {
     for (const i of drop)
         symbol[i] = 0;
 }
+
 // The center and the half size (largest distance along x or y) of what is drawn, in analysis px.
 function extent(pixels, scale) {
     let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity;
@@ -124,21 +129,26 @@ function extent(pixels, scale) {
         return { cx: pixels.width * scale / 2, cy: pixels.height * scale / 2, half: 1 };
     return { cx: (x1 + x2) / 2 * scale, cy: (y1 + y2) / 2 * scale, half: Math.max(x2 - x1, y2 - y1) / 2 * scale };
 }
+
 function depthOf(plates, k) {
     return plates[k].parent < 0 ? 0 : depthOf(plates, plates[k].parent) + 1;
 }
+
 function encode(d) {
     return Math.round(Math.min(Math.max(0.5 - d / (2 * MAP_RANGE), 0), 1) * 255);
 }
+
 // A lens distance as its high and low byte.
 function encodeLens(d) {
     const v = Math.round(Math.min(Math.max((d + LENS_RANGE) / (2 * LENS_RANGE), 0), 1) * 65535);
     return [v >> 8, v & 255];
 }
+
 // The largest distance from a shape's outline inside it.
 function halfWidth(shape) {
     return Math.min(shape.rx, shape.ry);
 }
+
 /**
  * The style map of an icon, from its analysis and the icon drawn again at
  * `detail` (any size; twice the analysis's keeps the symbol's edges smooth).
@@ -271,6 +281,7 @@ export function buildStyleMap(analysis, detail, size = MAP_SIZE) {
     }
     return { size, data, tone, lens, ownPlate: own };
 }
+
 // Each plate's tone among the plates at its level in the map: their colors
 // along the direction they differ most in, lighter higher. A plate alone at its
 // level is 0.5.

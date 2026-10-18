@@ -49,6 +49,7 @@ cogl_color_out = color * (lens_opacity * inside);
 const DEPTH = 80;
 const IOR = 1.5;
 const BAND = 70;
+
 /**
  * Where `rect` [x, y, w, h] (the actor's own px) is in an offscreen effect's
  * texture, as texture coordinates [x0, y0, x1, y1], and the size of what the
@@ -66,6 +67,7 @@ export function rectInOffscreen(actor, rect) {
     const [cx, cy, cw, ch] = rect;
     return { box: [(cx - x0) / w, (cy - y0) / h, (cx + cw - x0) / w, (cy + ch - y0) / h], width: w, height: h };
 }
+
 /** Put on the actor that holds the items, clipped to the glass's box. */
 export const ContentLens = GObject.registerClass(class ContentLens extends Clutter.OffscreenEffect {
     _init() {
@@ -75,6 +77,7 @@ export const ContentLens = GObject.registerClass(class ContentLens extends Clutt
         this._clip = [0, 0, 1, 1];
         this._scale = 1;
     }
+
     // Draws the offscreen as ClutterOffscreenEffect does, through the lens.
     vfunc_paint_target(node, _paintContext) {
         const texture = this.get_texture();
@@ -96,6 +99,7 @@ export const ContentLens = GObject.registerClass(class ContentLens extends Clutt
         node.add_child(drawNode);
         drawNode.add_rectangle(new Clutter.ActorBox({ x1: 0, y1: 0, x2: texture.get_width(), y2: texture.get_height() }));
     }
+
     /**
      * The glass is `clip` [x, y, w, h] in the actor's own px, which are
      * `scale` px on screen, with corners of `radius` (on screen). `depth` (0
@@ -113,6 +117,7 @@ export const ContentLens = GObject.registerClass(class ContentLens extends Clutt
         this._apply();
         this.queue_repaint();
     }
+
     _locate() {
         const box = rectInOffscreen(this.get_actor(), this._clip);
         if (!box)
@@ -122,6 +127,7 @@ export const ContentLens = GObject.registerClass(class ContentLens extends Clutt
         u.px = [box.width * this._scale, box.height * this._scale];
         this._apply();
     }
+
     _apply() {
         const p = this._pipeline;
         if (!p)

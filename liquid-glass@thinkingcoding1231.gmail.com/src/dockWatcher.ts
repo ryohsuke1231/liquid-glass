@@ -52,7 +52,7 @@ export class DockWatcher {
     this._searchId = 0;
     if (this._rescanId) GLib.Source.remove(this._rescanId);
     this._rescanId = 0;
-    for (const entry of [...this._docks]) this._release(entry);
+    for (const entry of this._docks) this._release(entry);
   }
 
   private _containers(): St.Widget[] {

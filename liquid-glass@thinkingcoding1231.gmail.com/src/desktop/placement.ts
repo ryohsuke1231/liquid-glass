@@ -28,7 +28,7 @@ export function stackAt(anchor: Anchor, area: Rect, sizes: [number, number][]): 
     : bottom ? area.y + area.height - EDGE_MARGIN - total : area.y + EDGE_MARGIN;
   // Bottom stacks keep their first item nearest the edge.
   const order = bottom ? [...sizes.keys()].reverse() : [...sizes.keys()];
-  const out: [number, number][] = new Array(sizes.length);
+  const out: [number, number][] = Array.from({ length: sizes.length }, () => [0, 0] as [number, number]);
   for (const i of order) {
     const [w, h] = sizes[i];
     const x = anchor === 'center'
@@ -178,7 +178,7 @@ export function stackColumns(items: { saved: Rect, size: [number, number], shown
     if (best) best.push(i);
     else columns.push([i]);
   }
-  const out: [number, number][] = new Array(items.length);
+  const out: [number, number][] = Array.from({ length: items.length });
   for (const column of columns) {
     const shown = column.filter(i => items[i].shown);
     for (const i of column) out[i] = [Math.round(items[i].saved.x), Math.round(items[i].saved.y)];

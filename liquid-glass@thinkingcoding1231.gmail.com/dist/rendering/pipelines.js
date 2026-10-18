@@ -2,15 +2,18 @@ import Cogl from 'gi://Cogl';
 import Gio from 'gi://Gio';
 import { splitShader } from './shaderSource.js';
 import { uniformDeclarations } from '../shellVersion.js';
+
 export class ShaderPipelines {
     _logger;
     _shapeTexture;
+
     // `shapeTexture`: the composite takes the glass's outline from a distance
     // field on layer 2 (glass text) instead of the rounded rect.
     constructor(_logger, _shapeTexture = false) {
         this._logger = _logger;
         this._shapeTexture = _shapeTexture;
     }
+
     async load(extensionPath, cancellable = null) {
         if (!extensionPath)
             throw new Error('Missing extension path for shader loading');
@@ -18,6 +21,7 @@ export class ShaderPipelines {
         this._upsampleSource = await this._readFileAsync(extensionPath + '/shaders/upsample.frag', cancellable);
         this._glassSource = await this._readFileAsync(extensionPath + '/shaders/glass.frag', cancellable);
     }
+
     clear() {
         this.downsample = null;
         this.upsample = null;
@@ -25,6 +29,7 @@ export class ShaderPipelines {
         this.passthrough = null;
         this.boxDown = null;
     }
+
     // Compiled once and reused across frames. downsample/upsample are Dual Kawase.
     downsample = null;
     upsample = null;
@@ -38,6 +43,7 @@ export class ShaderPipelines {
     _downsampleSource = null;
     _upsampleSource = null;
     _glassSource = null;
+
     // load_contents_finish() throws a GError when the file cannot be read.
     _readFileAsync(path, cancellable) {
         return new Promise((resolve, reject) => {
@@ -58,6 +64,7 @@ export class ShaderPipelines {
             });
         });
     }
+
     /**
      * Compiles the pipelines. Runs on the first frame, once a Cogl context
      * exists; call clear() first to recompile.
@@ -107,6 +114,7 @@ export class ShaderPipelines {
         this.composite.set_blend('RGBA = ADD(SRC_COLOR, DST_COLOR * (1 - SRC_COLOR[A]))');
         this._loadCompositeShader();
     }
+
     /**
      * Adds glass.frag to the composite pipeline. The shader uses ShaderEffect's
      * "cogl_sampler", which becomes "cogl_sampler0", the name Cogl declares for
@@ -125,8 +133,10 @@ export class ShaderPipelines {
         this.composite.add_snippet(snippet);
     }
 }
+
 // The composite's layer for the distance field of a shape-texture glass.
 export const SHAPE_LAYER = 2;
+
 // Bilinear filtering and clamp-to-edge on one layer.
 export function configureSamplerLayer(pipeline, layer) {
     pipeline.set_layer_wrap_mode(layer, Cogl.PipelineWrapMode.CLAMP_TO_EDGE);

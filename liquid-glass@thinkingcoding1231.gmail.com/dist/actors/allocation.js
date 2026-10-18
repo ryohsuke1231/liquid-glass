@@ -13,13 +13,16 @@ const STRANDED_FRAMES_BEFORE_RESCUE = 3;
 const _windowActorStrandedFrames = new Map();
 let _windowActorRescueMode = 'two-stage';
 const WINDOW_ACTOR_RESCUE_MODES = ['two-stage', 'remap', 'off'];
+
 export function setWindowActorRescueMode(mode) {
     _windowActorRescueMode =
         WINDOW_ACTOR_RESCUE_MODES.includes(mode) ? mode : 'two-stage';
 }
+
 export function getWindowActorRescueMode() {
     return _windowActorRescueMode;
 }
+
 /**
  * Rescues a stranded window actor, gentlest option first. Remapping mutter's
  * own window actor interrupts its animations, so the first attempt asks the
@@ -58,6 +61,7 @@ export function ensureWindowActorAllocated(actor, relayoutFrames, remapFrames) {
     }
     return '';
 }
+
 /**
  * Remaps one of our own glass actors once it has been stranded for
  * `framesBeforeRescue` frames. Both calls happen before the frame is painted,
@@ -81,6 +85,7 @@ export function ensureGlassAllocated(actor, framesBeforeRescue = STRANDED_FRAMES
     actor.show();
     return true;
 }
+
 /**
  * Shows or hides an actor. An actor hidden while it waited for an allocation
  * is left in the state above, so on show the relayout is queued on the actor

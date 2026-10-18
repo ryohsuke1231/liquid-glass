@@ -3,9 +3,11 @@
 // files. Only what Cairo writes is read (8 bits a channel, not interlaced).
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
+
 function readU32(b, i) {
     return ((b[i] << 24) | (b[i + 1] << 16) | (b[i + 2] << 8) | b[i + 3]) >>> 0;
 }
+
 function convert(data, converter) {
     const input = new Gio.ConverterInputStream({
         base_stream: Gio.MemoryInputStream.new_from_bytes(new GLib.Bytes(data)),
@@ -15,11 +17,13 @@ function convert(data, converter) {
     output.splice(input, Gio.OutputStreamSpliceFlags.CLOSE_SOURCE | Gio.OutputStreamSpliceFlags.CLOSE_TARGET, null);
     return output.steal_as_bytes().toArray();
 }
+
 function paeth(a, b, c) {
     const p = a + b - c;
     const pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c);
     return pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
 }
+
 export function decodePng(png) {
     let pos = 8;
     let width = 0, height = 0, colorType = 0, depth = 0, interlace = 0;
@@ -70,6 +74,7 @@ export function decodePng(png) {
     }
     return { width, height, channels, data };
 }
+
 /** Unpremultiplied RGBA, 4 bytes a pixel, whatever the PNG holds. */
 export function decodePngRgba(png) {
     const { width, height, channels, data } = decodePng(png);
@@ -86,7 +91,9 @@ export function decodePngRgba(png) {
     }
     return { width, height, data: rgba };
 }
+
 let crcTable = null;
+
 function crc32(bytes) {
     if (!crcTable) {
         crcTable = new Uint32Array(256);
@@ -102,6 +109,7 @@ function crc32(bytes) {
         c = crcTable[(c ^ b) & 255] ^ (c >>> 8);
     return (c ^ 0xffffffff) >>> 0;
 }
+
 function chunk(type, body) {
     const out = new Uint8Array(12 + body.length);
     const view = new DataView(out.buffer);
@@ -112,6 +120,7 @@ function chunk(type, body) {
     view.setUint32(8 + body.length, crc32(out.subarray(4, 8 + body.length)));
     return out;
 }
+
 /** An 8-bit RGBA PNG of unpremultiplied pixels. */
 export function encodePngRgba(width, height, rgba) {
     const header = new Uint8Array(13);

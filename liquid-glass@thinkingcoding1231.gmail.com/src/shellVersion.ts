@@ -28,7 +28,7 @@ export function coglContext(): Cogl.Context {
 // (47) or a Clutter.Color (46). `colorState` is unused before 48.
 export function newRootNode(framebuffer: Cogl.Framebuffer, colorState: Clutter.ColorState | undefined): Clutter.PaintNode {
   if (SHELL_MAJOR >= 48)
-    return Clutter.RootNode.new(framebuffer, colorState!, new Cogl.Color(), 0);
+    return Clutter.RootNode.new(framebuffer, colorState!, new Cogl.Color(), 0 as any);
   const clearColor = SHELL_MAJOR >= 47 ? new Cogl.Color() : new (Clutter as any).Color();
   return (Clutter.RootNode as any).new(framebuffer, clearColor, 0);
 }

@@ -174,9 +174,9 @@ export class IconStyler {
     this._unwatchAccent();
     if (this._scanId) global.compositor.get_laters().remove(this._scanId);
     this._scanId = 0;
-    for (const root of [...this._roots.keys()]) this.unwatchDock(root);
-    for (const icon of [...this._styled.keys()]) this._forget(icon);
-    for (const host of [...this._hosts.keys()]) this._dropHost(host);
+    for (const root of this._roots.keys()) this.unwatchDock(root);
+    for (const icon of this._styled.keys()) this._forget(icon);
+    for (const host of this._hosts.keys()) this._dropHost(host);
     this._maps.destroy();
     this._pipeline = null;
     this._glassPipeline = null;
@@ -192,7 +192,7 @@ export class IconStyler {
     if (!entry) return;
     this._roots.delete(root);
     for (const [actor, ids] of entry.watched) ids.forEach(id => actor.disconnect(id));
-    for (const [icon, styled] of [...this._styled]) {
+    for (const [icon, styled] of this._styled) {
       if (styled.root === root) this._forget(icon);
     }
   }
@@ -347,7 +347,7 @@ export class IconStyler {
   private _fileOf(gicons: (Gio.Icon | null)[]): string | null {
     for (const gicon of gicons) {
       if (gicon instanceof Gio.FileIcon) return gicon.get_file().get_path();
-      const file = gicon ? this._theme.lookup_by_gicon(gicon, LOOKUP_SIZE, 0)?.get_filename() : null;
+      const file = gicon ? this._theme.lookup_by_gicon(gicon, LOOKUP_SIZE, 0 as any)?.get_filename() : null;
       if (file) return file;
     }
     return null;
@@ -461,7 +461,7 @@ export class IconStyler {
   }
 
   private _restyleAll(): void {
-    for (const icon of [...this._styled.keys()]) this._apply(icon);
+    for (const icon of this._styled.keys()) this._apply(icon);
   }
 
   private _recolorAll(): void {

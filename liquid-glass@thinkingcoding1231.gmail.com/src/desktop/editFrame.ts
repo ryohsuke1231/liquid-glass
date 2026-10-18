@@ -1,5 +1,5 @@
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
-import Cairo from 'cairo';
+
 import Clutter from 'gi://Clutter';
 import Shell from 'gi://Shell';
 import St from 'gi://St';

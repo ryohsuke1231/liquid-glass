@@ -4,9 +4,11 @@
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 const MAX_STARTS = 3;
+
 function isCancelled(e) {
     return e instanceof GLib.Error && e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED);
 }
+
 export class WorkerProcess {
     _script;
     _name;
@@ -21,20 +23,24 @@ export class WorkerProcess {
     _starts = 0;
     _cancellable = new Gio.Cancellable();
     _encoder = new TextEncoder();
+
     /** @param _script The worker's module, run with gjs -m. */
     constructor(_script, _name, _logger) {
         this._script = _script;
         this._name = _name;
         this._logger = _logger;
     }
+
     /** Whether the worker runs or can be started. */
     get available() {
         return !!this._process || (this._starts < MAX_STARTS && !!GLib.find_program_in_path('gjs'));
     }
+
     /** Requests not answered yet. */
     get pending() {
         return this._waiting.size;
     }
+
     /** Rejects when the worker cannot be started, exits meanwhile or answers with an error. */
     request(message) {
         if (!this._process && !this._start())
@@ -46,6 +52,7 @@ export class WorkerProcess {
             this._write();
         });
     }
+
     _start() {
         const gjs = GLib.find_program_in_path('gjs');
         if (!gjs || this._starts >= MAX_STARTS)
@@ -65,6 +72,7 @@ export class WorkerProcess {
         this._read();
         return true;
     }
+
     _write() {
         const process = this._process;
         if (this._writing || !process || !this._lines.length)
@@ -84,6 +92,7 @@ export class WorkerProcess {
             this._write();
         });
     }
+
     _read() {
         const process = this._process;
         const output = this._output;
@@ -105,6 +114,7 @@ export class WorkerProcess {
             this._read();
         });
     }
+
     _answer(line) {
         let message;
         try {
@@ -123,6 +133,7 @@ export class WorkerProcess {
         else
             waiting.resolve(message);
     }
+
     // The worker exited or its pipes broke: what was asked of it fails, and the next request starts it again.
     _lost(process, error) {
         if (this._process !== process)
@@ -137,6 +148,7 @@ export class WorkerProcess {
             waiting.reject(new Error(`the ${this._name} exited`));
         this._waiting.clear();
     }
+
     destroy() {
         this._cancellable.cancel();
         this._process?.force_exit();
@@ -145,6 +157,7 @@ export class WorkerProcess {
         this._waiting.clear();
     }
 }
+
 /**
  * The worker's side: answers each line of JSON on stdin with what `handle`
  * returns, or with its error, until stdin closes. Call from the worker's

@@ -40,25 +40,30 @@ export const AdaptiveContrastConfig = {
     // at least this, not only when the background favours neither color.
     preferredMinContrast: 0,
 };
+
 // Anything unrecognised in the setting counts as 'auto'.
 export function sanitizeColorPreference(value) {
     return (value === 'light' || value === 'dark') ? value : 'auto';
 }
+
 function _clamp(v, min, max) {
     return Math.min(max, Math.max(min, v));
 }
+
 function _srgbToLinear(c) {
     const n = c / 255.0;
     if (n <= 0.04045)
         return n / 12.92;
     return Math.pow((n + 0.055) / 1.055, 2.4);
 }
+
 function _luminanceFromRgb(r, g, b) {
     const rl = _srgbToLinear(r);
     const gl = _srgbToLinear(g);
     const bl = _srgbToLinear(b);
     return 0.2126 * rl + 0.7152 * gl + 0.0722 * bl;
 }
+
 function _trimmedMean(values, trimRatio = 0.1) {
     if (values.length === 0)
         return null;
@@ -71,6 +76,7 @@ function _trimmedMean(values, trimRatio = 0.1) {
         sum += sorted[i];
     return sum / (end - start);
 }
+
 function _getActorRect(actor) {
     if (!actor)
         return null;
@@ -88,6 +94,7 @@ function _getActorRect(actor) {
         return null;
     return { x: left, y: top, width: right - left, height: bottom - top };
 }
+
 function _mergeRects(rects) {
     if (rects.length === 0)
         return null;
@@ -109,6 +116,7 @@ function _mergeRects(rects) {
         height: Math.max(1, maxY - minY),
     };
 }
+
 // The samples are textures read through Shell.Screenshot.composite_to_stream(),
 // whose result comes with the pixels. A direct GPU read-back
 // (Stage.paint_to_buffer(), Cogl.Texture.get_data()) is not usable from GJS:
@@ -116,14 +124,17 @@ function _mergeRects(rects) {
 // temporary copy and the pixels never come back. Decoding a screenshot's PNG
 // is avoided too: from GdkPixbuf 2.44 on, that starts a sandboxed loader.
 let _capturePathLogged = false;
+
 function _reportCapturePath(msg) {
     if (_capturePathLogged)
         return;
     _capturePathLogged = true;
     utilsLog(`[Liquid Glass][contrast] ${msg}`);
 }
+
 // Pixels are sampled on a grid of about this many steps per edge.
 const SAMPLE_MAX_EDGE = 48;
+
 /**
  * Reads a texture into memory, only to measure the brightness behind the
  * text. Nothing is written to disk or kept after the measurement.
@@ -141,6 +152,7 @@ function _readTexture(texture, width, height) {
         });
     });
 }
+
 /**
  * Draws the part [s0, t0]-[s1, t1] of `texture` into a new texture of
  * width x height and reads that. Drawing with `texture` also flushes what is
@@ -163,6 +175,7 @@ function _drawAndRead(texture, s0, t0, s1, t1, width, height) {
     fb.flush();
     return _readTexture(target.texture, width, height);
 }
+
 /**
  * Paints the stage under `rect` into a texture of about SAMPLE_MAX_EDGE
  * pixels a side, as the screen shows it now, and reads that.
@@ -187,6 +200,7 @@ function _captureViaStage(rect) {
         return Promise.resolve(null);
     return _drawAndRead(texture, 0, 0, 1, 1, texture.get_width(), texture.get_height());
 }
+
 function _imageOf(pixbuf) {
     if (!pixbuf)
         return null;
@@ -201,8 +215,10 @@ function _imageOf(pixbuf) {
         step: Math.max(1, Math.floor(Math.min(width, height) / SAMPLE_MAX_EDGE)),
     };
 }
+
 // The z of glass.frag's light direction, normalize(cos a, sin a, 0.38).
 const LIGHT_FACING = 0.38 / Math.sqrt(1 + 0.38 * 0.38);
+
 export function glassToneOf(values) {
     const get = (name, fallback) => {
         const v = values.get(name);
@@ -219,6 +235,7 @@ export function glassToneOf(values) {
         light: (specular + sheen) * get('surface_light_enabled', 1),
     };
 }
+
 export function tonedLuminance(r, g, b, tone) {
     const scb = (c) => 0.5 + ((c / 255) * tone.brightness - 0.5) * tone.contrast;
     let cr = scb(r), cg = scb(g), cb = scb(b);
@@ -235,6 +252,7 @@ export function tonedLuminance(r, g, b, tone) {
     const peak = Math.max(1, cr, cg, cb);
     return _luminanceFromRgb(_clamp(cr / peak, 0, 1) * 255, _clamp(cg / peak, 0, 1) * 255, _clamp(cb / peak, 0, 1) * 255);
 }
+
 function _overlap(copyRect, rect) {
     const x = Math.max(rect.x, copyRect[0]);
     const y = Math.max(rect.y, copyRect[1]);
@@ -244,6 +262,7 @@ function _overlap(copyRect, rect) {
         return null;
     return { x, y, width: right - x, height: bottom - y };
 }
+
 /**
  * Reads the part of a glass's backdrop copy under `rect`. The copy is first
  * drawn into a texture of about SAMPLE_MAX_EDGE pixels a side, so only that
@@ -257,6 +276,7 @@ function _captureViaBackdrop(copy, rect) {
     const [x0, y0, x1, y1] = copy.rect;
     return _drawAndRead(copy.texture, (area.x - x0) / (x1 - x0), (area.y - y0) / (y1 - y0), (area.x + area.width - x0) / (x1 - x0), (area.y + area.height - y0) / (y1 - y0), Math.max(1, Math.round(area.width * k)), Math.max(1, Math.round(area.height * k)));
 }
+
 // The parts of `rect` outside the stage rect [x0, y0, x1, y1]: above, below, and left and right between them.
 function _outside(rect, [x0, y0, x1, y1]) {
     const right = rect.x + rect.width, bottom = rect.y + rect.height;
@@ -269,6 +289,7 @@ function _outside(rect, [x0, y0, x1, y1]) {
     ];
     return strips.filter(r => r.width >= 1 && r.height >= 1);
 }
+
 // The drawn glass whose backdrop copy holds most of `rect`.
 function _bestCopy(rect, drawn) {
     let best = null;
@@ -283,6 +304,7 @@ function _bestCopy(rect, drawn) {
     }
     return best;
 }
+
 export function backdropLuminance(actor, root = null) {
     let node = actor;
     for (let depth = 0; node && depth < BACKDROP_SEARCH_DEPTH; depth++) {
@@ -300,6 +322,7 @@ export function backdropLuminance(actor, root = null) {
     }
     return null;
 }
+
 function _visibleTargets(actors) {
     const targets = [];
     const rects = [];
@@ -312,22 +335,26 @@ function _visibleTargets(actors) {
     }
     return { targets, rects };
 }
+
 function _rootOrMergedRect(root, rects) {
     const rootRect = root ? _getActorRect(root) : null;
     return rootRect ?? _mergeRects(rects);
 }
+
 function _readSignature(paintSignature) {
     if (!paintSignature)
         return null;
     const v = paintSignature();
     return Number.isFinite(v) ? v : null;
 }
+
 // The decision also depends on the configuration, not only on pixels.
 function _skipKey(rects, config) {
     return rects
         .map(r => `${Math.round(r.x)},${Math.round(r.y)},${Math.round(r.width)},${Math.round(r.height)}`)
         .join(';') + `|${config.samplePerElement ? 'e' : 'm'}|${config.preference ?? 'auto'}|${config.preferredMinContrast}|${config.lightTextColor}|${config.darkTextColor}`;
 }
+
 function _pixelLuminance(data, idx, channels, tone) {
     const measure = (r, g, b) => tone ? tonedLuminance(r, g, b, tone) : _luminanceFromRgb(r, g, b);
     if (channels <= 3)
@@ -342,6 +369,7 @@ function _pixelLuminance(data, idx, channels, tone) {
     const unpremultiply = (c) => _clamp(Math.round(c * inv), 0, 255);
     return measure(unpremultiply(data[idx]), unpremultiply(data[idx + 1]), unpremultiply(data[idx + 2]));
 }
+
 /** @param tone When given, each pixel is measured as the glass would show it. */
 export function luminanceSamples(shot, tone) {
     const { data, width, height, stride, channels, step } = shot;
@@ -356,6 +384,7 @@ export function luminanceSamples(shot, tone) {
     }
     return values;
 }
+
 export class StageContrastSampler {
     _lastLuma = null;
     _lastIsBright = null;
@@ -376,12 +405,14 @@ export class StageContrastSampler {
     // Advanced by invalidate(), so that a measurement still running does not freeze what it measured
     // before the content changed.
     _generation = 0;
+
     // The next call always samples.
     invalidate() {
         this._generation++;
         this._unchangedSignature = null;
         this._unchangedKey = '';
     }
+
     // Forgets the decisions so far, for a surface that is shown again and may be
     // over something else now: the next decision is not smoothed towards the
     // last one.
@@ -389,6 +420,7 @@ export class StageContrastSampler {
         this.invalidate();
         this._lastRect = null;
     }
+
     /**
      * Measures the screen under `rect`.
      * @param tone Set when no glass is drawn there yet: the screen then shows
@@ -404,6 +436,7 @@ export class StageContrastSampler {
         }
         return this._meanOf(shot, tone);
     }
+
     /** Measures a glass's backdrop under `rect`, as the glass shows it. */
     async sampleBackdropLuminance(copy, rect, tone) {
         const shot = await _captureViaBackdrop(copy, rect);
@@ -413,6 +446,7 @@ export class StageContrastSampler {
         }
         return this._meanOf(shot, tone);
     }
+
     _meanOf(shot, tone) {
         const values = luminanceSamples(shot, tone);
         if (values.length === 0) {
@@ -424,6 +458,7 @@ export class StageContrastSampler {
         // glyphs from moving the result, so a flip cannot flip itself back.
         return _trimmedMean(values, 0.30);
     }
+
     /**
      * The glass's backdrop when one of `sources` is drawn over `rect` and has
      * copied it, so that the text, the highlights and the bars on the glass are
@@ -438,6 +473,7 @@ export class StageContrastSampler {
             return this.sampleBackdropLuminance(best.copy, rect, glassToneOf(best.source.uniformValues));
         return this.sampleLuminance(rect, drawn.length === 0 ? glassToneOf(sources[0].uniformValues) : undefined);
     }
+
     // Like _measure(), for a rect the glass is about to grow over: the part its backdrop copy does not hold yet is
     // measured on the screen, which shows no glass there, as the glass will show it.
     async _measureGrowing(rect, sources) {
@@ -459,6 +495,7 @@ export class StageContrastSampler {
         }
         return sum / weight;
     }
+
     decideTextColor(luminance, config = AdaptiveContrastConfig) {
         if (luminance === null || luminance === undefined)
             return null;
@@ -552,15 +589,18 @@ export class StageContrastSampler {
         this._lastIsBright = isBright;
         return isBright ? config.darkTextColor : config.lightTextColor;
     }
+
     _inSettleHold(now = GLib.get_monotonic_time()) {
         return this._lastSwitchAt !== null && now - this._lastSwitchAt < SWITCH_SETTLE_MS * 1000;
     }
+
     _backdropColorFor(actor, config, root) {
         const backdrop = backdropLuminance(actor, root);
         if (backdrop === null)
             return null;
         return this.decideTextColor(backdrop.luminance, { ...config, samplePerElement: true });
     }
+
     /**
      * @param paintSignature Optional counter that advances whenever the glass
      *   under the text is painted. Anything that changes under the text
@@ -605,6 +645,7 @@ export class StageContrastSampler {
         // takes the same color, so it does not show up in the old one.
         return this._chooseMerged(actors, merged, config, settle, sources);
     }
+
     /**
      * The color for text that is about to cover `rect`, decided at once from this measurement alone: the current
      * color stays unless the other one reads clearly better. A merged decision measured meanwhile is dropped, and
@@ -623,6 +664,7 @@ export class StageContrastSampler {
         this._lastDecided = color;
         return color;
     }
+
     _resetIfRegionMoved(merged) {
         const last = this._lastRect;
         const moved = !last || ['x', 'y', 'width', 'height'].some(k => Math.abs(merged[k] - last[k]) > 2);
@@ -635,6 +677,7 @@ export class StageContrastSampler {
         }
         this._lastRect = merged;
     }
+
     async _chooseMerged(targets, merged, config, settle, sources) {
         const result = new Map();
         this._resetIfRegionMoved(merged);
@@ -655,6 +698,7 @@ export class StageContrastSampler {
                 result.set(actor, color);
         return result;
     }
+
     async _choosePerElement(targets, rects, config, settle, sources) {
         const result = new Map();
         for (let i = 0; i < targets.length; i++) {

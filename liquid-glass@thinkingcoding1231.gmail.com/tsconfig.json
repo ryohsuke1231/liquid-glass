@@ -3,6 +3,7 @@
     "target": "ES2022", // GNOME 45+ (GJS 1.7x) は ES2022 をサポート
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
+    "skipLibCheck": true,
     "strict": true, // TSの恩恵を最大化するために有効化
     "noImplicitAny": false, // 移行期はfalseでもOK
     "allowJs": true, // .jsと.tsを混ぜて開発可能

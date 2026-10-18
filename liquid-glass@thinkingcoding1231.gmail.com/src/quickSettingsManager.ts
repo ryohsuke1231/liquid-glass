@@ -204,11 +204,11 @@ export class QuickSettingsManager {
     this._settings = settings;
     this._logger = logger;
 
-    this.targetActor = Main.panel.statusArea.quickSettings.menu.actor;
-    this.menu = Main.panel.statusArea.quickSettings.menu;
+    this.targetActor = Main.panel.statusArea!.quickSettings!.menu.actor;
+    this.menu = Main.panel.statusArea!.quickSettings!.menu;
     this._toggleStyles = new ToggleStyles(logger, () => !!this.menu?.isOpen);
     // The menu's content box, which the animations and offsets move.
-    this.animActor = Main.panel.statusArea.quickSettings.menu.box;
+    this.animActor = Main.panel.statusArea!.quickSettings!.menu.box;
 
     this.glass = null;
 

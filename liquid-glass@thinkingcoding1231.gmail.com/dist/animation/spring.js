@@ -3,6 +3,7 @@
 // stall) are clamped instead of jumped over.
 export const MAX_STEP_S = 0.066;
 const SUB_STEP_S = 0.002;
+
 // Damped spring (Hooke's law), integrated with semi-implicit Euler.
 export class Spring {
     stiffness;
@@ -11,6 +12,7 @@ export class Spring {
     value;
     velocity;
     target;
+
     constructor(stiffness, damping, mass) {
         this.stiffness = stiffness;
         this.damping = damping;
@@ -19,11 +21,13 @@ export class Spring {
         this.velocity = 0;
         this.target = 0;
     }
+
     updateParams(stiffness, damping, mass) {
         this.stiffness = stiffness;
         this.damping = damping;
         this.mass = mass;
     }
+
     update(elapsedMs) {
         let dt = elapsedMs / 1000;
         if (dt > MAX_STEP_S)
@@ -45,6 +49,7 @@ export class Spring {
         return Math.abs(this.velocity) < 0.01 && Math.abs(this.value - this.target) < 0.001;
     }
 }
+
 // A spring described by response (period, seconds) and damping fraction, as
 // SwiftUI does, solved analytically so it cannot diverge at any stiffness.
 export class SwiftSpring {
@@ -54,9 +59,11 @@ export class SwiftSpring {
     value = 0;
     velocity = 0;
     target = 0;
+
     constructor(response, dampingFraction, mass = 1.0) {
         this.updateParams(response, dampingFraction, mass);
     }
+
     // Out-of-range values (including NaN) keep the previous parameter.
     updateParams(response, dampingFraction, mass = 1.0) {
         if (response > 0.01)
@@ -66,6 +73,7 @@ export class SwiftSpring {
         if (mass > 0.01)
             this.mass = mass;
     }
+
     update(elapsedMs) {
         let dt = elapsedMs / 1000;
         if (!(dt > 0))
@@ -132,6 +140,7 @@ export class SwiftSpring {
         return false;
     }
 }
+
 /**
  * A rectangle carried to each new target by a spring, so it swings a little past it and settles, as liquid
  * does. `rect()` steps the spring to the time it is given.
@@ -141,6 +150,7 @@ export class RectSpring {
     _to;
     _progress;
     _lastUs = 0;
+
     constructor(rect, response = 0.42, dampingFraction = 0.72) {
         this._from = [...rect];
         this._to = [...rect];
@@ -148,6 +158,7 @@ export class RectSpring {
         this._progress.value = 1;
         this._progress.target = 1;
     }
+
     setTarget(target, nowUs) {
         if (target.every((v, i) => Math.abs(v - this._to[i]) < 0.5))
             return;
@@ -156,6 +167,7 @@ export class RectSpring {
         this._progress.value = 0;
         this._progress.velocity = 0;
     }
+
     rect(nowUs) {
         if (this._lastUs)
             this._progress.update((nowUs - this._lastUs) / 1000);
@@ -163,6 +175,7 @@ export class RectSpring {
         const p = this._progress.value;
         return this._from.map((v, i) => v + (this._to[i] - v) * p);
     }
+
     settled() {
         return this._progress.value === this._progress.target && this._progress.velocity === 0;
     }

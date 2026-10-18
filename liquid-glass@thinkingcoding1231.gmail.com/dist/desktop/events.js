@@ -10,9 +10,11 @@ import { verticalBoxParams } from '../shellVersion.js';
 const CARD_WIDTH = 300;
 const MAX_EVENTS = 4;
 const CALENDAR_APP = 'org.gnome.Calendar.desktop';
+
 function startOfDay(date, days = 0) {
     return new Date(date.getFullYear(), date.getMonth(), date.getDate() + days);
 }
+
 /**
  * The rest of today's events and tomorrow's, from the calendars the shell's
  * calendar menu shows. It reads the events the menu has already loaded
@@ -25,6 +27,7 @@ export class EventsWidget extends GlassCard {
     _source = null;
     _sourceId = 0;
     _timerId = 0;
+
     constructor(env) {
         super('events', env, CARD_WIDTH);
         this._title = new St.Label({ style_class: 'lg-title', text: 'Up Next' });
@@ -38,9 +41,11 @@ export class EventsWidget extends GlassCard {
         });
         this._update();
     }
+
     activate() {
         Shell.AppSystem.get_default().lookup_app(CALENDAR_APP)?.activate();
     }
+
     // The menu's event source, which the shell replaces when the session mode changes.
     _eventSource() {
         const source = Main.panel.statusArea.dateMenu._eventSource;
@@ -52,6 +57,7 @@ export class EventsWidget extends GlassCard {
         }
         return source;
     }
+
     _row(time, summary) {
         const row = new St.BoxLayout({ style_class: 'lg-event' });
         row.add_child(new St.Label({ text: time, style_class: 'lg-event-time', y_align: Clutter.ActorAlign.START }));
@@ -60,6 +66,7 @@ export class EventsWidget extends GlassCard {
         row.add_child(label);
         return row;
     }
+
     _update() {
         const source = this._eventSource();
         this._list.destroy_all_children();
@@ -91,6 +98,7 @@ export class EventsWidget extends GlassCard {
             this._list.add_child(new St.Label({ text: 'Nothing else today or tomorrow', style_class: 'lg-dim' }));
         this.contentChanged();
     }
+
     destroy() {
         if (this._timerId)
             GLib.Source.remove(this._timerId);

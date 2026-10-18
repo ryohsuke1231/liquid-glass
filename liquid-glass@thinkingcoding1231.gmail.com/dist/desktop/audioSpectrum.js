@@ -31,6 +31,7 @@ const MIN_CEILING_DB = -70;
 // started again after this many seconds; the check for a silent one runs this often.
 const RETRY_S = 2;
 const WATCHDOG_S = 3;
+
 /**
  * Listens while started, and calls `onLevels` with one level from 0 to 1 per
  * bar, low to high, every INTERVAL_MS.
@@ -53,6 +54,7 @@ export class AudioSpectrum {
     _retryId = 0;
     _watchdogId = 0;
     _lastMessageUs = 0;
+
     constructor(_logger, _onLevels) {
         this._logger = _logger;
         this._onLevels = _onLevels;
@@ -64,17 +66,21 @@ export class AudioSpectrum {
         const center = ([lo, hi]) => Math.sqrt(lo * hi);
         this._tilt = RANGES.map(r => TILT_DB_PER_OCTAVE * Math.log2(center(r) / center(RANGES[0])));
     }
+
     get listening() {
         return !!this._pipeline;
     }
+
     start() {
         this._wanted = true;
         this._begin();
     }
+
     stop() {
         this._wanted = false;
         this._end();
     }
+
     _begin() {
         if (this._pipeline || this._unavailable)
             return;
@@ -111,6 +117,7 @@ export class AudioSpectrum {
             return GLib.SOURCE_CONTINUE;
         });
     }
+
     // Stops the pipeline, and starts it again shortly if it is still wanted.
     _restart() {
         this._end();
@@ -123,6 +130,7 @@ export class AudioSpectrum {
             return GLib.SOURCE_REMOVE;
         });
     }
+
     _end() {
         if (this._watchdogId)
             GLib.Source.remove(this._watchdogId);
@@ -139,6 +147,7 @@ export class AudioSpectrum {
         this._bus = null;
         this._busId = 0;
     }
+
     _message(message) {
         if (message.type === Gst.MessageType.ERROR) {
             const [error] = message.parse_error();

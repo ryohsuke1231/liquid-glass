@@ -5,6 +5,7 @@ import { SAME_FRAME_WINDOW_US } from './frameSync.js';
 const MAX_INTERVAL_MS = 50;
 let _nextId = 0;
 const _tickers = new Map();
+
 // Steps an animation at most once per frame from a BEFORE_REDRAW later, which
 // also keeps the frame clock running while the animation lives. A GLib timer
 // would beat against the frame; smoothness comes from sub-stepping the physics
@@ -48,6 +49,7 @@ export function addFrameTicker(cb, minIntervalMs = 0) {
     schedule();
     return id;
 }
+
 export function removeFrameTicker(id) {
     const ticker = _tickers.get(id);
     if (!ticker)
@@ -58,6 +60,7 @@ export function removeFrameTicker(id) {
     global.compositor.get_laters().remove(ticker.laterId);
     ticker.laterId = 0;
 }
+
 /**
  * Maps animation-interval-ms onto what a frame-driven animation can do:
  * anything up to one 60Hz frame means every frame (0); larger values cap the

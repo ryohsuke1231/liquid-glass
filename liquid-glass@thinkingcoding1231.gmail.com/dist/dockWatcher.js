@@ -5,6 +5,7 @@ import { DashManager } from './dockManager.js';
 const SEARCH_DELAY_MS = 2000;
 const RESCAN_IDLE_TICKS = 2;
 const RESCAN_INTERVAL_MS = 2000;
+
 /**
  * Finds Dash to Dock's docks and gives each its glass. Dash to Dock may create its dock after we are enabled, and
  * recreates it when monitors change, when it is enabled again and for some of its settings, so it is looked for
@@ -20,12 +21,14 @@ export class DockWatcher {
     _rescanId = 0;
     _monitorsChangedId = 0;
     _childAddedId = 0;
+
     constructor(_path, _settings, _logger, _icons) {
         this._path = _path;
         this._settings = _settings;
         this._logger = _logger;
         this._icons = _icons;
     }
+
     setup() {
         this._monitorsChangedId = Main.layoutManager.connect('monitors-changed', () => this._scheduleRescan());
         this._childAddedId = Main.layoutManager.uiGroup.connect('child-added', (_group, child) => {
@@ -39,6 +42,7 @@ export class DockWatcher {
             return GLib.SOURCE_REMOVE;
         });
     }
+
     cleanup() {
         Main.layoutManager.disconnect(this._monitorsChangedId);
         Main.layoutManager.uiGroup.disconnect(this._childAddedId);
@@ -48,9 +52,10 @@ export class DockWatcher {
         if (this._rescanId)
             GLib.Source.remove(this._rescanId);
         this._rescanId = 0;
-        for (const entry of [...this._docks])
+        for (const entry of this._docks)
             this._release(entry);
     }
+
     _containers() {
         const found = [];
         const walk = (actor) => {
@@ -66,6 +71,7 @@ export class DockWatcher {
         walk(Main.layoutManager.uiGroup);
         return found;
     }
+
     // True when a dock was found that had no glass yet.
     _find() {
         let added = 0;
@@ -88,6 +94,7 @@ export class DockWatcher {
             this._logger.log(`[Liquid Glass] Dash to Dock containers with glass: ${this._docks.length}`);
         return added > 0;
     }
+
     _release(entry) {
         this._docks = this._docks.filter(e => e !== entry);
         if (entry.destroyId)
@@ -96,6 +103,7 @@ export class DockWatcher {
         entry.manager.cleanup();
         this._icons.unwatchDock(entry.container);
     }
+
     // Keeps looking until RESCAN_IDLE_TICKS scans in a row find nothing new.
     _scheduleRescan() {
         if (this._rescanId)

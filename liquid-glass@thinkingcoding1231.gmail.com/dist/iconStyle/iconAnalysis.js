@@ -124,6 +124,7 @@ const LINEAR = new Float32Array(256).map((_, i) => {
     const c = i / 255;
     return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
 });
+
 function oklab(r, g, b, out, at) {
     const lr = LINEAR[r], lg = LINEAR[g], lb = LINEAR[b];
     const l = Math.cbrt(0.4122214708 * lr + 0.5363325363 * lg + 0.0514459929 * lb);
@@ -133,6 +134,7 @@ function oklab(r, g, b, out, at) {
     out[at + 1] = 1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s;
     out[at + 2] = 0.0259040371 * l + 0.7827717662 * m - 0.808650822 * s;
 }
+
 /** sRGB (0-255) of an Oklab color. */
 export function oklabToSrgb(L, a, b) {
     const l = (L + 0.3963377774 * a + 0.2158037573 * b) ** 3;
@@ -146,10 +148,12 @@ export function oklabToSrgb(L, a, b) {
         return Math.round(Math.min(Math.max(v, 0), 1) * 255);
     });
 }
+
 function smoothstep(lo, hi, x) {
     const t = Math.min(Math.max((x - lo) / (hi - lo), 0), 1);
     return t * t * (3 - 2 * t);
 }
+
 /** Signed distance (px, negative inside) from a pixel position to the shape's outline. */
 export function shapeDistance(shape, x, y) {
     const dx = x - shape.cx, dy = y - shape.cy;
@@ -173,6 +177,7 @@ export function shapeDistance(shape, x, y) {
     const base = len - d;
     return len - base * rippleFactor(shape.ripple, Math.atan2(dy, dx));
 }
+
 // The distance into a corner of radius r at (px, py) from its center, for a superellipse corner of exponent n: its
 // norm over the length of its gradient, which fades in from the center, where the gradient has no direction.
 function cornerLength(px, py, r, n) {
@@ -186,6 +191,7 @@ function cornerLength(px, py, r, n) {
     const gradLen = 1 + (grad - 1) * Math.min(len / Math.max(r, 1e-3), 1);
     return r + (len - r) / Math.max(gradLen, 0.5);
 }
+
 function rippleFactor(ripple, angle) {
     let f = 1;
     ripple.harmonics.forEach(([amp, phase], i) => {
@@ -193,9 +199,11 @@ function rippleFactor(ripple, angle) {
     });
     return ripple.scale * f;
 }
+
 function coverageOf(shape, x, y) {
     return Math.min(Math.max(0.5 - shapeDistance(shape, x + 0.5, y + 0.5), 0), 1);
 }
+
 function maskOf(data, w, h) {
     let x1 = w, y1 = h, x2 = -1, y2 = -1, area = 0;
     for (let y = 0; y < h; y++) {
@@ -211,6 +219,7 @@ function maskOf(data, w, h) {
     }
     return { data, x1, y1, x2, y2, area };
 }
+
 // Every `step`th pixel each way only, when ranking shapes.
 function overlap(shape, mask, w, h, step = 1) {
     let inter = 0, union = 0;
@@ -230,6 +239,7 @@ function overlap(shape, mask, w, h, step = 1) {
     }
     return union > 0 ? inter / union : 0;
 }
+
 // The fewest teeth or waves a plate's outline has: fewer are a polygon's corners (a hexagon), not teeth.
 const MIN_TEETH = 7;
 // An icon's outline that is a plate but that its shape covers less than this is moved and resized to fit better, for at most
@@ -240,9 +250,11 @@ const REFINE_GAIN = 0.008;
 // From a diamond (1) through an ellipse (2) and a squircle to nearly a rectangle.
 const EXPONENTS = [1, 1.25, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5, 6, 8];
 const RADII = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1];
+
 function fits(shape) {
     return shape.fit >= (shape.kind === 'superellipse' && shape.exponent < 2 ? FIT_POINTED : FIT_PLATE);
 }
+
 // The shape spans the mask's bounding box unless refined, so that it ends where a piece on the mask's edge begins.
 function fitBasic(mask, w, h, refine = false, exponents = EXPONENTS) {
     const base = {
@@ -263,6 +275,7 @@ function fitBasic(mask, w, h, refine = false, exponents = EXPONENTS) {
     best.fit = overlap(best, mask, w, h);
     return !refine || best.fit < FIT_PLATE || best.fit >= REFINE_BELOW ? best : refined(best, mask, w, h);
 }
+
 // The shape moved and resized a pixel at a time while that fits better: the bounding box is too large when something
 // sticks out of the icon's plate (a badge over its corner).
 function refined(shape, mask, w, h) {
@@ -287,6 +300,7 @@ function refined(shape, mask, w, h) {
     }
     return best.fit - shape.fit >= REFINE_GAIN ? best : shape;
 }
+
 // The outline's distance from the center at `count` angles, or null when a ray
 // leaves the shape more than once (not star-shaped).
 function radii(mask, w, h, cx, cy, count) {
@@ -312,6 +326,7 @@ function radii(mask, w, h, cx, cy, count) {
     }
     return bent > count * 0.03 ? null : out;
 }
+
 // A shape with regular teeth or waves (a gear, a scalloped badge): the
 // outline's distance from the center is the basic shape's times a periodic
 // factor whose energy sits in one count of teeth and its multiples.
@@ -369,6 +384,7 @@ function fitRipple(mask, w, h, basic) {
     shape.fit = overlap(shape, mask, w, h);
     return shape.fit >= FIT_PLATE ? shape : null;
 }
+
 // The closest shape, which may fit less than FIT_PLATE (down to PEER_FIT).
 function fitShape(mask, w, h, refine = false) {
     if (mask.x2 - mask.x1 < 6 || mask.y2 - mask.y1 < 6)
@@ -381,6 +397,7 @@ function fitShape(mask, w, h, refine = false) {
         ? fitBasic(mask, w, h, refine, EXPONENTS.filter(n => n >= 2)) : basic;
     return fitRipple(mask, w, h, round) ?? (basic.fit >= PEER_FIT ? basic : null);
 }
+
 // Neighbouring pixels closer than SAME_AREA in color, joined: the plates are found in these areas, which keep a shape
 // whole across faint lines in it.
 function areas(lab, opaque, w, h) {
@@ -410,9 +427,11 @@ function areas(lab, opaque, w, h) {
     }
     return labels;
 }
+
 function apart(lab, i, j) {
     return Math.hypot(lab[i * 3] - lab[j * 3], lab[i * 3 + 1] - lab[j * 3 + 1], lab[i * 3 + 2] - lab[j * 3 + 2]);
 }
+
 // Finer areas, by graph-based segmentation (Felzenszwalb and Huttenlocher): neighbours are joined from the closest
 // pair up, and two areas only while the step between them is no larger than the steps already inside each, plus
 // FINE_JOIN over the area's size (`pixel` is the size of an analysis pixel). A gradient's small steps join it whole,
@@ -466,6 +485,7 @@ function fineAreas(lab, opaque, w, h, pixel) {
     }
     return labels;
 }
+
 /** The mask with every hole in it filled. */
 function filled(data, w, h) {
     const outside = new Uint8Array(w * h);
@@ -498,7 +518,9 @@ function filled(data, w, h) {
     }
     return outside.map(v => 1 - v);
 }
+
 const TERMS = 6;
+
 function terms(shape, x, y, out) {
     const u = (x - shape.cx) / shape.rx, v = (y - shape.cy) / shape.ry;
     out[0] = 1;
@@ -508,6 +530,7 @@ function terms(shape, x, y, out) {
     out[4] = u * v;
     out[5] = v * v;
 }
+
 /** The plate's Oklab color at a pixel position. */
 export function plateColor(plate, x, y, out = [0, 0, 0]) {
     const t = new Float64Array(TERMS);
@@ -520,6 +543,7 @@ export function plateColor(plate, x, y, out = [0, 0, 0]) {
     }
     return out;
 }
+
 function solve(a, b, n) {
     const m = Float64Array.from(a);
     const x = Float64Array.from(b);
@@ -547,6 +571,7 @@ function solve(a, b, n) {
         x[r] /= m[r * n + r];
     return x;
 }
+
 // A least-squares quadratic color over the pixels, refitted twice without the
 // ones far from it (a symbol over the rim, the plate's own highlights).
 function fitColor(shape, pixels, lab, w) {
@@ -608,6 +633,7 @@ function fitColor(shape, pixels, lab, w) {
     }
     return { color, rms, kept: pixels.length ? kept / pixels.length : 0, noise };
 }
+
 // The mask grown by `steps` pixels.
 function dilated(mask, w, h, steps) {
     let out = mask;
@@ -621,10 +647,12 @@ function dilated(mask, w, h, steps) {
     }
     return out;
 }
+
 // Shapes a pixel or so apart in place and size are one plate.
 function sameShape(a, b) {
     return [a.cx - b.cx, a.cy - b.cy, a.rx - b.rx, a.ry - b.ry].every(d => Math.abs(d) <= 1.5);
 }
+
 // How much of the mask's edge lies on the shape's outline.
 function alongOutline(mask, shape, w, h) {
     let edge = 0, on = 0;
@@ -642,10 +670,12 @@ function alongOutline(mask, shape, w, h) {
     }
     return edge ? on / edge : 0;
 }
+
 function alike(a, b) {
     const near = (x, y) => Math.abs(x - y) <= PEER_SIZE * Math.max(x, y);
     return near(a.mask.area, b.mask.area) && near(a.shape.rx, b.shape.rx) && near(a.shape.ry, b.shape.ry);
 }
+
 export function analyzeIcon(icon) {
     const { width: w, height: h, data } = icon;
     const n = w * h;
@@ -854,6 +884,7 @@ export function analyzeIcon(icon) {
     const { symbol, intensity } = symbolLayer(plates, w, icon);
     return { width: w, height: h, plates, symbol, intensity };
 }
+
 /** The plates without those `leftOut` picks and the plates on them. A plate comes after the plate it sits on. */
 export function withoutPlates(plates, leftOut) {
     const index = [];
@@ -867,6 +898,7 @@ export function withoutPlates(plates, leftOut) {
     });
     return out;
 }
+
 // The mean colors of the pieces a plate's surface is cut into (see PIECE_SHARE), or none.
 function piecesOf(own, counts, most, labels, lab) {
     const big = [...counts].filter(([label, count]) => label >= 0 && count >= most * PIECE_SHARE && count >= own.length * PIECE_MIN)
@@ -888,6 +920,7 @@ function piecesOf(own, counts, most, labels, lab) {
     }
     return distinct.length >= 3 ? colors : [];
 }
+
 // Oklab distance from `c` to the segment from `p` to `q`: a pixel on the
 // line between two plates mixes their colors.
 function segmentDistance(c, p, q) {
@@ -896,6 +929,7 @@ function segmentDistance(c, p, q) {
     const t = len2 > 0 ? Math.min(Math.max(((c[0] - p[0]) * v[0] + (c[1] - p[1]) * v[1] + (c[2] - p[2]) * v[2]) / len2, 0), 1) : 0;
     return Math.hypot(c[0] - p[0] - v[0] * t, c[1] - p[1] - v[1] * t, c[2] - p[2] - v[2] * t);
 }
+
 /**
  * The symbol over `plates` (from analyzeIcon() at `analysisWidth` px) in `pixels`, which may be the icon drawn at
  * another size: per pixel how much of it is symbol, the symbol's own tone, and the shade of the plate's surface.
@@ -1422,6 +1456,7 @@ export function symbolLayer(plates, analysisWidth, pixels) {
     }
     return { symbol, intensity, surface };
 }
+
 // Per area, the symbol area it is part of under a gloss or a shade (-1: none): an area next to a symbol area whose
 // color is that area's with the same white or black laid over it as an area of the surface next to it has over the
 // surface's own color (a highlight across a lens and the rings on it).
@@ -1473,6 +1508,7 @@ function glossed(list, main, regions, w, h) {
     });
     return like;
 }
+
 // The symbol's large areas (`big`) that are gradients: their colors spread GRADIENT_SPREAD or more apart along the way
 // they differ most, the extreme GRADIENT_TAIL of them left out. Each with where a pixel's color lies along that way,
 // from 0 to 1 (the lighter end).
@@ -1518,6 +1554,7 @@ function gradientsOf(regions, lab, big) {
     }
     return out;
 }
+
 // The color areas of an image split by the plates they lie in: per pixel an index into `list` (-1: clear), and
 // whether the pixel's four neighbours are in its area too.
 function regionsOf(lab, opaque, owner, depth, w, h, s) {
@@ -1567,6 +1604,7 @@ function regionsOf(lab, opaque, owner, depth, w, h, s) {
     });
     return { region, inner, list };
 }
+
 // Per pixel `wanted`, the means of `channels` values (the last a weight, 0 or 1) around it, with that weight last
 // (0 where there is none): the squares of the given radii, each its weight's density, laid over one another, which
 // makes a kernel that falls off smoothly with distance, so that the means do not jump where the nearest values do.
@@ -1607,6 +1645,7 @@ function localMeans(values, wanted, w, h, channels, radii) {
     }
     return out;
 }
+
 // How strongly each color of the symbol is drawn, 1 - DETAIL_DIM to 1 (null: all fully). The symbol's large areas are put together
 // into up to TONE_GROUPS colors (the largest), which are given the strengths, out of TONE_LEVELS steps, that best
 // keep apart the colors that meet (`edges`: two colors and the length of their edge), the more so the more they

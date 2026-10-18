@@ -6,9 +6,11 @@ import { QS_MENU_TOGGLE_CLASS } from '../shellVersion.js';
 // ON/OFF and hover) for the glass's base color, and makes the pod's own
 // backgrounds transparent so the glass shows through.
 const TRANSPARENT_OVERRIDE = 'background-color: transparent !important;';
+
 function _withOverride(origStyle) {
     return origStyle ? `${origStyle} ${TRANSPARENT_OVERRIDE}` : TRANSPARENT_OVERRIDE;
 }
+
 function _releaseEntry(pod, entry) {
     if (entry.destroyId)
         pod.disconnect(entry.destroyId);
@@ -17,25 +19,31 @@ function _releaseEntry(pod, entry) {
             actor.set_style(origStyle || null);
     }
 }
+
 export class ToggleStyles {
     _logger;
     _isOpen;
+
     constructor(_logger, _isOpen) {
         this._logger = _logger;
         this._isOpen = _isOpen;
     }
+
     sync(root) {
         const toggles = this._findAllToggleContainers(root);
         this._ensureToggleStyles(toggles);
         return toggles;
     }
+
     colorFor(actor) {
         return this._toggleRegions.get(actor);
     }
+
     // Logs the sampled colors for the next few passes (with logging on).
     resetDiagnostics() {
         this._debugToggleColorLogFrames = 15;
     }
+
     // How often each pod's color is re-read, i.e. how quickly the glass
     // follows a toggle's ON/OFF and hover state. Pods whose state is unchanged
     // are skipped, so a steady tick is cheap.
@@ -49,6 +57,7 @@ export class ToggleStyles {
     _toggleColorTimerId = 0;
     _resamplePassCount = 0;
     _debugToggleColorLogFrames = 15;
+
     // Finds the pods under `actor`, without descending into a pod:
     //  - a `.quick-toggle-has-menu` wrapper (`.quick-menu-toggle` before GNOME
     //    48; Wi-Fi, Bluetooth): the main button, the separator and the arrow
@@ -79,6 +88,7 @@ export class ToggleStyles {
             this._findAllToggleContainers(child, found, entersSystemItem);
         return found;
     }
+
     _toggleLeafKind(actor, inSystemItem) {
         if (!(actor instanceof St.Widget))
             return null;
@@ -93,6 +103,7 @@ export class ToggleStyles {
             return 'slider';
         return null;
     }
+
     // Whether a slider row paints its own pill. An adopted pod carries our
     // transparency override, so its theme node would say no; it keeps its
     // verdict here, and _releaseIfSliderLostPill() re-checks it while the
@@ -103,6 +114,7 @@ export class ToggleStyles {
         let bg = this._readThemeBg(actor);
         return !!(bg && bg.a > 0.02);
     }
+
     // Every St.Widget in the pod, at any depth. All of them get the
     // transparency override, which is harmless for icons and labels and does
     // not depend on the theme's exact structure.
@@ -117,6 +129,7 @@ export class ToggleStyles {
         walk(pod);
         return found;
     }
+
     // The actor whose color represents the pod: for a has-menu pod, its main
     // `.quick-toggle` button, which may sit more than one level down.
     _getPrimaryToggleButton(pod) {
@@ -141,6 +154,7 @@ export class ToggleStyles {
         }
         return pod;
     }
+
     // Some themes put a toggle's ON/OFF color on its `.quick-toggle-icon`.
     _getToggleIconActors(root) {
         const found = [];
@@ -155,6 +169,7 @@ export class ToggleStyles {
             walk(root);
         return found;
     }
+
     // The theme background as normalized {r, g, b, a}, falling back to the
     // average of a background gradient when the flat color is transparent.
     _readThemeBg(actor) {
@@ -179,6 +194,7 @@ export class ToggleStyles {
         }
         return { r: bg.red / 255, g: bg.green / 255, b: bg.blue / 255, a: bg.alpha / 255 };
     }
+
     // What is actually visible at `actor`: its own background composited over
     // its ancestors' until opaque. A transparent background still reports RGB
     // (usually black) that the theme never paints; this replaces it with the
@@ -208,6 +224,7 @@ export class ToggleStyles {
             return { r: 0, g: 0, b: 0, a: 0 };
         return { r: outR / outA, g: outG / outA, b: outB / outA, a: outA };
     }
+
     // The pod's visible color. Themes put a toggle's state color in different
     // places: Adwaita on the inner `.quick-toggle`, MacTahoe on the has-menu
     // wrapper (whose inner button is `background: none`) or only on the
@@ -240,6 +257,7 @@ export class ToggleStyles {
         // Nothing in the pod paints; its color is whatever shows through.
         return this._compositeOverAncestors(pod, null);
     }
+
     // Tracks every pod and keeps the transparency override on each of its
     // current sub-actors. Runs every frame, and checks each actor's own style
     // rather than remembering a pod as done, because the shell rebuilds the
@@ -257,6 +275,7 @@ export class ToggleStyles {
             this._overrideSubStyles(entry, pod);
         }
     }
+
     _ensureEntry(pod) {
         let entry = this._toggleRegions.get(pod);
         if (entry)
@@ -269,10 +288,12 @@ export class ToggleStyles {
         });
         return entry;
     }
+
     _hasOverride(actor) {
         const style = actor.get_style();
         return !!style && style.includes(TRANSPARENT_OVERRIDE);
     }
+
     _updateBaseColor(entry, pod, primary) {
         const sampled = this._samplePodColor(pod, primary);
         // A near-transparent sample says nothing about the color.
@@ -282,6 +303,7 @@ export class ToggleStyles {
         }
         return sampled;
     }
+
     _overrideSubStyles(entry, pod) {
         const known = new Set(entry.styledSubs.map(s => s.actor));
         for (let sub of this._getStylableSubActors(pod)) {
@@ -293,6 +315,7 @@ export class ToggleStyles {
                 entry.styledSubs.push({ actor: sub, origStyle });
         }
     }
+
     // Re-samples each pod's color: lifts the override from its sub-actors,
     // reads the theme color, and puts the override back.
     _resampleToggleColors() {
@@ -302,6 +325,7 @@ export class ToggleStyles {
         if (this._debugToggleColorLogFrames > 0)
             this._debugToggleColorLogFrames--;
     }
+
     _resamplePod(pod, entry, forceFull) {
         const primary = this._getPrimaryToggleButton(pod);
         const stateKey = this._podStateKey(pod, primary);
@@ -324,6 +348,7 @@ export class ToggleStyles {
                 actor.set_style(_withOverride(origStyle));
         }
     }
+
     // A theme switch does not rebuild the Quick Settings actors, so a slider
     // adopted under a theme that draws a pill would stay glassed after
     // switching to one that does not. While the override is lifted its real
@@ -342,6 +367,7 @@ export class ToggleStyles {
         this._toggleRegions.delete(pod);
         return true;
     }
+
     _logPodColor(pod, primary, entry, sampled) {
         let isHasMenu = pod instanceof St.Widget && pod.has_style_class_name(QS_MENU_TOGGLE_CLASS);
         let podCls = pod instanceof St.Widget ? (pod.get_style_class_name() || '') : '';
@@ -359,6 +385,7 @@ export class ToggleStyles {
             `chosen.a=${sampled.a.toFixed(2)} trusted=${sampled.a > 0.02} ` +
             `entry.baseColor=[${entry.baseColor.map(v => v.toFixed(2)).join(',')}] entry.baseAlpha=${entry.baseAlpha.toFixed(2)}`);
     }
+
     start() {
         this._resampleToggleColors();
         if (this._toggleColorTimerId !== 0)
@@ -372,6 +399,7 @@ export class ToggleStyles {
             return GLib.SOURCE_CONTINUE;
         });
     }
+
     // The pseudo-classes of the actors _samplePodColor() can pick from.
     _podStateKey(pod, primary) {
         const STATES = ['checked', 'hover', 'active', 'insensitive', 'focus', 'selected'];
@@ -392,12 +420,14 @@ export class ToggleStyles {
         }
         return key;
     }
+
     stop() {
         if (this._toggleColorTimerId !== 0) {
             GLib.source_remove(this._toggleColorTimerId);
             this._toggleColorTimerId = 0;
         }
     }
+
     // Restores the original inline styles and forgets every pod.
     clear() {
         this.stop();

@@ -1,5 +1,6 @@
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { isActorValid } from './lifecycle.js';
+
 /**
  * An actor's allocated size. get_size() falls back to the preferred size
  * while a relayout is pending, which the per-frame syncs run into all the
@@ -15,6 +16,7 @@ export function getAllocatedSize(actor) {
     const [sw, sh] = actor.get_size();
     return [sw, sh];
 }
+
 /**
  * An actor's on-screen rectangle [x, y, w, h] with every ancestor transform
  * applied. Pairing get_transformed_position() with a size is wrong while an
@@ -32,6 +34,7 @@ export function getTransformedRect(actor) {
     const [aw, ah] = getAllocatedSize(actor);
     return [px, py, aw, ah];
 }
+
 export function resolveMonitorGeometry(candidates) {
     const layoutManager = Main.layoutManager;
     for (const actor of candidates) {

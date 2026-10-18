@@ -6,15 +6,18 @@ import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import { WorkerProcess } from '../workers/workerProcess.js';
 import { DigitsMaker } from './digits.js';
+
 export class DigitsSource {
     _logger;
     _worker;
     _local = null;
     _cancellable = new Gio.Cancellable();
+
     constructor(extensionPath, _logger) {
         this._logger = _logger;
         this._worker = new WorkerProcess(`${extensionPath}/dist/desktop/digitsWorker.js`, 'clock\'s worker', _logger);
     }
+
     /** Rejects when the digits cannot be made. */
     async make(request) {
         if (!this._local && !this._worker.available) {
@@ -49,6 +52,7 @@ export class DigitsSource {
             });
         }
     }
+
     destroy() {
         this._cancellable.cancel();
         this._worker.destroy();

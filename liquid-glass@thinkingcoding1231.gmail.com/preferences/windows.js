@@ -41,7 +41,7 @@ class WindowListClient {
   }
 
   _notify() {
-    for (const watcher of [...this._watchers])
+    for (const watcher of this._watchers)
       watcher();
   }
 

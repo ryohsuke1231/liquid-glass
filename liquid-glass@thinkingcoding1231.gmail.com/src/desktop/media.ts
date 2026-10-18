@@ -43,8 +43,8 @@ interface Player {
 export class MediaWidget extends GlassCard {
   private _art: St.Icon;
   private _bars: St.DrawingArea;
-  private _levels: number[] = new Array(BAR_COUNT).fill(0);
-  private _targets: number[] = new Array(BAR_COUNT).fill(0);
+  private _levels: number[] = Array.from({ length: BAR_COUNT }, () => 0);
+  private _targets: number[] = Array.from({ length: BAR_COUNT }, () => 0);
   private _barsTickId = 0;
   private _barsLastUs = 0;
   private _spectrum: AudioSpectrum;
@@ -194,7 +194,7 @@ export class MediaWidget extends GlassCard {
       return;
     }
     this._spectrum.stop();
-    this._targets = new Array(BAR_COUNT).fill(0);
+    this._targets = Array.from({ length: BAR_COUNT }, () => 0);
     this._animateBars();
   }
 
@@ -248,7 +248,7 @@ export class MediaWidget extends GlassCard {
     this._cancellable.cancel();
     if (this._ownerChangedId) Gio.DBus.session.signal_unsubscribe(this._ownerChangedId);
     this._ownerChangedId = 0;
-    for (const name of [...this._players.keys()]) this._removePlayer(name);
+    for (const name of this._players.keys()) this._removePlayer(name);
     this._spectrum.stop();
     if (this._barsTickId) removeFrameTicker(this._barsTickId);
     this._barsTickId = 0;

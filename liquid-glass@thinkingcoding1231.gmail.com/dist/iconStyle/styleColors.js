@@ -48,13 +48,16 @@ export const ICON_TUNING = [
     { key: 'clearSymbolShadow', title: 'Symbol: shadow under it', looks: ['clear'], min: 0, max: 1, value: 0.4 },
 ];
 const WHITE = [1, 1, 1];
+
 function mix(a, b, t) {
     return [0, 1, 2].map(i => a[i] + (b[i] - a[i]) * t);
 }
+
 // A grey a little cooler than neutral.
 function glass(lightness) {
     return [lightness - 0.01, lightness, lightness + 0.02].map(v => Math.min(Math.max(v, 0), 1));
 }
+
 /**
  * @param tint The accent or chosen color, 0 to 1 a channel.
  * @param strength How much of the tint the outer plate of a dark tinted icon takes, 0 (the dark glass alone) to 1.
@@ -94,6 +97,7 @@ export function iconStyleColors(mode, tint, strength, symbolOpacity, variant = '
         symbolInner: [...(light ? mix(dark, t, v('darkSymbolOnLight')) : mix(t, WHITE, v('darkSymbolOnDark'))), symbolOpacity],
         rim: v('darkRim'), tint: [t[0], t[1], t[2]] };
 }
+
 /** The shader's uniforms for `colors`, by name. */
 export function iconStyleUniforms(colors) {
     const out = [['rim_a', colors.rim], ['rim_width', colors.rimWidth], ['rim_base', colors.rimBase],

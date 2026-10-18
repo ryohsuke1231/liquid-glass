@@ -7,12 +7,14 @@ import GdkPixbuf from 'gi://GdkPixbuf';
 import GLib from 'gi://GLib';
 import { decodePngRgba } from '../imaging/png.js';
 let rsvg = null;
+
 // Imported on first use, so that a system without its typelib can still draw PNGs.
 async function librsvg() {
     const name = 'gi://Rsvg?version=2.0';
     rsvg ??= (await import(name)).default;
     return rsvg;
 }
+
 // Cairo keeps its pixels premultiplied and cannot hand them over; its PNG writer unpremultiplies them.
 function pixelsOf(surface) {
     const [fd, path] = GLib.file_open_tmp('liquid-glass-icon-XXXXXX.png');
@@ -26,6 +28,7 @@ function pixelsOf(surface) {
         GLib.unlink(path);
     }
 }
+
 function fromPixbuf(pixbuf, size) {
     const scaled = pixbuf.scale_simple(size, size, GdkPixbuf.InterpType.HYPER).add_alpha(false, 0, 0, 0);
     const stride = scaled.get_rowstride();
@@ -35,6 +38,7 @@ function fromPixbuf(pixbuf, size) {
         data.set(bytes.subarray(y * stride, y * stride + size * 4), y * size * 4);
     return { width: size, height: size, data };
 }
+
 /** Throws a GError when the file cannot be read or drawn. */
 export async function drawIcon(path, size) {
     const svg = /\.svgz?$/i.test(path);

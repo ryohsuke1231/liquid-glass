@@ -108,7 +108,7 @@ export class ApplicationManager {
       global.display.disconnect(id);
     this._displaySignals = [];
 
-    for (const actor of [...this._newWindows.keys()])
+    for (const actor of this._newWindows.keys())
       this._forgetNewWindow(actor);
 
     for (const id of this._settingsSignals)
@@ -307,7 +307,7 @@ export class ApplicationManager {
 
     // A window that now belongs to the other profile is rebuilt too, since
     // the profile is fixed in its state.
-    for (const [actor, state] of [...this._states.entries()]) {
+    for (const [actor, state] of this._states.entries()) {
       if (this._profileForWindow(actor) !== state.profile) {
         this._cleanupState(state);
         this._states.delete(actor);

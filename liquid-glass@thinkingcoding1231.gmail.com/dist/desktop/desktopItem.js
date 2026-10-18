@@ -16,6 +16,7 @@ const CLICK_SLOP = 6;
 // The text on the desktop stays in the preferred color down to this contrast
 // ratio (WCAG's for large text), so a busy wallpaper does not keep flipping it.
 export const PREFERRED_MIN_CONTRAST = 3;
+
 /**
  * A left click on `actor` calls `onClick` and a right click opens its menu.
  * Items move only in the menu's edit mode, so a stray drag does nothing.
@@ -48,6 +49,7 @@ export function connectClicks(actor, onClick, onMenu) {
         return Clutter.EVENT_STOP;
     });
 }
+
 /**
  * A desktop widget: content on a rounded card of glass. Subclasses fill
  * `box` and may hide the card (`shown`) when they have nothing to show.
@@ -63,6 +65,7 @@ export class GlassCard {
     _lastShown = false;
     _text;
     _shown = true;
+
     constructor(id, env, width) {
         this.id = id;
         this.env = env;
@@ -86,17 +89,21 @@ export class GlassCard {
         this._applyMaterial();
         this._syncText();
     }
+
     activate() {
     }
+
     get shown() {
         return this._shown;
     }
+
     set shown(shown) {
         if (shown === this._shown)
             return;
         this._shown = shown;
         this.env.relayout();
     }
+
     _applyMaterial() {
         const s = this.env.settings;
         const g = this.glass;
@@ -109,6 +116,7 @@ export class GlassCard {
         g.setSaturation(s.get_double('desktop-widget-saturation'));
         this.box.set_style(`border-radius: ${s.get_double('desktop-widget-corner-radius')}px;`);
     }
+
     _syncText() {
         const s = this.env.settings;
         if (!s.get_boolean('desktop-widget-enable-adaptive-text-color')) {
@@ -117,19 +125,23 @@ export class GlassCard {
         }
         this._text.start(s.get_int('desktop-widget-sample-interval-ms'), sanitizeColorPreference(s.get_string('desktop-widget-adaptive-text-preference')), PREFERRED_MIN_CONTRAST);
     }
+
     // The content changed; measure the text color again.
     contentChanged() {
         this._text.invalidate();
         this.env.relayout();
     }
+
     size() {
         const [, natW] = this.box.get_preferred_width(-1);
         const [, natH] = this.box.get_preferred_height(natW);
         return [Math.ceil(Math.max(natW, this.box.width)), Math.ceil(natH)];
     }
+
     bounds() {
         return [0, 0, ...this.size()];
     }
+
     sync() {
         const shown = this.shown;
         this.actor.visible = shown;
@@ -154,6 +166,7 @@ export class GlassCard {
         }
         return changed;
     }
+
     destroy() {
         for (const id of this._settingsIds)
             this.env.settings.disconnect(id);

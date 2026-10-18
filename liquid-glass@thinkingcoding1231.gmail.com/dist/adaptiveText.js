@@ -4,6 +4,7 @@ import { StageContrastSampler, AdaptiveContrastConfig } from './contrastSampler.
 import { adaptiveColorTweener, hexToRgb, resolveCrossFade } from './animation/colors.js';
 import { isActorValid } from './actors/lifecycle.js';
 const COLOR_TWEEN_MS = 380;
+
 /**
  * Keeps the labels and icons under `roots` readable on their glass: every
  * `intervalMs` it measures what is behind them and colors them light or
@@ -26,6 +27,7 @@ export class AdaptiveTextColor {
     _pending = 0;
     // Each colored actor's own inline style, put back by clear().
     _styled = new Map();
+
     constructor(_roots, _glasses, _logger, _label, _options = {}) {
         this._roots = _roots;
         this._glasses = _glasses;
@@ -33,6 +35,7 @@ export class AdaptiveTextColor {
         this._label = _label;
         this._options = _options;
     }
+
     /**
      * @param preferredMinContrast When above 0, `preference` is kept while it
      *   reads at least this well; see AdaptiveContrastConfig.
@@ -50,16 +53,19 @@ export class AdaptiveTextColor {
             return GLib.SOURCE_CONTINUE;
         });
     }
+
     stop() {
         if (this._timerId) {
             GLib.Source.remove(this._timerId);
             this._timerId = 0;
         }
     }
+
     // Measures again at the next update, for a surface whose content changed.
     invalidate() {
         this._sampler.invalidate();
     }
+
     // True while any of this surface's text actors are being recolored. Layouts
     // that derive geometry from those actors can hold their last stable bounds.
     isAnimating() {
@@ -69,6 +75,7 @@ export class AdaptiveTextColor {
         }
         return false;
     }
+
     update() {
         if (this._inFlight || this._pending > 0 || this._options.held?.())
             return;
@@ -94,6 +101,7 @@ export class AdaptiveTextColor {
             .catch(e => this._logger.error(`[Liquid Glass] ${this._label} text color update failed: ${e}`))
             .finally(() => { this._inFlight = false; });
     }
+
     /**
      * Colors the roots at once, without a tween, for what is behind `rect` (stage coordinates): for a surface with
      * ownColor about to take that size, whose new part has no glass under it yet. Does nothing unless started.
@@ -113,6 +121,7 @@ export class AdaptiveTextColor {
             .catch(e => this._logger.error(`[Liquid Glass] ${this._label} text color update failed: ${e}`))
             .finally(() => { this._pending--; });
     }
+
     _apply(actor, color, skip, batch) {
         if (!(actor instanceof St.Widget) || !isActorValid(actor))
             return;
@@ -153,6 +162,7 @@ export class AdaptiveTextColor {
             coalesce: true,
         }, batch);
     }
+
     /** Stops measuring and gives every actor its own style back. */
     clear() {
         this.stop();
@@ -164,6 +174,7 @@ export class AdaptiveTextColor {
         this._styled.clear();
     }
 }
+
 function collectText(actor, out) {
     if (!actor.visible)
         return;

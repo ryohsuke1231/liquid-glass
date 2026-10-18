@@ -14,12 +14,15 @@ const HOURS = 5;
 const REFRESH_S = 30 * 60;
 const CONTACT = 'https://github.com/ryohsuke1231/liquid-glass';
 const USER_AGENT = `Liquid Glass GNOME Shell extension (${CONTACT})`;
+
 function sanitizeUnit(value) {
     return value === 'celsius' || value === 'fahrenheit' ? value : 'auto';
 }
+
 function degrees(value) {
     return `${Math.round(value)}°`;
 }
+
 // WMO weather codes, as Open-Meteo reports them.
 const CODES = {
     0: ['Clear', 'weather-clear-symbolic', 'weather-clear-night-symbolic'],
@@ -51,10 +54,12 @@ const CODES = {
     96: ['Thunderstorm, Hail', 'weather-storm-symbolic'],
     99: ['Thunderstorm, Hail', 'weather-storm-symbolic'],
 };
+
 function wmo(code, isDay) {
     const [text, icon, night] = CODES[code] ?? ['Unknown', 'weather-severe-alert-symbolic'];
     return [text, !isDay && night ? night : icon];
 }
+
 // A summary for the weather an icon stands for, where libgweather gives no
 // conditions or sky (MET Norway's forecasts have neither).
 const ICON_SUMMARIES = [
@@ -62,13 +67,16 @@ const ICON_SUMMARIES = [
     ['weather-fog', 'Fog'], ['weather-showers-scattered', 'Showers'], ['weather-showers', 'Rain'],
     ['weather-snow', 'Snow'], ['weather-storm', 'Thunderstorm'],
 ];
+
 function iconSummary(icon) {
     return ICON_SUMMARIES.find(([prefix]) => icon.startsWith(prefix))?.[1] ?? '';
 }
+
 function placeOf(settings) {
     const [name, lat, lon] = settings.get_value('weather-place').deepUnpack();
     return name ? { name, lat, lon } : null;
 }
+
 /**
  * Today's weather and the next hours, for the place chosen in the
  * preferences or else the location GNOME Weather has set up (the one the
@@ -93,6 +101,7 @@ export class WeatherWidget extends GlassCard {
     _session = null;
     _cancellable = null;
     _timerId = 0;
+
     constructor(env) {
         super('weather', env, CARD_WIDTH);
         this._place = new St.Label({ style_class: 'lg-title' });
@@ -111,14 +120,17 @@ export class WeatherWidget extends GlassCard {
             this._weatherSettingsIds.push(env.settings.connect(`changed::${key}`, () => this._refresh()));
         this._refresh();
     }
+
     _unit() {
         return sanitizeUnit(this.env.settings.get_string('weather-temperature-unit'));
     }
+
     // The shell's weather client, or null without GNOME Weather.
     _shellClient() {
         const client = Main.panel.statusArea.dateMenu._weatherItem._weatherClient;
         return client.available ? client : null;
     }
+
     _stopSources() {
         if (this._client && this._clientId)
             this._client.disconnect(this._clientId);
@@ -136,6 +148,7 @@ export class WeatherWidget extends GlassCard {
             GLib.Source.remove(this._timerId);
         this._timerId = 0;
     }
+
     _refresh() {
         this._stopSources();
         const place = placeOf(this.env.settings);
@@ -156,9 +169,11 @@ export class WeatherWidget extends GlassCard {
             this._show('Install GNOME Weather, or choose a place in the Liquid Glass preferences');
         }
     }
+
     activate() {
         this._shellClient()?.activateApp();
     }
+
     // Asks again every REFRESH_S.
     _every(fn) {
         fn();
@@ -169,6 +184,7 @@ export class WeatherWidget extends GlassCard {
             return GLib.SOURCE_CONTINUE;
         });
     }
+
     _show(report) {
         if (typeof report === 'string') {
             this._place.text = 'Weather';
@@ -197,15 +213,18 @@ export class WeatherWidget extends GlassCard {
         this._credit.visible = !!report.credit;
         this.contentChanged();
     }
+
     _gweatherUnit() {
         const unit = this._unit();
         return unit === 'celsius' ? GWeather.TemperatureUnit.CENTIGRADE
             : unit === 'fahrenheit' ? GWeather.TemperatureUnit.FAHRENHEIT : GWeather.TemperatureUnit.DEFAULT;
     }
+
     _gweatherTemp(info) {
         const [ok, value] = info.get_value_temp(this._gweatherUnit());
         return ok ? value : null;
     }
+
     // A report from libgweather's `info`, for `place` (its own name when null).
     _gweatherReport(info, place, credit) {
         const icon = info.get_symbolic_icon_name();
@@ -243,6 +262,7 @@ export class WeatherWidget extends GlassCard {
             range: Number.isFinite(high) ? `H ${degrees(high)}  L ${degrees(low)}` : '', credit,
         };
     }
+
     _showShellWeather() {
         const client = this._client;
         if (!client)
@@ -258,6 +278,7 @@ export class WeatherWidget extends GlassCard {
         }
         this._show(this._gweatherReport(info, null, ''));
     }
+
     // libgweather's forecasts for exactly `place`, which GNOME Weather may not
     // know: its own locations are the larger cities with weather stations.
     _startOwnGWeather(place) {
@@ -276,12 +297,14 @@ export class WeatherWidget extends GlassCard {
         this._show('Loading…');
         this._every(() => info.update());
     }
+
     _startOpenMeteo(place) {
         this._session ??= new Soup.Session({ user_agent: USER_AGENT, timeout: 20 });
         const cancellable = new Gio.Cancellable();
         this._cancellable = cancellable;
         this._every(() => this._fetchOpenMeteo(place, cancellable));
     }
+
     _getJson(url, cancellable) {
         const message = Soup.Message.new('GET', url);
         return new Promise((resolve, reject) => {
@@ -298,6 +321,7 @@ export class WeatherWidget extends GlassCard {
             });
         });
     }
+
     async _fetchOpenMeteo(place, cancellable) {
         try {
             const fahrenheit = this._unit() === 'fahrenheit' ||
@@ -329,6 +353,7 @@ export class WeatherWidget extends GlassCard {
             this._show('Weather is not available right now');
         }
     }
+
     destroy() {
         this._stopSources();
         for (const id of this._weatherSettingsIds)

@@ -1062,7 +1062,7 @@ export class UIManager {
     }
 
     // Forget holders that have been destroyed; their handlers went with them.
-    for (const actor of [...this._hoverSignals.keys()]) {
+    for (const actor of this._hoverSignals.keys()) {
       if (!isActorValid(actor))
         this._hoverSignals.delete(actor);
     }

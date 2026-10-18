@@ -7,6 +7,7 @@ import { diagnosticLog } from './logging.js';
 const INTERVAL_MS = 100;
 const TICKS = 600;
 const KEYBINDING = 'dump-loop-keybinding';
+
 /**
  * An optional shortcut (enable-dump-shortcut, off by default) that writes the state of every glass to the journal
  * for a minute, for bug reports. Pressed again, it stops early.
@@ -16,13 +17,16 @@ export class DumpShortcut {
     _settingId = 0;
     _installed = false;
     _loopId = 0;
+
     constructor(_settings) {
         this._settings = _settings;
     }
+
     setup() {
         this._settingId = this._settings.connect('changed::enable-dump-shortcut', () => this._sync());
         this._sync();
     }
+
     cleanup() {
         this._settings.disconnect(this._settingId);
         this._stop();
@@ -30,6 +34,7 @@ export class DumpShortcut {
             Main.wm.removeKeybinding(KEYBINDING);
         this._installed = false;
     }
+
     _sync() {
         const wanted = this._settings.get_boolean('enable-dump-shortcut');
         if (wanted && !this._installed) {
@@ -42,6 +47,7 @@ export class DumpShortcut {
             this._stop();
         }
     }
+
     // The accelerator as the user sees it, for the notifications.
     _label() {
         const accel = this._settings.get_strv(KEYBINDING)[0];
@@ -50,6 +56,7 @@ export class DumpShortcut {
         return accel.replace(/<Control>/gi, 'Ctrl+').replace(/<Alt>/gi, 'Alt+').replace(/<Shift>/gi, 'Shift+')
             .replace(/<Super>/gi, 'Super+').replace(/\+([a-z])$/, (_, k) => `+${k.toUpperCase()}`);
     }
+
     _stop() {
         if (!this._loopId)
             return false;
@@ -57,6 +64,7 @@ export class DumpShortcut {
         this._loopId = 0;
         return true;
     }
+
     _toggle() {
         if (this._stop()) {
             Main.notify('Liquid Glass', 'Diagnostic dump stopped');

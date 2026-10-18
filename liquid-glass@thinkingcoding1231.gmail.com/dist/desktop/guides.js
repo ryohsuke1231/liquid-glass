@@ -4,14 +4,17 @@
 // the next. Near such a place the item is pulled onto it.
 // Lines up within this, px.
 const EXACT = 0.5;
+
 function span(r, horizontal) {
     const [lo, size, alo, asize] = horizontal ? [r.x, r.width, r.y, r.height] : [r.y, r.height, r.x, r.width];
     return { lo, hi: lo + size, mid: lo + size / 2, across: [alo, alo + asize] };
 }
+
 function overlap(a, b) {
     const lo = Math.max(a[0], b[0]), hi = Math.min(a[1], b[1]);
     return hi > lo ? [lo, hi] : null;
 }
+
 // The places along one axis for an item spanning `m`. The guides of an
 // alignment are lines across the axis; those of a spacing run along it.
 function stops(m, others, area, horizontal) {
@@ -51,6 +54,7 @@ function stops(m, others, area, horizontal) {
     }
     return out;
 }
+
 /**
  * Where an item at `rect` goes near the guides, within `reach` px each way,
  * and the guides it then lines up with. `area` is the work area.
@@ -80,6 +84,7 @@ export function snapMove(rect, others, area, reach) {
     }
     return { dx, dy, guides: merge(guides) };
 }
+
 // One line for guides on the same line, and none twice.
 function merge(guides) {
     const out = [];

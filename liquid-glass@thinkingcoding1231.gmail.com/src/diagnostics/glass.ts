@@ -298,7 +298,7 @@ function createDebugApi(): object {
     // 0 runs until monitorStop().
     monitor: (seconds: number = 30) => {
       startGlassMonitor(() => _liveGlasses, seconds);
-      return report(`monitor running${seconds > 0 ? ` for ${seconds}s` : ''}; see journalctl -o cat | grep '\[monitor\]'`);
+      return report(`monitor running${seconds > 0 ? ` for ${seconds}s` : ''}; see journalctl -o cat | grep '[monitor]'`);
     },
     monitorStop: () => {
       stopGlassMonitor();

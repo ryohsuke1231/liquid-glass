@@ -5,6 +5,7 @@ export class MaterialSettings {
     _setDiagnostics;
     _repaintIfDirty;
     _settingsIds = [];
+
     constructor(_settings, _uniforms, _blur, _setDiagnostics, _repaintIfDirty) {
         this._settings = _settings;
         this._uniforms = _uniforms;
@@ -12,6 +13,7 @@ export class MaterialSettings {
         this._setDiagnostics = _setDiagnostics;
         this._repaintIfDirty = _repaintIfDirty;
     }
+
     initialize() {
         // Buffered until the pipeline exists.
         this._uniforms.set('resolution_x', 0.0);
@@ -84,11 +86,13 @@ export class MaterialSettings {
             this._uniforms.set('tint_b', 1.0);
         }
     }
+
     clear() {
         if (this._settings)
             this._settingsIds.forEach(id => this._settings?.disconnect(id));
         this._settingsIds = [];
     }
+
     _bindSettings() {
         const mappings = [
             { key: 'glass-max-z', uniform: 'max_z' },
@@ -159,6 +163,7 @@ export class MaterialSettings {
         const diagId = settings.connect('changed::glass-debug-diagnostics', applyDiagFlag);
         this._settingsIds.push(diagId);
     }
+
     setAnimationScale(scale) {
         const settings = this._settings;
         if (!settings)

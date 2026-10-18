@@ -2,6 +2,7 @@ import GObject from 'gi://GObject';
 import Clutter from 'gi://Clutter';
 import Shell from 'gi://Shell';
 import St from 'gi://St';
+
 // Helper actors layered around real shell UI. They are hidden from picking so
 // that pointer events and Looking Glass's picker reach the real actors
 // instead.
@@ -12,9 +13,11 @@ export const UnpickableActor = GObject.registerClass(class UnpickableActor exten
         super._init(params);
         Shell.util_set_hidden_from_pick(this, true);
     }
+
     vfunc_pick(_pickContext) {
     }
 });
+
 /**
  * An St.Widget for the cases that need St styling. Giving it another widget's
  * style class makes St paint that widget's theme background (color, border,
@@ -26,9 +29,11 @@ export const UnpickableWidget = GObject.registerClass(class UnpickableWidget ext
         super._init(params);
         Shell.util_set_hidden_from_pick(this, true);
     }
+
     vfunc_pick(_pickContext) {
     }
 });
+
 /**
  * Reports a preferred size of 0x0 whatever its children want, so an actor
  * with an explicit monitor-sized size can sit inside a layout container (for
@@ -40,6 +45,7 @@ export const LayoutOpaqueActor = GObject.registerClass(class LayoutOpaqueActor e
     vfunc_get_preferred_width(_forHeight) {
         return [0, 0];
     }
+
     vfunc_get_preferred_height(_forWidth) {
         return [0, 0];
     }

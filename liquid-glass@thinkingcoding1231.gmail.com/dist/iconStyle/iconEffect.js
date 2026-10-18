@@ -18,6 +18,7 @@ const MATERIAL = ['max_z', 'displacement_scale', 'edge_smoothing', 'profile_shap
     'specular_intensity', 'shininess', 'rim_width', 'rim_intensity', 'rim_directional_power', 'rim_power',
     'rim_light_color_intensity', 'sheen_intensity', 'light_angle_deg', 'ao_intensity', 'ao_radius',
     'highlight_backdrop_color', 'surface_light_enabled', 'brightness', 'contrast', 'saturation'];
+
 /**
  * The pipeline every icon's is copied from, so that they share one program; with `glass`, the clear look's, which
  * also reads the lens map (layer 3) and what is behind the icon (layer 4).
@@ -41,11 +42,13 @@ export function iconStylePipeline(source, glass = false) {
     pipeline.add_snippet(snippet);
     return pipeline;
 }
+
 /** A style map's, its tones' or its lens map's pixels (RGBA) as a texture. */
 export function iconStyleTexture(data, width = MAP_SIZE, height = MAP_SIZE) {
     // Declared premultiplied so that Cogl keeps the channels as they are: they are distances, not a color.
     return Cogl.Texture2D.new_from_data(coglContext(), width, height, Cogl.PixelFormat.RGBA_8888_PRE, width * 4, data);
 }
+
 // Where an St.Icon draws its image: in a child, centerd in its content box. While the image is still
 // loading the child has no size, and the square in the middle of the content box stands for it.
 function imageRect(actor) {
@@ -57,6 +60,7 @@ function imageRect(actor) {
     const side = Math.min(box.get_width(), box.get_height());
     return [box.x1 + (box.get_width() - side) / 2, box.y1 + (box.get_height() - side) / 2, side, side];
 }
+
 export const IconStyleEffect = GObject.registerClass(class IconStyleEffect extends Clutter.OffscreenEffect {
     _init() {
         super._init();
@@ -68,6 +72,7 @@ export const IconStyleEffect = GObject.registerClass(class IconStyleEffect exten
         this._backdrop = null;
         this._materialSerial = -1;
     }
+
     /**
      * @param pipeline A copy of iconStylePipeline(), for this effect alone.
      * @param backdrop For a glass pipeline, what is behind the icon.
@@ -88,11 +93,13 @@ export const IconStyleEffect = GObject.registerClass(class IconStyleEffect exten
         }
         this.setColors(colors);
     }
+
     setColors(colors) {
         for (const [name, value] of iconStyleUniforms(colors))
             this._set(name, value);
         this.queue_repaint();
     }
+
     _set(name, value) {
         const pipeline = this._pipeline;
         if (!pipeline || this._values.get(name) === value)
@@ -105,12 +112,14 @@ export const IconStyleEffect = GObject.registerClass(class IconStyleEffect exten
         }
         pipeline.set_uniform_1f(location, value);
     }
+
     _setBehind(texture) {
         if (texture === this._behind)
             return;
         this._behind = texture;
         this._pipeline.set_layer_texture(4, texture);
     }
+
     vfunc_paint_target(node, _paintContext) {
         const texture = this.get_texture();
         const pipeline = this._pipeline;
@@ -137,6 +146,7 @@ export const IconStyleEffect = GObject.registerClass(class IconStyleEffect exten
         node.add_child(drawNode);
         drawNode.add_rectangle(new Clutter.ActorBox({ x1: 0, y1: 0, x2: texture.get_width(), y2: texture.get_height() }));
     }
+
     // Where the icon's square is in what is behind it, or the look without glass while that is not known there:
     // before it is first copied, and while the icon is drawn away from it (being dragged). An icon partly off the
     // screen, where the copy stops, reads its edge.

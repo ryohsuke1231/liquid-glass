@@ -27,6 +27,7 @@ const WINDOW_SHADOW_MARGIN = 80;
 // area does not toggle every frame. Kept small: a source inside the margin
 // still costs a copy whenever it redraws.
 const RELAY_KEEP_MARGIN = 16;
+
 /**
  * Its paint volume is its own box (the sample area), not the source's: a
  * redraw anywhere in the source then damages exactly the sample area,
@@ -38,10 +39,12 @@ const BackdropRelay = GObject.registerClass(class BackdropRelay extends Clutter.
         Shell.util_set_hidden_from_pick(this, true);
         this._allocated = false;
     }
+
     vfunc_allocate(box) {
         super.vfunc_allocate(box);
         this._allocated = true;
     }
+
     // A clone is relaid out whenever its source is, every frame for a
     // dragged window, and the request climbs to the glass, which then waits
     // for an allocation in every frame. A relay's box never changes, so once
@@ -50,8 +53,10 @@ const BackdropRelay = GObject.registerClass(class BackdropRelay extends Clutter.
         if (!this._allocated)
             super.vfunc_queue_relayout();
     }
+
     vfunc_pick(_pickContext) {
     }
+
     vfunc_get_paint_volume(volume) {
         if (!volume.set_from_allocation(this))
             return false;
@@ -59,9 +64,11 @@ const BackdropRelay = GObject.registerClass(class BackdropRelay extends Clutter.
         return true;
     }
 });
+
 // Actors that only carry relays for a backdrop read inside another actor's
 // paint (relayHolder()). They draw nothing, so no glass reads them.
 const holders = new WeakSet();
+
 /**
  * A parent for the relays of a RelaySet whose owner is not ours to add
  * children to. It goes on top of the UI group, which is at the stage's
@@ -72,6 +79,7 @@ export function relayHolder() {
     holders.add(holder);
     return holder;
 }
+
 export class RelaySet {
     _owner;
     _exclude;
@@ -82,6 +90,7 @@ export class RelaySet {
     area;
     _relays = new Map();
     changes = 0;
+
     // `exclude` names actors painted before the owner that are not part of
     // its backdrop. The relays go in `holder`, the owner itself by default.
     constructor(_owner, _exclude = () => false, _holder = _owner) {
@@ -91,6 +100,7 @@ export class RelaySet {
         this.area = new UnpickableActor({ name: 'liquid-glass-sample-area', width: SAMPLE_BASE, height: SAMPLE_BASE });
         _holder.add_child(this.area);
     }
+
     /**
      * Fits the sample area to `rect` [x, y, w, h] in the holder's coordinates
      * and updates the relays. Returns whether the set of relayed actors
@@ -137,14 +147,17 @@ export class RelaySet {
             this.changes++;
         return changed;
     }
+
     redrawArea() {
         this.area.queue_redraw();
     }
+
     // The relays go with the owner when it is destroyed; at shell shutdown they
     // can already be gone by the time the owner is cleaned up.
     clear() {
         this._relays.clear();
     }
+
     // The relayed actors, for the dump. Through the relay, whose source is
     // null once the source is gone.
     names() {
@@ -157,13 +170,16 @@ export class RelaySet {
             return a.get_name() || a.constructor.$gtype.name;
         });
     }
+
     areaRect() {
         return [this.area.translation_x, this.area.translation_y,
             this.area.scale_x * SAMPLE_BASE, this.area.scale_y * SAMPLE_BASE].map(v => Math.round(v));
     }
+
     _localToStage(x0, y0, x1, y1) {
         return localToStage(this._holder, x0, y0, x1, y1);
     }
+
     // Everything painted before the owner, and whether it reaches the sample
     // area (`near`) or the wider area a shown relay is kept for (`keep`): the
     // earlier siblings of the owner and of each of its ancestors, and the
@@ -188,6 +204,7 @@ export class RelaySet {
         }
         return wanted;
     }
+
     _collectWindowGroup(group, near, keep, wanted) {
         for (let a = group.get_first_child(); a; a = a.get_next_sibling()) {
             if (!a.mapped || a.opacity === 0)
@@ -196,17 +213,20 @@ export class RelaySet {
         }
     }
 }
+
 function sourceReach(actor, near, keep) {
     if (actor instanceof Meta.WindowActor)
         return { near: windowReaches(actor, near), keep: windowReaches(actor, keep) };
     return { near: actorReaches(actor, near), keep: actorReaches(actor, keep) };
 }
+
 // The stage rect [x0, y0, x1, y1] of a rect in `actor`'s coordinates.
 export function localToStage(actor, x0, y0, x1, y1) {
     const a = actor.apply_transform_to_point(new Graphene.Point3D({ x: x0, y: y0, z: 0 }));
     const b = actor.apply_transform_to_point(new Graphene.Point3D({ x: x1, y: y1, z: 0 }));
     return [Math.min(a.x, b.x), Math.min(a.y, b.y), Math.max(a.x, b.x), Math.max(a.y, b.y)];
 }
+
 // Moving an actor queues its redraw at once but changes its allocation only
 // in the coming relayout, so an actor waiting for one may be about to enter
 // the area and counts as reaching it. Otherwise its paint volume (which
@@ -217,11 +237,13 @@ function actorReaches(actor, area) {
     const pv = actor.get_transformed_paint_volume(global.stage);
     return !pv || volumeReaches(pv, area);
 }
+
 function volumeReaches(pv, area) {
     const o = pv.get_origin();
     return o.x < area[2] && o.x + pv.get_width() > area[0] &&
         o.y < area[3] && o.y + pv.get_height() > area[1];
 }
+
 // A window's paint volume includes the shadow mutter draws around it. A
 // window moved this frame has last frame's volume until the relayout, so
 // its buffer rect, already moved, decides, with room for a shadow.

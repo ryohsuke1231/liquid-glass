@@ -257,7 +257,7 @@ export class GlassClock implements DesktopItem {
     this._sizeChanged = true;
     this._adaptive.invalidate();
 
-    for (const key of [...this._prepared.keys()]) {
+    for (const key of this._prepared.keys()) {
       if (key !== text) this._prepared.delete(key);
     }
     // A failure shows when that minute comes and the digits are made again.
