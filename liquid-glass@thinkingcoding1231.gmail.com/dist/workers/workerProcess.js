@@ -1,14 +1,22 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.WorkerProcess = void 0;
+exports.serveRequests = serveRequests;
 // A worker process (gjs -m) that answers requests one line of JSON at a time:
 // each request carries an `id`, and the answer the same `id`. Started on the
 // first request and again after it exits, a few times at most.
-import Gio from 'gi://Gio';
-import GLib from 'gi://GLib';
+const 1 = __importDefault(require("gi://Gio"));
+const 2 = __importDefault(require("gi://GLib"));
 const MAX_STARTS = 3;
 
 function isCancelled(e) {
-    return e instanceof GLib.Error && e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED);
+    return e instanceof 2.default.Error && e.matches(1.default.IOErrorEnum, 1.default.IOErrorEnum.CANCELLED);
 }
-export class WorkerProcess {
+
+class WorkerProcess {
     _script;
     _name;
     _logger;
@@ -20,7 +28,7 @@ export class WorkerProcess {
     _writing = false;
     _nextId = 1;
     _starts = 0;
-    _cancellable = new Gio.Cancellable();
+    _cancellable = new 1.default.Cancellable();
     _encoder = new TextEncoder();
     /** @param _script The worker's module, run with gjs -m. */
     constructor(_script, _name, _logger) {
@@ -30,7 +38,7 @@ export class WorkerProcess {
     }
     /** Whether the worker runs or can be started. */
     get available() {
-        return !!this._process || (this._starts < MAX_STARTS && !!GLib.find_program_in_path('gjs'));
+        return !!this._process || (this._starts < MAX_STARTS && !!2.default.find_program_in_path('gjs'));
     }
     /** Requests not answered yet. */
     get pending() {
@@ -48,12 +56,12 @@ export class WorkerProcess {
         });
     }
     _start() {
-        const gjs = GLib.find_program_in_path('gjs');
+        const gjs = 2.default.find_program_in_path('gjs');
         if (!gjs || this._starts >= MAX_STARTS)
             return false;
         this._starts++;
         try {
-            this._process = Gio.Subprocess.new([gjs, '-m', this._script], Gio.SubprocessFlags.STDIN_PIPE | Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE);
+            this._process = 1.default.Subprocess.new([gjs, '-m', this._script], 1.default.SubprocessFlags.STDIN_PIPE | 1.default.SubprocessFlags.STDOUT_PIPE | 1.default.SubprocessFlags.STDERR_SILENCE);
         }
         catch (e) {
             // It would fail the same way again.
@@ -62,7 +70,7 @@ export class WorkerProcess {
             this._starts = MAX_STARTS;
             return false;
         }
-        this._output = new Gio.DataInputStream({ base_stream: this._process.get_stdout_pipe() });
+        this._output = new 1.default.DataInputStream({ base_stream: this._process.get_stdout_pipe() });
         this._read();
         return true;
     }
@@ -71,8 +79,8 @@ export class WorkerProcess {
         if (this._writing || !process || !this._lines.length)
             return;
         this._writing = true;
-        const bytes = new GLib.Bytes(this._encoder.encode(this._lines.shift()));
-        process.get_stdin_pipe().write_bytes_async(bytes, GLib.PRIORITY_DEFAULT, this._cancellable, (stream, res) => {
+        const bytes = new 2.default.Bytes(this._encoder.encode(this._lines.shift()));
+        process.get_stdin_pipe().write_bytes_async(bytes, 2.default.PRIORITY_DEFAULT, this._cancellable, (stream, res) => {
             this._writing = false;
             try {
                 stream.write_bytes_finish(res);
@@ -88,7 +96,7 @@ export class WorkerProcess {
     _read() {
         const process = this._process;
         const output = this._output;
-        output.read_line_async(GLib.PRIORITY_DEFAULT, this._cancellable, (_s, res) => {
+        output.read_line_async(2.default.PRIORITY_DEFAULT, this._cancellable, (_s, res) => {
             let line;
             try {
                 [line] = output.read_line_finish_utf8(res);
@@ -156,9 +164,9 @@ export class WorkerProcess {
                 }
                 else {
                     // Check again next tick
-                    GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+                    2.default.idle_add(2.default.PRIORITY_DEFAULT, () => {
                         check();
-                        return GLib.SOURCE_REMOVE;
+                        return 2.default.SOURCE_REMOVE;
                     });
                 }
             };
@@ -166,22 +174,23 @@ export class WorkerProcess {
         });
     }
 }
+exports.WorkerProcess = WorkerProcess;
 /**
  * The worker's side: answers each line of JSON on stdin with what `handle`
  * returns, or with its error, until stdin closes. Call from the worker's
  * module and await.
  */
-export async function serveRequests(handle) {
+async function serveRequests(handle) {
     const GioUnix = (await import('gi://GioUnix')).default;
-    const input = new Gio.DataInputStream({ base_stream: new GioUnix.InputStream({ fd: 0, close_fd: false }) });
+    const input = new 1.default.DataInputStream({ base_stream: new GioUnix.InputStream({ fd: 0, close_fd: false }) });
     const output = new GioUnix.OutputStream({ fd: 1, close_fd: false });
     const encoder = new TextEncoder();
-    const loop = new GLib.MainLoop(null, false);
+    const loop = new 2.default.MainLoop(null, false);
     const answer = (message) => output.write_all(encoder.encode(`${JSON.stringify(message)}\n`), null);
     // One request at a time, in order.
     let queue = Promise.resolve();
     const read = () => {
-        input.read_line_async(GLib.PRIORITY_DEFAULT, null, (_s, res) => {
+        input.read_line_async(2.default.PRIORITY_DEFAULT, null, (_s, res) => {
             let line = null;
             try {
                 [line] = input.read_line_finish_utf8(res);

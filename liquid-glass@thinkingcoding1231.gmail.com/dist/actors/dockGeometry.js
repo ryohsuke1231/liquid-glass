@@ -1,4 +1,12 @@
-export function clipDockBounds(bounds, target) {
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.clipDockBounds = clipDockBounds;
+exports.dockEdges = dockEdges;
+exports.balanceDockBounds = balanceDockBounds;
+exports.insetDockBounds = insetDockBounds;
+exports.visibleDockSize = visibleDockSize;
+
+function clipDockBounds(bounds, target) {
     let { absX, absY, baseW, baseH } = bounds;
     const { absX: tX, absY: tY, baseW: tW, baseH: tH } = target;
     // Cut off whatever sticks out of the target.
@@ -16,7 +24,8 @@ export function clipDockBounds(bounds, target) {
         baseH = (tY + tH) - absY;
     return { absX, absY, baseW, baseH };
 }
-export function dockEdges(bounds, monitor) {
+
+function dockEdges(bounds, monitor) {
     let minCenterDist = -1;
     let distLeftCenter = 0, distRightCenter = 0, distTopCenter = 0, distBottomCenter = 0;
     if (monitor) {
@@ -44,7 +53,8 @@ function referenceGaps(start, size, refStart, refSize) {
     }
     return [before, after];
 }
-export function balanceDockBounds(bounds, reference, edges) {
+
+function balanceDockBounds(bounds, reference, edges) {
     let { absX, absY, baseW, baseH } = bounds;
     const { absX: refX, absY: refY, baseW: refW, baseH: refH } = reference;
     if (Number.isNaN(refX) || Number.isNaN(refY) || !(refW > 0) || !(refH > 0))
@@ -76,7 +86,8 @@ export function balanceDockBounds(bounds, reference, edges) {
     return { absX, absY, baseW, baseH };
 }
 // Trims the dock to `margin` from the screen edge it is closest to.
-export function insetDockBounds(bounds, monitor, edges, margin, stableBaseW, stableBaseH) {
+
+function insetDockBounds(bounds, monitor, edges, margin, stableBaseW, stableBaseH) {
     let { absX, absY, baseW, baseH } = bounds;
     const { minCenterDist, distBottomCenter, distTopCenter, distRightCenter } = edges;
     if (minCenterDist === distBottomCenter) {
@@ -109,7 +120,8 @@ function insetSpan(start, size, edge, stableSize, leading) {
         size = stableSize;
     return [start, size];
 }
-export function visibleDockSize(bounds, monitor) {
+
+function visibleDockSize(bounds, monitor) {
     const { absX, absY, baseW, baseH } = bounds;
     let visibleW = baseW, visibleH = baseH;
     if (monitor) {

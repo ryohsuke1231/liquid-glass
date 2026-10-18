@@ -1,4 +1,8 @@
-export class MaterialSettings {
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.MaterialSettings = void 0;
+
+class MaterialSettings {
     _settings;
     _uniforms;
     _blur;
@@ -170,3 +174,4 @@ export class MaterialSettings {
         return true;
     }
 }
+exports.MaterialSettings = MaterialSettings;

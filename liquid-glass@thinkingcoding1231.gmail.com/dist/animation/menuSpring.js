@@ -1,4 +1,9 @@
-import { MAX_STEP_S } from './spring.js';
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.stepMenuSpring = stepMenuSpring;
+exports.applyMenuFrame = applyMenuFrame;
+exports.showMenuAtRest = showMenuAtRest;
+const spring_js_1 = require("./spring.js");
 const CLOSE_SPEED = 15.0;
 const CLOSED_BELOW = 0.005;
 const OPEN_SNAP_DISTANCE = 0.002;
@@ -10,7 +15,7 @@ function clampOpacity(v) {
 // Closing uses exponential decay: faster than the spring and never bounces.
 
 function stepClosing(scale, elapsedMs) {
-    const dt = Math.min(elapsedMs / 1000, MAX_STEP_S);
+    const dt = Math.min(elapsedMs / 1000, spring_js_1.MAX_STEP_S);
     const k = 1.0 - Math.exp(-CLOSE_SPEED * dt);
     scale.value += (0 - scale.value) * k;
     if (scale.value < CLOSED_BELOW)
@@ -27,7 +32,8 @@ function stepOpening(scale, elapsedMs) {
         return { s: 1.0, stopped: true };
     return { s, stopped: settled };
 }
-export function stepMenuSpring(scale, elapsedMs) {
+
+function stepMenuSpring(scale, elapsedMs) {
     const closing = scale.target === 0;
     const { s, stopped } = closing ? stepClosing(scale, elapsedMs) : stepOpening(scale, elapsedMs);
     // Scale 0 crashes Cogl, hence the 0.001 floor. Opacity fades out between
@@ -36,7 +42,8 @@ export function stepMenuSpring(scale, elapsedMs) {
         return { closing, stopped, scale: Math.max(0.001, s), opacity: clampOpacity((s - 0.3) / 0.7 * 255) };
     return { closing, stopped, scale: 0.2 + s * 0.8, opacity: clampOpacity((s / 0.3) * 255) };
 }
-export function applyMenuFrame(frame, animActor, glass, menuActor, sync) {
+
+function applyMenuFrame(frame, animActor, glass, menuActor, sync) {
     animActor.set_scale(frame.scale, frame.scale);
     glass.opacity = frame.opacity;
     animActor.opacity = frame.opacity;
@@ -56,7 +63,8 @@ export function applyMenuFrame(frame, animActor, glass, menuActor, sync) {
     glass.opacity = 255;
     sync();
 }
-export function showMenuAtRest(glass, animActor) {
+
+function showMenuAtRest(glass, animActor) {
     if (!glass)
         return;
     glass.remove_all_transitions();

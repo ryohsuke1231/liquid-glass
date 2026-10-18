@@ -1,5 +1,9 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.Logger = void 0;
 // Writes only while the `output-logs` setting is on.
-export class Logger {
+
+class Logger {
     _settings;
     _outputLogs;
     _settingsIds = [];
@@ -47,3 +51,4 @@ export class Logger {
         this._settingsIds = [];
     }
 }
+exports.Logger = Logger;

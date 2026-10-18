@@ -1,3 +1,4 @@
+"use strict";
 // How a menu's glass grows out of its panel button and goes back into it, as
 // one body of glass all the way. Opening, the button's capsule draws itself
 // into a round drop as it drops out of the button, and the drop is thrown out
@@ -10,6 +11,8 @@
 // Note: this implementation is inspired by and adapted from:
 // https://github.com/AndrewPrifer/liquid-dom
 // Big thanks to the original author (@AndrewPrifer) for the elegant solution.
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.MenuMorphMotion = void 0;
 const STEP_S = 0.002;
 const MAX_FRAME_S = 0.05;
 
@@ -112,7 +115,8 @@ function clamp01(t) {
 function lerp(a, b, t) {
     return a + (b - a) * t;
 }
-export class MenuMorphMotion {
+
+class MenuMorphMotion {
     opening;
     _buttonRect;
     _menu;
@@ -314,6 +318,7 @@ export class MenuMorphMotion {
         };
     }
 }
+exports.MenuMorphMotion = MenuMorphMotion;
 // How far apart two rects are, 0 when they touch or overlap.
 
 function rectGap(a, b) {

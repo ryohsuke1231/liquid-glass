@@ -1,3 +1,28 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.GlyphFields = void 0;
+exports.decodePngAlpha = decodePngAlpha;
+exports.signedDistances = signedDistances;
+exports.softened = softened;
+exports.softenedInSteps = softenedInSteps;
+exports.strokeWidths = strokeWidths;
+exports.dotSize = dotSize;
+exports.traceOutlines = traceOutlines;
+exports.moveOutline = moveOutline;
+exports.fillOutlines = fillOutlines;
+exports.restroke = restroke;
+exports.keepStrokeWidths = keepStrokeWidths;
+exports.rowShares = rowShares;
+exports.rowLandings = rowLandings;
+exports.spaceRows = spaceRows;
+exports.growUpright = growUpright;
+exports.pangoFace = pangoFace;
+exports.fileFace = fileFace;
+exports.maxDepth = maxDepth;
+exports.encodeFields = encodeFields;
 // The outline of a line of text as a signed distance field, for glass whose
 // shape is the text itself (the glass clock).
 //
@@ -5,19 +30,20 @@
 // is drawn (with Pango, or from a font file the extension ships) into a Cairo
 // surface that is written to a PNG and decoded here. Glyphs are measured once
 // per font and kept: a new time only places the cached fields side by side.
-import Gio from 'gi://Gio';
-import GLib from 'gi://GLib';
-import Pango from 'gi://Pango';
-import PangoCairo from 'gi://PangoCairo';
-import Cairo from 'cairo';
-import { traceGlyph } from './trueType.js';
-import { decodePng } from '../imaging/png.js';
+const 2 = __importDefault(require("gi://Gio"));
+const 3 = __importDefault(require("gi://GLib"));
+const 4 = __importDefault(require("gi://Pango"));
+const 5 = __importDefault(require("gi://PangoCairo"));
+const cairo_1 = __importDefault(require("cairo"));
+const trueType_js_1 = require("./trueType.js");
+const png_js_1 = require("../imaging/png.js");
 // Glyphs are drawn this many times larger and their fields scaled down, for
 // sub-pixel accurate edges.
 const SUPERSAMPLE = 2;
 /** The coverage (alpha, 0-255) of every pixel of a PNG. */
-export function decodePngAlpha(png) {
-    const { width, height, channels, data } = decodePng(png);
+
+function decodePngAlpha(png) {
+    const { width, height, channels, data } = (0, png_js_1.decodePng)(png);
     const alpha = new Uint8Array(width * height);
     for (let i = 0; i < width * height; i++)
         alpha[i] = channels === 4 ? data[i * 4 + 3] : channels === 2 ? data[i * 2 + 1] : data[i * channels];
@@ -150,7 +176,8 @@ function edgeField(alpha, w, h) {
     return { signed, nearest, nx, ny };
 }
 /** Signed distances (px, negative inside) from coverage (0-255); see edgeField(). */
-export function signedDistances(alpha, w, h) {
+
+function signedDistances(alpha, w, h) {
     return edgeField(alpha, w, h).signed;
 }
 // The box widths for three box blurs that together approximate a Gaussian of `sigma`.
@@ -195,7 +222,8 @@ function blurPasses(a, b, w, h, sigma) {
     ]);
 }
 /** `field` blurred by about a Gaussian of `sigma` px. */
-export function softened(field, sigma) {
+
+function softened(field, sigma) {
     const { width: w, height: h } = field;
     const a = Float32Array.from(field.data);
     for (const pass of blurPasses(a, new Float32Array(w * h), w, h, sigma))
@@ -203,7 +231,7 @@ export function softened(field, sigma) {
     return { data: a, width: w, height: h };
 }
 /** softened(), awaiting `pause` before each pass. */
-export async function softenedInSteps(field, sigma, pause) {
+async function softenedInSteps(field, sigma, pause) {
     const { width: w, height: h } = field;
     const a = Float32Array.from(field.data);
     for (const pass of blurPasses(a, new Float32Array(w * h), w, h, sigma)) {
@@ -246,7 +274,8 @@ function middleMean(values) {
  * the upright ones and across the flat ones. A stroke is as thick as the
  * largest circle that touches its edge from inside.
  */
-export function strokeWidths(alpha, w, h) {
+
+function strokeWidths(alpha, w, h) {
     const { signed, nearest, nx, ny } = edgeField(alpha, w, h);
     const deepest = new Float32Array(w * h);
     for (let i = 0; i < w * h; i++) {
@@ -273,7 +302,8 @@ export function strokeWidths(alpha, w, h) {
  * How wide and how tall the widest and tallest runs of ink in coverage
  * `alpha` (`w` x `h`) are, px: a dot's size.
  */
-export function dotSize(alpha, w, h) {
+
+function dotSize(alpha, w, h) {
     let wide = 0, tall = 0;
     for (let y = 0; y < h; y++) {
         let run = 0;
@@ -296,7 +326,8 @@ export function dotSize(alpha, w, h) {
  * points [x0, y0, x1, y1, ...], pixel (x, y) covering x to x + 1, each loop
  * running with the ink on its left.
  */
-export function traceOutlines(alpha, w, h) {
+
+function traceOutlines(alpha, w, h) {
     const inside = (i) => alpha[i] >= 128;
     // Edges between neighbouring pixel centers: 2i to the right of pixel i, 2i + 1 below it.
     const points = new Map();
@@ -468,7 +499,8 @@ function sharpenCorners(loop, limit) {
  * or a corner tighter than the move) is dropped, and its neighbours meet
  * instead. Empty when nothing is left.
  */
-export function moveOutline(loop, move) {
+
+function moveOutline(loop, move) {
     const n = loop.length / 2;
     const nx = new Float64Array(n), ny = new Float64Array(n), shift = new Float64Array(n), along = new Float64Array(n);
     for (let k = 0; k < n; k++) {
@@ -537,7 +569,8 @@ export function moveOutline(loop, move) {
  * traceOutlines() gives them), anti-aliased by the exact area each pixel
  * has inside.
  */
-export function fillOutlines(loops, w, h) {
+
+function fillOutlines(loops, w, h) {
     const stride = w + 2;
     const area = new Float32Array(stride * h);
     const line = (px, py, qx, qy) => {
@@ -606,7 +639,8 @@ export function fillOutlines(loops, w, h) {
  * pulled back to the thickness a pen `pen` px across (upright strokes) and
  * tall (flat strokes) draws it at that angle.
  */
-export function restroke(loops, pen, stretch) {
+
+function restroke(loops, pen, stretch) {
     const [across, tall] = pen;
     const move = (nx, ny, _x, y) => {
         const width = Math.hypot(across * nx, tall * ny);
@@ -617,7 +651,8 @@ export function restroke(loops, pen, stretch) {
         .filter(loop => loop.length);
 }
 /** Coverage `alpha` (`w` x `h`) of a glyph drawn `stretch` times as tall, its strokes as thick as `pen` draws them. */
-export function keepStrokeWidths(alpha, w, h, pen, stretch) {
+
+function keepStrokeWidths(alpha, w, h, pen, stretch) {
     return fillOutlines(restroke(traceOutlines(alpha, w, h), pen, () => stretch), w, h);
 }
 // Taller along the upright strokes
@@ -875,7 +910,8 @@ function bandShares(rows) {
  * `w` wide) takes, rows `top` to `bottom` (see the top of this section). The
  * shares add up to 1.
  */
-export function rowShares(alpha, w, top, bottom) {
+
+function rowShares(alpha, w, top, bottom) {
     return bandShares(bandRows(alpha, w, top, bottom));
 }
 /**
@@ -883,7 +919,8 @@ export function rowShares(alpha, w, top, bottom) {
  * `bottom` take `extra` more by `shares`: the rows above stay, the rows below
  * move down by all of it.
  */
-export function rowLandings(h, top, shares, extra) {
+
+function rowLandings(h, top, shares, extra) {
     const lands = new Float64Array(h + 1);
     for (let y = 0; y <= h; y++) {
         const r = y - top;
@@ -896,7 +933,8 @@ export function rowLandings(h, top, shares, extra) {
  * rowLandings()), and how many times as tall the glyph is drawn around each
  * height it lands at.
  */
-export function spaceRows(loops, lands) {
+
+function spaceRows(loops, lands) {
     const h = lands.length - 1;
     const land = (y) => {
         if (y <= 0)
@@ -938,7 +976,8 @@ export function spaceRows(loops, lands) {
  * and `bottom` by rowShares(), its strokes as thick as `pen` draws them;
  * `h + extra` rows.
  */
-export function growUpright(alpha, w, h, top, bottom, extra, pen) {
+
+function growUpright(alpha, w, h, top, bottom, extra, pen) {
     top = Math.min(Math.max(Math.round(top), 0), h - 1);
     bottom = Math.min(Math.max(Math.round(bottom), top + 1), h - 1);
     const lands = rowLandings(h, top, rowShares(alpha, w, top, bottom), extra);
@@ -967,7 +1006,7 @@ function downsample(field, factor) {
 }
 
 function layoutFor(cr, font, text) {
-    const layout = PangoCairo.create_layout(cr);
+    const layout = 5.default.create_layout(cr);
     layout.set_font_description(font);
     layout.set_text(text, -1);
     return layout;
@@ -975,18 +1014,19 @@ function layoutFor(cr, font, text) {
 // Runs `fn` with a Cairo context that draws nowhere, for measuring.
 
 function measuring(fn) {
-    const probe = new Cairo.ImageSurface(Cairo.Format.ARGB32, 1, 1);
-    const cr = new Cairo.Context(probe);
+    const probe = new cairo_1.default.ImageSurface(cairo_1.default.Format.ARGB32, 1, 1);
+    const cr = new cairo_1.default.Context(probe);
     const result = fn(cr);
     cr.$dispose();
     probe.finish();
     return result;
 }
 /** An installed font, through Pango: a description such as "Cantarell Bold" at `size` px. */
-export function pangoFace(description, size) {
+
+function pangoFace(description, size) {
     const fontAt = (scale) => {
-        const font = Pango.FontDescription.from_string(description);
-        font.set_absolute_size(size * scale * Pango.SCALE);
+        const font = 4.default.FontDescription.from_string(description);
+        font.set_absolute_size(size * scale * 4.default.SCALE);
         return font;
     };
     const font = fontAt(1);
@@ -1006,7 +1046,7 @@ export function pangoFace(description, size) {
             const encoder = new TextEncoder();
             let byteIndex = 0;
             return Array.from(text, ch => {
-                const x = layout.index_to_pos(byteIndex).x / Pango.SCALE;
+                const x = layout.index_to_pos(byteIndex).x / 4.default.SCALE;
                 byteIndex += encoder.encode(ch).length;
                 return x;
             });
@@ -1014,13 +1054,14 @@ export function pangoFace(description, size) {
         digitBand: () => measuring(cr => {
             const digits = layoutFor(cr, font, '0123456789');
             const [ink] = digits.get_pixel_extents();
-            return [ink.y, digits.get_baseline() / Pango.SCALE];
+            return [ink.y, digits.get_baseline() / 4.default.SCALE];
         }),
-        draw: (cr, text, scale) => PangoCairo.show_layout(cr, layoutFor(cr, fontAt(scale), text)),
+        draw: (cr, text, scale) => 5.default.show_layout(cr, layoutFor(cr, fontAt(scale), text)),
     };
 }
 /** A font file the extension ships with, at `size` px. */
-export function fileFace(font, size) {
+
+function fileFace(font, size) {
     const unit = size / font.unitsPerEm;
     const glyphs = (text) => Array.from(text, ch => font.glyph(ch.codePointAt(0)));
     const ascent = font.ascender * unit;
@@ -1054,7 +1095,7 @@ export function fileFace(font, size) {
             const s = unit * scale;
             let pen = 0;
             for (const g of glyphs(text)) {
-                traceGlyph(cr, g, pen, font.ascender * s, s);
+                (0, trueType_js_1.traceGlyph)(cr, g, pen, font.ascender * s, s);
                 pen += g.advance * s;
             }
             cr.fill();
@@ -1091,8 +1132,8 @@ async function rasterize(face, text, scale, stretch, tall, margin, cancellable) 
     const ay = y0 - ((y0 % SUPERSAMPLE) + SUPERSAMPLE) % SUPERSAMPLE;
     const width = Math.ceil((x1 - ax) / SUPERSAMPLE) * SUPERSAMPLE;
     const height = Math.ceil((y1 - ay) / SUPERSAMPLE) * SUPERSAMPLE;
-    const surface = new Cairo.ImageSurface(Cairo.Format.ARGB32, width, height);
-    const cr = new Cairo.Context(surface);
+    const surface = new cairo_1.default.ImageSurface(cairo_1.default.Format.ARGB32, width, height);
+    const cr = new cairo_1.default.Context(surface);
     cr.setSourceRGBA(1, 1, 1, 1);
     cr.translate(-ax, -ay);
     if (tall?.even) {
@@ -1105,9 +1146,9 @@ async function rasterize(face, text, scale, stretch, tall, margin, cancellable) 
     }
     face.draw(cr, text, scale);
     cr.$dispose();
-    const [fd, path] = GLib.file_open_tmp('liquid-glass-glyph-XXXXXX.png');
-    GLib.close(fd);
-    const file = Gio.File.new_for_path(path);
+    const [fd, path] = 3.default.file_open_tmp('liquid-glass-glyph-XXXXXX.png');
+    3.default.close(fd);
+    const file = 2.default.File.new_for_path(path);
     try {
         surface.writeToPNG(path);
         surface.finish();
@@ -1125,7 +1166,7 @@ async function rasterize(face, text, scale, stretch, tall, margin, cancellable) 
         return { alpha, width: w, height: h, originX: -ax, originY: -ay };
     }
     finally {
-        file.delete_async(GLib.PRIORITY_DEFAULT, null, (_f, res) => {
+        file.delete_async(3.default.PRIORITY_DEFAULT, null, (_f, res) => {
             // Throws a GError when the file is already gone; nothing is left behind then.
             try {
                 file.delete_finish(res);
@@ -1143,7 +1184,8 @@ const MEASURE_HEIGHT = 240;
  * `range` is how far (px) from the outline the fields reach. The work is
  * done in steps between which the main loop runs (see pause()).
  */
-export class GlyphFields {
+
+class GlyphFields {
     _face;
     range;
     stretch;
@@ -1151,7 +1193,7 @@ export class GlyphFields {
     style;
     _glyphs = new Map();
     // Cancels the reads still running when the fields are no longer wanted.
-    cancellable = new Gio.Cancellable();
+    cancellable = new 2.default.Cancellable();
     /** The digits' height in the font as it is, px. */
     digitHeight;
     _band;
@@ -1170,8 +1212,8 @@ export class GlyphFields {
         this.digitHeight = Math.max(this._band[1] - this._band[0], 1);
         this.cancellable.connect(() => {
             for (const [id, reject] of this._pauses) {
-                GLib.Source.remove(id);
-                reject(GLib.Error.new_literal(Gio.io_error_quark(), Gio.IOErrorEnum.CANCELLED, 'The digits are no longer wanted'));
+                3.default.Source.remove(id);
+                reject(3.default.Error.new_literal(2.default.io_error_quark(), 2.default.IOErrorEnum.CANCELLED, 'The digits are no longer wanted'));
             }
             this._pauses.clear();
         });
@@ -1182,10 +1224,10 @@ export class GlyphFields {
      */
     pause() {
         return new Promise((resolve, reject) => {
-            const id = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+            const id = 3.default.idle_add(3.default.PRIORITY_DEFAULT_IDLE, () => {
                 this._pauses.delete(id);
                 resolve();
-                return GLib.SOURCE_REMOVE;
+                return 3.default.SOURCE_REMOVE;
             });
             this._pauses.set(id, reject);
         });
@@ -1311,8 +1353,10 @@ export class GlyphFields {
         return { data, width, height };
     }
 }
+exports.GlyphFields = GlyphFields;
 /** The deepest point of `field`, px. */
-export function maxDepth(field) {
+
+function maxDepth(field) {
     let depth = 0;
     for (let i = 0; i < field.data.length; i++)
         depth = Math.max(depth, -field.data[i]);
@@ -1323,7 +1367,8 @@ export function maxDepth(field) {
  * above `lens`, two fields of the same size, distances from -range to +range
  * in 16 bits, the high byte in red and the low in green.
  */
-export function encodeFields(outline, lens, range) {
+
+function encodeFields(outline, lens, range) {
     const { width, height } = outline;
     const bytes = new Uint8Array(width * height * 8);
     const scale = 65535 / (2 * range);

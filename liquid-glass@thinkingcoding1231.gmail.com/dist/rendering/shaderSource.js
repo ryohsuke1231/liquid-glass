@@ -1,7 +1,13 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.splitShader = splitShader;
+exports.computeGaussianKernel = computeGaussianKernel;
+exports.buildGaussianSnippet = buildGaussianSnippet;
 /**
  * Splits a GLSL source string into { decl, body } at the "void main()" boundary.
  */
-export function splitShader(src, warn) {
+
+function splitShader(src, warn) {
     const match = src.match(/void\s+main\s*\(\s*\)\s*\{/);
     if (!match || match.index === undefined) {
         warn?.('[Liquid Glass] void main() not found; treating entire source as decl.');
@@ -32,7 +38,8 @@ export function splitShader(src, warn) {
  * structure depends only on fetchPairs, so a sigma change within it only
  * updates the kernel_scale uniform.
  */
-export function computeGaussianKernel(sigma, fetchPairs) {
+
+function computeGaussianKernel(sigma, fetchPairs) {
     const sideTaps = Math.max(2, fetchPairs * 2);
     const raw = [];
     let sum = 0;
@@ -62,7 +69,8 @@ export function computeGaussianKernel(sigma, fetchPairs) {
  * An unrolled GLSL snippet for `kernel`. Offsets and weights are constants;
  * kernel_scale scales the offsets at runtime.
  */
-export function buildGaussianSnippet(kernel, direction) {
+
+function buildGaussianSnippet(kernel, direction) {
     const decl = `uniform vec2 inv_size;    /* 1/width, 1/height of the SOURCE texture */\n` +
         `uniform float kernel_scale; /* dynamic scale based on the sigma ratio, avoids recompiling */\n`;
     const lines = [];

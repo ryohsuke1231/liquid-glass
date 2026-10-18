@@ -1,4 +1,11 @@
-import { isActorValid } from './lifecycle.js';
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.setWindowActorRescueMode = setWindowActorRescueMode;
+exports.getWindowActorRescueMode = getWindowActorRescueMode;
+exports.ensureWindowActorAllocated = ensureWindowActorAllocated;
+exports.ensureGlassAllocated = ensureGlassAllocated;
+exports.setActorVisible = setActorVisible;
+const lifecycle_js_1 = require("./lifecycle.js");
 // Clutter can strand an actor without an allocation: if it is unmapped while
 // queued for relayout, the stage drops it from the queue but its
 // needs_width_request/needs_height_request/needs_allocation flags stay set,
@@ -13,11 +20,13 @@ const STRANDED_FRAMES_BEFORE_RESCUE = 3;
 const _windowActorStrandedFrames = new Map();
 let _windowActorRescueMode = 'two-stage';
 const WINDOW_ACTOR_RESCUE_MODES = ['two-stage', 'remap', 'off'];
-export function setWindowActorRescueMode(mode) {
+
+function setWindowActorRescueMode(mode) {
     _windowActorRescueMode =
         WINDOW_ACTOR_RESCUE_MODES.includes(mode) ? mode : 'two-stage';
 }
-export function getWindowActorRescueMode() {
+
+function getWindowActorRescueMode() {
     return _windowActorRescueMode;
 }
 /**
@@ -28,7 +37,8 @@ export function getWindowActorRescueMode() {
  *
  * Returns which stage ran ('' for none) so the caller can log them apart.
  */
-export function ensureWindowActorAllocated(actor, relayoutFrames, remapFrames) {
+
+function ensureWindowActorAllocated(actor, relayoutFrames, remapFrames) {
     if (!actor)
         return '';
     if (_windowActorRescueMode === 'off')
@@ -43,9 +53,9 @@ export function ensureWindowActorAllocated(actor, relayoutFrames, remapFrames) {
         // The window group is usually stranded too, so its own queue_relayout()
         // would be dropped the same way.
         let ancestor = actor.get_parent();
-        while (ancestor && isActorValid(ancestor) && !ancestor.has_allocation())
+        while (ancestor && (0, lifecycle_js_1.isActorValid)(ancestor) && !ancestor.has_allocation())
             ancestor = ancestor.get_parent();
-        if (ancestor && isActorValid(ancestor)) {
+        if (ancestor && (0, lifecycle_js_1.isActorValid)(ancestor)) {
             ancestor.queue_relayout();
             return 'relayout';
         }
@@ -63,7 +73,8 @@ export function ensureWindowActorAllocated(actor, relayoutFrames, remapFrames) {
  * `framesBeforeRescue` frames. Both calls happen before the frame is painted,
  * so there is no flicker. Returns true when a rescue ran.
  */
-export function ensureGlassAllocated(actor, framesBeforeRescue = STRANDED_FRAMES_BEFORE_RESCUE) {
+
+function ensureGlassAllocated(actor, framesBeforeRescue = STRANDED_FRAMES_BEFORE_RESCUE) {
     if (!actor)
         return false;
     // An unmapped actor is merely waiting; real_map() will fix it on its own.
@@ -86,7 +97,8 @@ export function ensureGlassAllocated(actor, framesBeforeRescue = STRANDED_FRAMES
  * is left in the state above, so on show the relayout is queued on the actor
  * and its parent; otherwise it keeps painting from its old position.
  */
-export function setActorVisible(actor, visible) {
+
+function setActorVisible(actor, visible) {
     if (!actor)
         return;
     if (actor.visible === visible)

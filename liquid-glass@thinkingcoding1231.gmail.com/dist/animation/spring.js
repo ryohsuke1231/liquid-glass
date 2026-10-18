@@ -1,10 +1,14 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.RectSpring = exports.SwiftSpring = exports.Spring = exports.MAX_STEP_S = void 0;
 // The longest frame the physics follows in full. It covers the 20fps cap the
 // preferences offer, so a capped animation keeps its speed; longer gaps (a
 // stall) are clamped instead of jumped over.
-export const MAX_STEP_S = 0.066;
+exports.MAX_STEP_S = 0.066;
 const SUB_STEP_S = 0.002;
 // Damped spring (Hooke's law), integrated with semi-implicit Euler.
-export class Spring {
+
+class Spring {
     stiffness;
     damping;
     mass;
@@ -26,8 +30,8 @@ export class Spring {
     }
     update(elapsedMs) {
         let dt = elapsedMs / 1000;
-        if (dt > MAX_STEP_S)
-            dt = MAX_STEP_S;
+        if (dt > exports.MAX_STEP_S)
+            dt = exports.MAX_STEP_S;
         // Sub-stepped: with the stiffness the preferences allow, a whole frame is
         // not a stable step for an explicit integrator.
         const mass = this.mass > 1e-3 ? this.mass : 1e-3;
@@ -45,9 +49,11 @@ export class Spring {
         return Math.abs(this.velocity) < 0.01 && Math.abs(this.value - this.target) < 0.001;
     }
 }
+exports.Spring = Spring;
 // A spring described by response (period, seconds) and damping fraction, as
 // SwiftUI does, solved analytically so it cannot diverge at any stiffness.
-export class SwiftSpring {
+
+class SwiftSpring {
     response = 0.4;
     dampingFraction = 0.7;
     mass = 1.0;
@@ -132,11 +138,13 @@ export class SwiftSpring {
         return false;
     }
 }
+exports.SwiftSpring = SwiftSpring;
 /**
  * A rectangle carried to each new target by a spring, so it swings a little past it and settles, as liquid
  * does. `rect()` steps the spring to the time it is given.
  */
-export class RectSpring {
+
+class RectSpring {
     _from;
     _to;
     _progress;
@@ -167,3 +175,4 @@ export class RectSpring {
         return this._progress.value === this._progress.target && this._progress.velocity === 0;
     }
 }
+exports.RectSpring = RectSpring;

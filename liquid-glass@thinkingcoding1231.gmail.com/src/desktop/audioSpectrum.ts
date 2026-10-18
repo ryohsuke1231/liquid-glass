@@ -10,6 +10,7 @@ import type { Logger } from '../logger.js';
 // introspection data is not installed.
 let Gst: any = null;
 try {
+// @ts-ignore: CommonJS module with GJS runtime supports top-level await
   Gst = (await import('gi://Gst?version=1.0')).default;
 } catch {
   // AudioSpectrum.start() says so when it is first needed.

@@ -1,19 +1,26 @@
-import Cogl from 'gi://Cogl';
-import { MaterialSettings } from './material.js';
-import { BlurRenderer } from './blur.js';
-import { ShaderPipelines, configureSamplerLayer, SHAPE_LAYER } from './pipelines.js';
-import { GlassGeometry } from './geometry.js';
-import { UniformState } from './uniforms.js';
-import { RenderPasses } from './passes.js';
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.GlassRenderer = exports.MAX_GLASS_REGIONS = void 0;
+const 4 = __importDefault(require("gi://Cogl"));
+const material_js_1 = require("./material.js");
+const blur_js_1 = require("./blur.js");
+const pipelines_js_1 = require("./pipelines.js");
+const geometry_js_1 = require("./geometry.js");
+const uniforms_js_1 = require("./uniforms.js");
+const passes_js_1 = require("./passes.js");
 // Must match glass.frag's `#define MAX_GLASS_REGIONS 16`.
-export const MAX_GLASS_REGIONS = 16;
+exports.MAX_GLASS_REGIONS = 16;
 /**
  * What every glass draws with, whatever supplies its backdrop: the shader
  * pipelines, the blur, the uniforms and the settings bound to them. The owner
  * decides when to repaint (`repaint` is called when a uniform changed) and
  * where the backdrop texture comes from.
  */
-export class GlassRenderer {
+
+class GlassRenderer {
     passes;
     pipelines;
     blur;
@@ -24,12 +31,12 @@ export class GlassRenderer {
     _shapeTexture = null;
     constructor(params) {
         this._repaint = params.repaint;
-        this.passes = new RenderPasses();
-        this.pipelines = new ShaderPipelines(params.logger, params.shapeTexture ?? false);
-        this.blur = new BlurRenderer(this.pipelines, this.passes, () => this._repaint());
-        this.uniforms = new UniformState();
-        this.geometry = new GlassGeometry(this.uniforms.values);
-        this.material = new MaterialSettings(params.settings, this.uniforms, this.blur, params.setDiagnostics, () => this._repaintIfDirty());
+        this.passes = new passes_js_1.RenderPasses();
+        this.pipelines = new pipelines_js_1.ShaderPipelines(params.logger, params.shapeTexture ?? false);
+        this.blur = new blur_js_1.BlurRenderer(this.pipelines, this.passes, () => this._repaint());
+        this.uniforms = new uniforms_js_1.UniformState();
+        this.geometry = new geometry_js_1.GlassGeometry(this.uniforms.values);
+        this.material = new material_js_1.MaterialSettings(params.settings, this.uniforms, this.blur, params.setDiagnostics, () => this._repaintIfDirty());
         this.material.initialize();
     }
     // Compiles the pipelines on the first paint, once a Cogl context exists,
@@ -63,12 +70,12 @@ export class GlassRenderer {
         this.uniforms.set('blur_tex_w', layerTex.get_width());
         this.uniforms.set('blur_tex_h', layerTex.get_height());
         compPipeline.set_layer_texture(0, layerTex);
-        configureSamplerLayer(compPipeline, 0);
+        (0, pipelines_js_1.configureSamplerLayer)(compPipeline, 0);
         compPipeline.set_layer_texture(1, layerTex);
-        configureSamplerLayer(compPipeline, 1);
+        (0, pipelines_js_1.configureSamplerLayer)(compPipeline, 1);
         if (this._shapeTexture) {
-            compPipeline.set_layer_texture(SHAPE_LAYER, this._shapeTexture);
-            configureSamplerLayer(compPipeline, SHAPE_LAYER);
+            compPipeline.set_layer_texture(pipelines_js_1.SHAPE_LAYER, this._shapeTexture);
+            (0, pipelines_js_1.configureSamplerLayer)(compPipeline, pipelines_js_1.SHAPE_LAYER);
         }
         // Uniforms set before the pipeline existed are written now.
         this.uniforms.flush();
@@ -80,7 +87,7 @@ export class GlassRenderer {
      * ancestors'); scaling alpha alone would wash the glass out.
      */
     addComposite(node, drawRect, drawUV, paintOpacity) {
-        const color = new Cogl.Color();
+        const color = new 4.default.Color();
         const opacity = paintOpacity / 255;
         color.init_from_4f(opacity, opacity, opacity, opacity);
         this.pipelines.composite.set_color(color);
@@ -210,15 +217,15 @@ export class GlassRenderer {
         this._repaintIfDirty();
     }
     setGlassRegions(regions) {
-        const clamped = regions.slice(0, MAX_GLASS_REGIONS);
-        const rx = Array.from({ length: MAX_GLASS_REGIONS }, () => 0.0);
-        const ry = Array.from({ length: MAX_GLASS_REGIONS }, () => 0.0);
-        const rw = Array.from({ length: MAX_GLASS_REGIONS }, () => 0.0);
-        const rh = Array.from({ length: MAX_GLASS_REGIONS }, () => 0.0);
-        const rTintR = Array.from({ length: MAX_GLASS_REGIONS }, () => 1.0);
-        const rTintG = Array.from({ length: MAX_GLASS_REGIONS }, () => 1.0);
-        const rTintB = Array.from({ length: MAX_GLASS_REGIONS }, () => 1.0);
-        const rBaseStrength = Array.from({ length: MAX_GLASS_REGIONS }, () => 0.0);
+        const clamped = regions.slice(0, exports.MAX_GLASS_REGIONS);
+        const rx = Array.from({ length: exports.MAX_GLASS_REGIONS }, () => 0.0);
+        const ry = Array.from({ length: exports.MAX_GLASS_REGIONS }, () => 0.0);
+        const rw = Array.from({ length: exports.MAX_GLASS_REGIONS }, () => 0.0);
+        const rh = Array.from({ length: exports.MAX_GLASS_REGIONS }, () => 0.0);
+        const rTintR = Array.from({ length: exports.MAX_GLASS_REGIONS }, () => 1.0);
+        const rTintG = Array.from({ length: exports.MAX_GLASS_REGIONS }, () => 1.0);
+        const rTintB = Array.from({ length: exports.MAX_GLASS_REGIONS }, () => 1.0);
+        const rBaseStrength = Array.from({ length: exports.MAX_GLASS_REGIONS }, () => 0.0);
         clamped.forEach((region, i) => {
             rx[i] = region.x;
             ry[i] = region.y;
@@ -254,3 +261,4 @@ export class GlassRenderer {
         this._repaintIfDirty();
     }
 }
+exports.GlassRenderer = GlassRenderer;

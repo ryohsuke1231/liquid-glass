@@ -1,7 +1,46 @@
-import * as Main from 'resource:///org/gnome/shell/ui/main.js';
-import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
-import GLib from 'gi://GLib';
-import { UIManager } from './uiManager.js';
+"use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.PanelMenuManager = void 0;
+const Main = __importStar(require("resource:///org/gnome/shell/ui/main.js"));
+const PopupMenu = __importStar(require("resource:///org/gnome/shell/ui/popupMenu.js"));
+const 1 = __importDefault(require("gi://GLib"));
+const uiManager_js_1 = require("./uiManager.js");
 // Settings prefix for every detected panel menu, separate from the calendar's
 // `menu-*` keys (see UIManager._keyPrefix).
 const PANEL_MENU_PREFIX = 'panel-menu';
@@ -18,7 +57,8 @@ function menusOf(name, button) {
         return [[name, button.arcMenu], [`${name}ContextMenu`, button.arcMenuContextMenu]];
     return [[name, button.menu]];
 }
-export class PanelMenuManager {
+
+class PanelMenuManager {
     _path;
     _settings;
     _logger;
@@ -51,10 +91,10 @@ export class PanelMenuManager {
     _scheduleScan() {
         if (this._idleId)
             return;
-        this._idleId = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+        this._idleId = 1.default.idle_add(1.default.PRIORITY_DEFAULT_IDLE, () => {
             this._idleId = 0;
             this._scan();
-            return GLib.SOURCE_REMOVE;
+            return 1.default.SOURCE_REMOVE;
         });
     }
     _scan() {
@@ -128,7 +168,7 @@ export class PanelMenuManager {
         for (const [menu, { name }] of wanted) {
             if (this._menus.has(menu))
                 continue;
-            const manager = new UIManager(this._path, this._settings, this._logger, { menu }, false, 'enable-extra-menu-glass', PANEL_MENU_PREFIX, `menu:${name}`, false);
+            const manager = new uiManager_js_1.UIManager(this._path, this._settings, this._logger, { menu }, false, 'enable-extra-menu-glass', PANEL_MENU_PREFIX, `menu:${name}`, false);
             try {
                 manager.setup();
                 this._menus.set(menu, { name, manager });
@@ -141,7 +181,7 @@ export class PanelMenuManager {
     }
     cleanup() {
         if (this._idleId) {
-            GLib.Source.remove(this._idleId);
+            1.default.Source.remove(this._idleId);
             this._idleId = 0;
         }
         for (const { target, id } of this._signals)
@@ -158,3 +198,4 @@ export class PanelMenuManager {
         this._settings.set_strv('detected-extra-menus', []);
     }
 }
+exports.PanelMenuManager = PanelMenuManager;

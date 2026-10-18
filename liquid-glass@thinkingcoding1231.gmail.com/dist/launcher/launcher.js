@@ -1,27 +1,66 @@
-import * as Main from 'resource:///org/gnome/shell/ui/main.js';
-import * as SystemActions from 'resource:///org/gnome/shell/misc/systemActions.js';
-import Clutter from 'gi://Clutter';
-import Gio from 'gi://Gio';
-import GLib from 'gi://GLib';
-import Meta from 'gi://Meta';
-import Pango from 'gi://Pango';
-import Shell from 'gi://Shell';
-import St from 'gi://St';
-import { BackdropGlass } from '../rendering/backdropGlass.js';
-import { ContentLens } from '../rendering/contentLens.js';
-import { ensureGlassAllocated } from '../actors/allocation.js';
-import { isActorValid } from '../actors/lifecycle.js';
-import { startSyncLoop, stopStageLoop } from '../animation/frameLoops.js';
-import { hexToColorArray } from '../animation/colors.js';
-import { RectTween } from '../animation/tween.js';
-import { RectSpring } from '../animation/spring.js';
-import { AdaptiveTextColor } from '../adaptiveText.js';
-import { sanitizeColorPreference } from '../contrastSampler.js';
-import { verticalBoxParams } from '../shellVersion.js';
-import { evaluate, formatNumber } from './calculator.js';
-import { PinStore } from './pins.js';
-import { pinnedGrid } from './pinnedGrid.js';
-import { SOFTWARE_PROVIDER, softwareDesktopId } from './software.js';
+"use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.Launcher = void 0;
+const Main = __importStar(require("resource:///org/gnome/shell/ui/main.js"));
+const SystemActions = __importStar(require("resource:///org/gnome/shell/misc/systemActions.js"));
+const 4 = __importDefault(require("gi://Clutter"));
+const 5 = __importDefault(require("gi://Gio"));
+const 6 = __importDefault(require("gi://GLib"));
+const 7 = __importDefault(require("gi://Meta"));
+const 8 = __importDefault(require("gi://Pango"));
+const 9 = __importDefault(require("gi://Shell"));
+const 10 = __importDefault(require("gi://St"));
+const backdropGlass_js_1 = require("../rendering/backdropGlass.js");
+const contentLens_js_1 = require("../rendering/contentLens.js");
+const allocation_js_1 = require("../actors/allocation.js");
+const lifecycle_js_1 = require("../actors/lifecycle.js");
+const frameLoops_js_1 = require("../animation/frameLoops.js");
+const colors_js_1 = require("../animation/colors.js");
+const tween_js_1 = require("../animation/tween.js");
+const spring_js_1 = require("../animation/spring.js");
+const adaptiveText_js_1 = require("../adaptiveText.js");
+const contrastSampler_js_1 = require("../contrastSampler.js");
+const shellVersion_js_1 = require("../shellVersion.js");
+const calculator_js_1 = require("./calculator.js");
+const pins_js_1 = require("./pins.js");
+const pinnedGrid_js_1 = require("./pinnedGrid.js");
+const software_js_1 = require("./software.js");
 // The pinned items' page is this much wider than the search.
 const PINNED_EXTRA_WIDTH = 80;
 // The least room left at either side of the panel.
@@ -63,7 +102,7 @@ const PAGE_SPACING = 6;
 const MIN_RESULTS_HEIGHT = 240;
 
 function isCancelled(e) {
-    return e instanceof GLib.Error && e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED);
+    return e instanceof 6.default.Error && e.matches(5.default.IOErrorEnum, 5.default.IOErrorEnum.CANCELLED);
 }
 /**
  * A search field on glass in the middle of the screen, like Spotlight, that
@@ -71,7 +110,8 @@ function isCancelled(e) {
  * (applications, settings, files, the calculator and whatever else is
  * installed and enabled in Settings).
  */
-export class Launcher {
+
+class Launcher {
     _path;
     _settings;
     _logger;
@@ -98,7 +138,7 @@ export class Launcher {
     _refreshId = 0;
     _glass = null;
     _grab = null;
-    _shape = new RectTween(SHAPE_MS);
+    _shape = new tween_js_1.RectTween(SHAPE_MS);
     _shapeStarted = false;
     _ticker = null;
     _frameSyncId = 0;
@@ -126,8 +166,8 @@ export class Launcher {
         this._icons = _icons;
         // One color for the field and the results, set on the panel. Rows that come in take it at once, and the
         // color for the panel's new size is chosen as they come, while the glass is still growing to it.
-        this._text = new AdaptiveTextColor(() => (this._panel ? [this._panel] : []), () => (this._glass ? [this._glass] : []), _logger, 'launcher', { ownColor: true, held: () => this._shapeRemaining(GLib.get_monotonic_time()) > 0 });
-        this._pins = new PinStore(_settings);
+        this._text = new adaptiveText_js_1.AdaptiveTextColor(() => (this._panel ? [this._panel] : []), () => (this._glass ? [this._glass] : []), _logger, 'launcher', { ownColor: true, held: () => this._shapeRemaining(6.default.get_monotonic_time()) > 0 });
+        this._pins = new pins_js_1.PinStore(_settings);
     }
     setup() {
         Launcher.instance = this;
@@ -138,7 +178,7 @@ export class Launcher {
     _syncKeybinding() {
         const wanted = this._settings.get_boolean('enable-launcher');
         if (wanted && !this._keybinding) {
-            Main.wm.addKeybinding('launcher-shortcut', this._settings, Meta.KeyBindingFlags.NONE, Shell.ActionMode.NORMAL | Shell.ActionMode.OVERVIEW, () => this.toggle());
+            Main.wm.addKeybinding('launcher-shortcut', this._settings, 7.default.KeyBindingFlags.NONE, 9.default.ActionMode.NORMAL | 9.default.ActionMode.OVERVIEW, () => this.toggle());
             this._keybinding = true;
         }
         else if (!wanted && this._keybinding) {
@@ -159,11 +199,11 @@ export class Launcher {
         const monitor = Main.layoutManager.primaryMonitor;
         if (!monitor)
             return;
-        const root = new St.Widget({
+        const root = new 10.default.Widget({
             name: 'liquid-glass-launcher', reactive: true,
             x: monitor.x, y: monitor.y, width: monitor.width, height: monitor.height, opacity: 0
         });
-        const glass = new BackdropGlass({
+        const glass = new backdropGlass_js_1.BackdropGlass({
             extensionPath: this._path, settings: this._settings, logger: this._logger, owner: 'launcher',
         });
         glass.setPadding(SHADER_PADDING);
@@ -171,9 +211,9 @@ export class Launcher {
         glass.setShadowMaxRadius(SHADOW_MARGIN - 10);
         root.add_child(glass);
         const width = this._panelWidth(false, monitor.width);
-        const panel = new St.BoxLayout({
+        const panel = new 10.default.BoxLayout({
             style_class: 'liquid-glass-launcher', reactive: true, can_focus: true, width,
-            x: Math.round((monitor.width - width) / 2), y: this._panelTop(monitor.height), ...verticalBoxParams()
+            x: Math.round((monitor.width - width) / 2), y: this._panelTop(monitor.height), ...(0, shellVersion_js_1.verticalBoxParams)()
         });
         // Keys on the pinned page, where the panel has the focus.
         panel.connect('key-press-event', (_actor, event) => this._onPinnedKey(event));
@@ -181,15 +221,15 @@ export class Launcher {
         // through a gesture, and an actor that stops the press cancels it.
         root.connect('button-press-event', (_actor, event) => {
             if (panel.contains(global.stage.get_event_actor(event)))
-                return Clutter.EVENT_PROPAGATE;
+                return 4.default.EVENT_PROPAGATE;
             this.close();
-            return Clutter.EVENT_STOP;
+            return 4.default.EVENT_STOP;
         });
         // The glass follows the panel from before-update, which does not ask for frames and runs ahead of the layout
         // that resizes the panel. Without the ticker, an idle stage leaves the glass, and the clip that also limits
         // where rows can be hovered and clicked, at the old size. It runs for a set time, so that it stops even when
         // no JS can run.
-        const ticker = new Clutter.Timeline({ actor: root, duration: TICK_MS });
+        const ticker = new 4.default.Timeline({ actor: root, duration: TICK_MS });
         ticker.connect('completed', () => this._keepTicking());
         panel.connect('notify::allocation', () => {
             if (ticker.is_playing())
@@ -197,26 +237,26 @@ export class Launcher {
             ticker.set_duration(TICK_MS);
             ticker.start();
         });
-        const entry = new St.Entry({
+        const entry = new 10.default.Entry({
             style_class: 'lg-launcher-entry', hint_text: 'Search', can_focus: true, x_expand: true,
-            primary_icon: new St.Icon({ icon_name: 'edit-find-symbolic', style_class: 'lg-launcher-entry-icon' })
+            primary_icon: new 10.default.Icon({ icon_name: 'edit-find-symbolic', style_class: 'lg-launcher-entry-icon' })
         });
         // The hint takes the panel's color too, dimmed the way the theme dims it.
         entry.hint_actor.opacity = HINT_OPACITY;
-        const list = new St.BoxLayout({ style_class: 'lg-launcher-list', x_expand: true, ...verticalBoxParams() });
+        const list = new 10.default.BoxLayout({ style_class: 'lg-launcher-list', x_expand: true, ...(0, shellVersion_js_1.verticalBoxParams)() });
         // Hidden while empty, so the panel's spacing does not add room below the field. Its height is limited in
         // _limitResults(), as St.BoxLayout ignores max-height.
-        const resultsBox = new St.ScrollView({
+        const resultsBox = new 10.default.ScrollView({
             style_class: 'lg-launcher-results', x_expand: true, visible: false,
-            hscrollbar_policy: St.PolicyType.NEVER, vscrollbar_policy: St.PolicyType.AUTOMATIC, overlay_scrollbars: true
+            hscrollbar_policy: 10.default.PolicyType.NEVER, vscrollbar_policy: 10.default.PolicyType.AUTOMATIC, overlay_scrollbars: true
         });
         resultsBox.set_child(list);
-        const searchBox = new St.BoxLayout({ style_class: 'lg-launcher-page', x_expand: true, ...verticalBoxParams() });
+        const searchBox = new 10.default.BoxLayout({ style_class: 'lg-launcher-page', x_expand: true, ...(0, shellVersion_js_1.verticalBoxParams)() });
         searchBox.add_child(entry);
         searchBox.add_child(resultsBox);
-        const pinnedBox = new St.ScrollView({
+        const pinnedBox = new 10.default.ScrollView({
             style_class: 'lg-launcher-pinned', x_expand: true, visible: false,
-            hscrollbar_policy: St.PolicyType.NEVER, vscrollbar_policy: St.PolicyType.AUTOMATIC, overlay_scrollbars: true,
+            hscrollbar_policy: 10.default.PolicyType.NEVER, vscrollbar_policy: 10.default.PolicyType.AUTOMATIC, overlay_scrollbars: true,
             // On the scroll view, as St.BoxLayout ignores min-height; inside the panel's padding.
             style: this._pinnedStyle(monitor.height)
         });
@@ -247,19 +287,19 @@ export class Launcher {
             this._materialIds.push(this._settings.connect(`changed::launcher-${key}`, () => this._applySize()));
         entry.clutter_text.connect('text-changed', () => this._queueSearch());
         entry.clutter_text.connect('key-press-event', (_a, event) => this._onKey(event));
-        this._grab = Main.pushModal(root, { actionMode: Shell.ActionMode.POPUP });
+        this._grab = Main.pushModal(root, { actionMode: 9.default.ActionMode.POPUP });
         global.stage.set_key_focus(entry.clutter_text);
         this._shapeStarted = false;
-        startSyncLoop(this._frameSignalSlot, this._frameSlot, {
+        (0, frameLoops_js_1.startSyncLoop)(this._frameSignalSlot, this._frameSlot, {
             alive: () => !!this._root,
             honourFreeze: true,
             errorTag: 'Launcher',
             step: () => this._sync(),
         });
-        root.ease({ opacity: 255, duration: FADE_MS, mode: Clutter.AnimationMode.EASE_OUT_QUAD });
+        root.ease({ opacity: 255, duration: FADE_MS, mode: 4.default.AnimationMode.EASE_OUT_QUAD });
         this._coloredFor = '';
         if (this._settings.get_boolean('launcher-enable-adaptive-text-color')) {
-            this._text.start(this._settings.get_int('launcher-sample-interval-ms'), sanitizeColorPreference(this._settings.get_string('launcher-adaptive-text-preference')));
+            this._text.start(this._settings.get_int('launcher-sample-interval-ms'), (0, contrastSampler_js_1.sanitizeColorPreference)(this._settings.get_string('launcher-adaptive-text-preference')));
         }
         this._colorText();
     }
@@ -268,7 +308,7 @@ export class Launcher {
         if (!root)
             return;
         this._root = null;
-        stopStageLoop(this._frameSignalSlot, this._frameSlot);
+        (0, frameLoops_js_1.stopStageLoop)(this._frameSignalSlot, this._frameSlot);
         this._ticker?.stop();
         this._ticker = null;
         this._cancelSearch();
@@ -297,7 +337,7 @@ export class Launcher {
         this._refreshId = 0;
         root.remove_all_transitions();
         glass?.cleanup();
-        if (isActorValid(root))
+        if ((0, lifecycle_js_1.isActorValid)(root))
             root.destroy();
     }
     /** Types `text` into the field, for the test driver. */
@@ -316,16 +356,16 @@ export class Launcher {
             // it had gone.
             sw.view = view;
             if (sw.phase === 'in' && view !== this._view) {
-                const now = GLib.get_monotonic_time();
+                const now = 6.default.get_monotonic_time();
                 const shown = 1 - (1 - Math.min((now - sw.startUs) / 1000 / SWITCH_IN_MS, 1)) ** 3;
                 sw.phase = 'out';
                 sw.startUs = now - (1 - shown) * SWITCH_OUT_MS * 1000;
             }
             return;
         }
-        this._switch = { view, morph, phase: 'out', startUs: GLib.get_monotonic_time() };
+        this._switch = { view, morph, phase: 'out', startUs: 6.default.get_monotonic_time() };
         if (morph) {
-            this._lens = new ContentLens();
+            this._lens = new contentLens_js_1.ContentLens();
             this._panel.add_effect(this._lens);
         }
         this._keepTicking();
@@ -361,7 +401,7 @@ export class Launcher {
         if (!glass)
             return;
         const s = this._settings;
-        glass.setTintColor(...hexToColorArray(s.get_string('launcher-tint-color')));
+        glass.setTintColor(...(0, colors_js_1.hexToColorArray)(s.get_string('launcher-tint-color')));
         glass.setTintStrength(s.get_double('launcher-tint-strength'));
         glass.setBlurRadius(s.get_int('launcher-blur-radius'));
         glass.setCornerRadius(s.get_double('launcher-corner-radius'));
@@ -379,7 +419,7 @@ export class Launcher {
         if (!(w >= 1) || !(h >= 1))
             return;
         const rest = [panel.x, panel.y, w, h];
-        const now = GLib.get_monotonic_time();
+        const now = 6.default.get_monotonic_time();
         if (!this._shapeStarted) {
             this._shapeStarted = true;
             const grow = (OPEN_SCALE - 1) / 2;
@@ -403,7 +443,7 @@ export class Launcher {
         panel.set_clip(clip[0], clip[1], clip[2], clip[3]);
         this._stepSwitch(now, [x, y, gw, gh], clip);
         this._keepTicking();
-        ensureGlassAllocated(glass);
+        (0, allocation_js_1.ensureGlassAllocated)(glass);
         glass.syncSources();
     }
     _shapeRemaining(nowUs) {
@@ -415,7 +455,7 @@ export class Launcher {
     }
     _keepTicking() {
         const ticker = this._ticker;
-        const left = this._shapeRemaining(GLib.get_monotonic_time());
+        const left = this._shapeRemaining(6.default.get_monotonic_time());
         if (!ticker || ticker.is_playing() || left <= 0)
             return;
         ticker.set_duration(Math.ceil(left) + TICK_MS);
@@ -448,7 +488,7 @@ export class Launcher {
                 sw.phase = 'in';
                 sw.startUs = now;
                 if (sw.morph)
-                    this._spring = new RectSpring(rect);
+                    this._spring = new spring_js_1.RectSpring(rect);
             }
         }
         else {
@@ -487,68 +527,68 @@ export class Launcher {
     }
     _isPinnedShortcut(event) {
         const key = event.get_key_symbol();
-        return (event.get_state() & Clutter.ModifierType.CONTROL_MASK) !== 0 && (key === Clutter.KEY_p || key === Clutter.KEY_P);
+        return (event.get_state() & 4.default.ModifierType.CONTROL_MASK) !== 0 && (key === 4.default.KEY_p || key === 4.default.KEY_P);
     }
     _isEnter(key) {
-        return key === Clutter.KEY_Return || key === Clutter.KEY_KP_Enter || key === Clutter.KEY_ISO_Enter;
+        return key === 4.default.KEY_Return || key === 4.default.KEY_KP_Enter || key === 4.default.KEY_ISO_Enter;
     }
     _onKey(event) {
         const key = event.get_key_symbol();
-        if (key === Clutter.KEY_Escape) {
+        if (key === 4.default.KEY_Escape) {
             this.close();
-            return Clutter.EVENT_STOP;
+            return 4.default.EVENT_STOP;
         }
         if (this._isPinnedShortcut(event)) {
             this.showView('pinned');
-            return Clutter.EVENT_STOP;
+            return 4.default.EVENT_STOP;
         }
-        if (key === Clutter.KEY_Down || key === Clutter.KEY_Up) {
+        if (key === 4.default.KEY_Down || key === 4.default.KEY_Up) {
             const n = this._items.length;
             if (n > 0)
-                this._select((this._selected + (key === Clutter.KEY_Down ? 1 : n - 1)) % n);
-            return Clutter.EVENT_STOP;
+                this._select((this._selected + (key === 4.default.KEY_Down ? 1 : n - 1)) % n);
+            return 4.default.EVENT_STOP;
         }
         if (this._isEnter(key)) {
             this._items[this._selected]?.activate();
-            return Clutter.EVENT_STOP;
+            return 4.default.EVENT_STOP;
         }
-        return Clutter.EVENT_PROPAGATE;
+        return 4.default.EVENT_PROPAGATE;
     }
     // The tiles are moved between as a grid, then the list below them row by row.
     _onPinnedKey(event) {
         if (this._view !== 'pinned')
-            return Clutter.EVENT_PROPAGATE;
+            return 4.default.EVENT_PROPAGATE;
         const key = event.get_key_symbol();
-        if (key === Clutter.KEY_Escape || key === Clutter.KEY_BackSpace || this._isPinnedShortcut(event)) {
+        if (key === 4.default.KEY_Escape || key === 4.default.KEY_BackSpace || this._isPinnedShortcut(event)) {
             this.showView('search');
-            return Clutter.EVENT_STOP;
+            return 4.default.EVENT_STOP;
         }
         if (this._isEnter(key)) {
             this._items[this._selected]?.activate();
-            return Clutter.EVENT_STOP;
+            return 4.default.EVENT_STOP;
         }
         const n = this._items.length, tiles = this._tileCount, cols = this._columns, i = this._selected;
         let next = i;
-        if (key === Clutter.KEY_Right)
+        if (key === 4.default.KEY_Right)
             next = Math.min(i + 1, n - 1);
-        else if (key === Clutter.KEY_Left)
+        else if (key === 4.default.KEY_Left)
             next = Math.max(i - 1, 0);
-        else if (key === Clutter.KEY_Down)
+        else if (key === 4.default.KEY_Down)
             next = i < tiles ? (i + cols < tiles ? i + cols : Math.min(tiles, n - 1)) : Math.min(i + 1, n - 1);
-        else if (key === Clutter.KEY_Up)
+        else if (key === 4.default.KEY_Up)
             next = i < tiles ? (i >= cols ? i - cols : i) : i === tiles ? Math.max(tiles - 1, 0) : i - 1;
         else {
             // Typing goes back to the search, with what was typed in the field.
             const text = event.get_key_unicode();
-            if ((event.get_state() & Clutter.ModifierType.CONTROL_MASK) || !/^[^\p{C}]$/u.test(text))
-                return Clutter.EVENT_PROPAGATE;
+            if ((event.get_state() & 4.default.ModifierType.CONTROL_MASK) || !/^[^\p{C}]$/u.test(text))
+                return 4.default.EVENT_PROPAGATE;
             this._entry.text = text;
             this.showView('search');
-            return Clutter.EVENT_STOP;
+            return 4.default.EVENT_STOP;
         }
         if (n > 0)
             this._select(next);
-        return Clutter.EVENT_STOP;
+        return 4.default.EVENT_STOP;
     }
     // Scrolls to the item only when the keys moved to it; with the pointer, the rows would move under it.
     _select(index, reveal = true) {
@@ -579,13 +619,13 @@ export class Launcher {
         this.close();
         if (!provider) {
             // The calculation: its value goes to the clipboard.
-            St.Clipboard.get_default().set_text(St.ClipboardType.CLIPBOARD, meta.value);
+            10.default.Clipboard.get_default().set_text(10.default.ClipboardType.CLIPBOARD, meta.value);
         }
         else if (provider.isRemoteProvider) {
             provider.activateResult(meta.id, terms);
         }
         else if (meta.id.endsWith('.desktop')) {
-            Shell.AppSystem.get_default().lookup_app(meta.id)?.activate();
+            9.default.AppSystem.get_default().lookup_app(meta.id)?.activate();
         }
         else {
             SystemActions.getDefault().activateAction(meta.id);
@@ -595,7 +635,7 @@ export class Launcher {
         this.close();
         if (pin.provider === 'applications') {
             if (pin.id.endsWith('.desktop'))
-                Shell.AppSystem.get_default().lookup_app(pin.id)?.activate();
+                9.default.AppSystem.get_default().lookup_app(pin.id)?.activate();
             else
                 SystemActions.getDefault().activateAction(pin.id);
             return;
@@ -608,20 +648,20 @@ export class Launcher {
     }
     _cancelSearch() {
         if (this._searchId)
-            GLib.Source.remove(this._searchId);
+            6.default.Source.remove(this._searchId);
         this._searchId = 0;
         if (this._settleId)
-            GLib.Source.remove(this._settleId);
+            6.default.Source.remove(this._settleId);
         this._settleId = 0;
         this._cancellable?.cancel();
         this._cancellable = null;
     }
     _queueSearch() {
         this._cancelSearch();
-        this._searchId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, SEARCH_DELAY_MS, () => {
+        this._searchId = 6.default.timeout_add(6.default.PRIORITY_DEFAULT, SEARCH_DELAY_MS, () => {
             this._searchId = 0;
             this._search();
-            return GLib.SOURCE_REMOVE;
+            return 6.default.SOURCE_REMOVE;
         });
     }
     // The overview's providers, applications first.
@@ -635,7 +675,7 @@ export class Launcher {
         this._terms = text ? text.split(/\s+/) : [];
         const providers = this._terms.length ? this._providers() : [];
         this._found = [];
-        const value = evaluate(text);
+        const value = (0, calculator_js_1.evaluate)(text);
         if (value !== null)
             this._found.push(this._calculation(text, value));
         this._waiting = providers.length;
@@ -643,14 +683,14 @@ export class Launcher {
             this._commit();
             return;
         }
-        const cancellable = new Gio.Cancellable();
+        const cancellable = new 5.default.Cancellable();
         this._cancellable = cancellable;
         if (this._settleId)
-            GLib.Source.remove(this._settleId);
-        this._settleId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, SETTLE_MS, () => {
+            6.default.Source.remove(this._settleId);
+        this._settleId = 6.default.timeout_add(6.default.PRIORITY_DEFAULT, SETTLE_MS, () => {
             this._settleId = 0;
             this._commit();
-            return GLib.SOURCE_REMOVE;
+            return 6.default.SOURCE_REMOVE;
         });
         providers.forEach((provider, order) => this._ask(provider, order, cancellable));
     }
@@ -660,7 +700,7 @@ export class Launcher {
         try {
             let ids = await provider.getInitialResultSet(terms, cancellable);
             // GNOME Software also finds what is installed, which the applications' own results already show.
-            if (provider.id === SOFTWARE_PROVIDER)
+            if (provider.id === software_js_1.SOFTWARE_PROVIDER)
                 ids = ids.filter(id => !this._isInstalled(id));
             // Pinned results go first, so that the cut to PER_PROVIDER keeps them.
             const pinned = this._pins.idsOf(provider.id);
@@ -675,24 +715,24 @@ export class Launcher {
         }
         if (cancellable.is_cancelled())
             return;
-        const software = provider.id === SOFTWARE_PROVIDER;
-        this._found.push(...metas.map(meta => ({ provider, order, meta, install: software && softwareDesktopId(meta.id) !== null })));
+        const software = provider.id === software_js_1.SOFTWARE_PROVIDER;
+        this._found.push(...metas.map(meta => ({ provider, order, meta, install: software && (0, software_js_1.softwareDesktopId)(meta.id) !== null })));
         this._waiting--;
         if (this._waiting === 0 || !this._settleId)
             this._commit();
     }
     _isInstalled(softwareId) {
-        const desktopId = softwareDesktopId(softwareId);
-        return !!desktopId && !!Shell.AppSystem.get_default().lookup_app(desktopId);
+        const desktopId = (0, software_js_1.softwareDesktopId)(softwareId);
+        return !!desktopId && !!9.default.AppSystem.get_default().lookup_app(desktopId);
     }
     // The calculation, first of all results, with the value as its name.
     _calculation(text, value) {
-        const formatted = formatNumber(value);
+        const formatted = (0, calculator_js_1.formatNumber)(value);
         return {
             provider: null, order: -1, meta: {
                 id: 'liquid-glass-calculation', name: formatted, value: formatted,
                 description: `${text.replace(/=\s*$/, '').trim()} = ${formatted} · Enter copies the result`,
-                createIcon: (size) => new St.Icon({ icon_name: 'accessories-calculator-symbolic', icon_size: size }),
+                createIcon: (size) => new 10.default.Icon({ icon_name: 'accessories-calculator-symbolic', icon_size: size }),
             }
         };
     }
@@ -701,7 +741,7 @@ export class Launcher {
     }
     _commit() {
         if (this._settleId)
-            GLib.Source.remove(this._settleId);
+            6.default.Source.remove(this._settleId);
         this._settleId = 0;
         // The calculation first, then pinned results, then each provider's in the overview's order.
         const rank = (r) => (r.provider ? (this._isPinned(r) ? 1 : 2) : 0);
@@ -733,8 +773,8 @@ export class Launcher {
     _resultIcon(result, size) {
         // A remote provider's result may come without an icon; its application's icon stands in.
         const gicon = result.provider?.appInfo?.get_icon();
-        const icon = result.meta.createIcon(size) ?? (gicon ? new St.Icon({ gicon, icon_size: size }) : null);
-        if (icon instanceof St.Icon && result.provider?.id === 'applications')
+        const icon = result.meta.createIcon(size) ?? (gicon ? new 10.default.Icon({ gicon, icon_size: size }) : null);
+        if (icon instanceof 10.default.Icon && result.provider?.id === 'applications')
             this._icons.styleLauncherIcon(icon, result.meta.id, this._panel);
         return icon;
     }
@@ -743,7 +783,7 @@ export class Launcher {
         const { provider, meta } = result;
         if (!provider || UNPINNABLE.has(provider.id))
             return null;
-        const gicon = (icon instanceof St.Icon ? icon.gicon : null) ?? provider.appInfo?.get_icon() ?? null;
+        const gicon = (icon instanceof 10.default.Icon ? icon.gicon : null) ?? provider.appInfo?.get_icon() ?? null;
         return {
             provider: provider.id, id: meta.id, name: meta.name ?? '', description: meta.description ?? '',
             icon: gicon?.to_string() ?? ''
@@ -752,14 +792,14 @@ export class Launcher {
     // The pin to the left of a row or in a tile's corner: an outline while not pinned, shown on hover, and filled
     // while pinned, shown all the time. A click on it flips it; a click on the rest of the owner activates that.
     _pinToggle(owner, pin, activate, onChange) {
-        const icon = new St.Icon({ icon_size: PIN_ICON_SIZE });
-        const toggle = new St.Bin({
+        const icon = new 10.default.Icon({ icon_size: PIN_ICON_SIZE });
+        const toggle = new 10.default.Bin({
             style_class: 'lg-launcher-pin', reactive: true, track_hover: true, child: icon,
-            y_align: Clutter.ActorAlign.CENTER
+            y_align: 4.default.ActorAlign.CENTER
         });
         const sync = () => {
             const pinned = this._pins.has(pin.provider, pin.id);
-            icon.gicon = Gio.FileIcon.new(Gio.File.new_for_path(`${this._path}/media/${pinned ? 'pinned' : 'pin'}-symbolic.svg`));
+            icon.gicon = 5.default.FileIcon.new(5.default.File.new_for_path(`${this._path}/media/${pinned ? 'pinned' : 'pin'}-symbolic.svg`));
             toggle.opacity = pinned || owner.hover ? 255 : 0;
         };
         owner.connect('notify::hover', sync);
@@ -781,36 +821,36 @@ export class Launcher {
         return toggle;
     }
     _row(icon, title, detail, pin, activate, onPinChange, badge = '') {
-        const row = new St.Button({ style_class: 'lg-launcher-result', can_focus: false, x_expand: true });
-        const box = new St.BoxLayout({ style_class: 'lg-launcher-result-box', x_expand: true });
+        const row = new 10.default.Button({ style_class: 'lg-launcher-result', can_focus: false, x_expand: true });
+        const box = new 10.default.BoxLayout({ style_class: 'lg-launcher-result-box', x_expand: true });
         // The pin's room is kept on every row, so that the icons line up.
         if (pin) {
             box.add_child(this._pinToggle(row, pin, activate, onPinChange));
         }
         else {
-            box.add_child(new St.Widget({ style_class: 'lg-launcher-pin', width: PIN_ICON_SIZE }));
+            box.add_child(new 10.default.Widget({ style_class: 'lg-launcher-pin', width: PIN_ICON_SIZE }));
             row.connect('clicked', activate);
         }
-        const text = new St.BoxLayout({ y_align: Clutter.ActorAlign.CENTER, x_expand: true, ...verticalBoxParams() });
-        const name = new St.Label({ text: title, style_class: 'lg-launcher-name' });
-        name.clutter_text.ellipsize = Pango.EllipsizeMode.END;
+        const text = new 10.default.BoxLayout({ y_align: 4.default.ActorAlign.CENTER, x_expand: true, ...(0, shellVersion_js_1.verticalBoxParams)() });
+        const name = new 10.default.Label({ text: title, style_class: 'lg-launcher-name' });
+        name.clutter_text.ellipsize = 8.default.EllipsizeMode.END;
         text.add_child(name);
         if (detail) {
-            const label = new St.Label({ text: detail, style_class: 'lg-launcher-detail' });
-            label.clutter_text.ellipsize = Pango.EllipsizeMode.END;
+            const label = new 10.default.Label({ text: detail, style_class: 'lg-launcher-detail' });
+            label.clutter_text.ellipsize = 8.default.EllipsizeMode.END;
             text.add_child(label);
         }
         if (icon)
             box.add_child(icon);
         box.add_child(text);
         if (badge)
-            box.add_child(new St.Label({ text: badge, style_class: 'lg-launcher-badge', y_align: Clutter.ActorAlign.CENTER }));
+            box.add_child(new 10.default.Label({ text: badge, style_class: 'lg-launcher-badge', y_align: 4.default.ActorAlign.CENTER }));
         row.set_child(box);
         return row;
     }
     _pinIcon(pin, size) {
         if (pin.provider === 'applications' && pin.id.endsWith('.desktop')) {
-            const app = Shell.AppSystem.get_default().lookup_app(pin.id);
+            const app = 9.default.AppSystem.get_default().lookup_app(pin.id);
             if (app) {
                 const icon = app.create_icon_texture(size);
                 this._icons.styleLauncherIcon(icon, pin.id, this._panel);
@@ -820,26 +860,26 @@ export class Launcher {
         let gicon = null;
         try {
             if (pin.icon)
-                gicon = Gio.icon_new_for_string(pin.icon);
+                gicon = 5.default.icon_new_for_string(pin.icon);
         }
         catch (e) {
             this._logger.log(`[Liquid Glass] Pinned ${pin.id} has an unreadable icon: ${e}`);
         }
-        return new St.Icon({ gicon: gicon ?? Gio.ThemedIcon.new('text-x-generic-symbolic'), icon_size: size });
+        return new 10.default.Icon({ gicon: gicon ?? 5.default.ThemedIcon.new('text-x-generic-symbolic'), icon_size: size });
     }
     // The pinned page: a back button, the applications in a grid of square tiles, and the rest as a list.
     _showPinned() {
         const view = this._pinnedBox;
         view.get_child()?.destroy();
-        const page = new St.BoxLayout({ style_class: 'lg-launcher-page', x_expand: true, ...verticalBoxParams() });
-        const header = new St.BoxLayout({ style_class: 'lg-launcher-header' });
-        const back = new St.Button({
+        const page = new 10.default.BoxLayout({ style_class: 'lg-launcher-page', x_expand: true, ...(0, shellVersion_js_1.verticalBoxParams)() });
+        const header = new 10.default.BoxLayout({ style_class: 'lg-launcher-header' });
+        const back = new 10.default.Button({
             style_class: 'lg-launcher-back', can_focus: false, accessible_name: 'Back to the search',
-            child: new St.Icon({ icon_name: 'go-previous-symbolic', icon_size: PIN_ICON_SIZE })
+            child: new 10.default.Icon({ icon_name: 'go-previous-symbolic', icon_size: PIN_ICON_SIZE })
         });
         back.connect('clicked', () => this.showView('search'));
         header.add_child(back);
-        header.add_child(new St.Label({ text: 'Pinned', style_class: 'lg-launcher-title', y_align: Clutter.ActorAlign.CENTER }));
+        header.add_child(new 10.default.Label({ text: 'Pinned', style_class: 'lg-launcher-title', y_align: 4.default.ActorAlign.CENTER }));
         page.add_child(header);
         const pins = this._pins.all();
         const apps = pins.filter(p => p.provider === 'applications');
@@ -849,42 +889,42 @@ export class Launcher {
         const refresh = () => {
             if (this._refreshId)
                 return;
-            this._refreshId = global.compositor.get_laters().add(Meta.LaterType.BEFORE_REDRAW, () => {
+            this._refreshId = global.compositor.get_laters().add(7.default.LaterType.BEFORE_REDRAW, () => {
                 this._refreshId = 0;
                 if (this._view === 'pinned' && this._pinnedBox)
                     this._showPinned();
-                return GLib.SOURCE_REMOVE;
+                return 6.default.SOURCE_REMOVE;
             });
         };
         if (apps.length) {
-            page.add_child(new St.Label({ text: 'Applications', style_class: 'lg-launcher-section' }));
+            page.add_child(new 10.default.Label({ text: 'Applications', style_class: 'lg-launcher-section' }));
             const iconSize = this._settings.get_int('launcher-pinned-icon-size');
-            const { columns, tile } = pinnedGrid(this._panelWidth(true, this._root.width) - PANEL_PADDING * 2, iconSize, GRID_SPACING, TILE_SIDE_ROOM);
+            const { columns, tile } = (0, pinnedGrid_js_1.pinnedGrid)(this._panelWidth(true, this._root.width) - PANEL_PADDING * 2, iconSize, GRID_SPACING, TILE_SIDE_ROOM);
             this._columns = columns;
             let line = null;
             apps.forEach((pin, i) => {
                 if (i % columns === 0) {
-                    line = new St.BoxLayout({ style_class: 'lg-launcher-grid-row' });
+                    line = new 10.default.BoxLayout({ style_class: 'lg-launcher-grid-row' });
                     page.add_child(line);
                 }
-                const app = pin.id.endsWith('.desktop') ? Shell.AppSystem.get_default().lookup_app(pin.id) : null;
-                const button = new St.Button({ style_class: 'lg-launcher-tile', can_focus: false, width: tile });
-                const content = new St.BoxLayout({
-                    style_class: 'lg-launcher-tile-box', x_align: Clutter.ActorAlign.CENTER,
-                    y_align: Clutter.ActorAlign.CENTER, x_expand: true, y_expand: true, ...verticalBoxParams()
+                const app = pin.id.endsWith('.desktop') ? 9.default.AppSystem.get_default().lookup_app(pin.id) : null;
+                const button = new 10.default.Button({ style_class: 'lg-launcher-tile', can_focus: false, width: tile });
+                const content = new 10.default.BoxLayout({
+                    style_class: 'lg-launcher-tile-box', x_align: 4.default.ActorAlign.CENTER,
+                    y_align: 4.default.ActorAlign.CENTER, x_expand: true, y_expand: true, ...(0, shellVersion_js_1.verticalBoxParams)()
                 });
                 const icon = this._pinIcon(pin, iconSize);
-                icon.x_align = Clutter.ActorAlign.CENTER;
+                icon.x_align = 4.default.ActorAlign.CENTER;
                 content.add_child(icon);
-                const name = new St.Label({
+                const name = new 10.default.Label({
                     text: app?.get_name() ?? pin.name, style_class: 'lg-launcher-tile-name',
-                    x_align: Clutter.ActorAlign.CENTER
+                    x_align: 4.default.ActorAlign.CENTER
                 });
-                name.clutter_text.ellipsize = Pango.EllipsizeMode.END;
+                name.clutter_text.ellipsize = 8.default.EllipsizeMode.END;
                 content.add_child(name);
                 const toggle = this._pinToggle(button, pin, () => this._activatePin(pin), refresh);
-                toggle.set({ x_align: Clutter.ActorAlign.START, y_align: Clutter.ActorAlign.START, x_expand: true, y_expand: true });
-                const stack = new St.Widget({ layout_manager: new Clutter.BinLayout(), x_expand: true, y_expand: true });
+                toggle.set({ x_align: 4.default.ActorAlign.START, y_align: 4.default.ActorAlign.START, x_expand: true, y_expand: true });
+                const stack = new 10.default.Widget({ layout_manager: new 4.default.BinLayout(), x_expand: true, y_expand: true });
                 stack.add_child(content);
                 stack.add_child(toggle);
                 button.set_child(stack);
@@ -897,8 +937,8 @@ export class Launcher {
         }
         this._tileCount = this._items.length;
         if (rest.length) {
-            page.add_child(new St.Label({ text: 'Files', style_class: 'lg-launcher-section' }));
-            const list = new St.BoxLayout({ style_class: 'lg-launcher-list', ...verticalBoxParams() });
+            page.add_child(new 10.default.Label({ text: 'Files', style_class: 'lg-launcher-section' }));
+            const list = new 10.default.BoxLayout({ style_class: 'lg-launcher-list', ...(0, shellVersion_js_1.verticalBoxParams)() });
             for (const pin of rest) {
                 const provider = this._providers().find(p => p.id === pin.provider);
                 const row = this._row(this._pinIcon(pin, ICON_SIZE), pin.name, pin.description || provider?.appInfo?.get_name() || '', pin, () => this._activatePin(pin), refresh);
@@ -911,9 +951,9 @@ export class Launcher {
             page.add_child(list);
         }
         if (!pins.length) {
-            page.add_child(new St.Label({
+            page.add_child(new 10.default.Label({
                 text: 'Nothing pinned yet. Point at a search result and click the pin on its left.',
-                style_class: 'lg-launcher-empty', x_align: Clutter.ActorAlign.CENTER, y_align: Clutter.ActorAlign.CENTER, y_expand: true
+                style_class: 'lg-launcher-empty', x_align: 4.default.ActorAlign.CENTER, y_align: 4.default.ActorAlign.CENTER, y_expand: true
             }));
         }
         view.set_child(page);
@@ -952,3 +992,4 @@ export class Launcher {
         return { get: () => this._frameSignalId, set: (id) => { this._frameSignalId = id; } };
     }
 }
+exports.Launcher = Launcher;

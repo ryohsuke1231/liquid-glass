@@ -27,6 +27,7 @@ function write(path: string, bytes: Uint8Array): Promise<void> {
     });
   });
 }
+// @ts-ignore: CommonJS module with GJS runtime supports top-level await
 
 await serveRequests(async ({ file, cache }) => {
   const analysis = analyzeIcon(await drawIcon(file, ANALYSIS_SIZE));

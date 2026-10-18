@@ -1,3 +1,4 @@
+"use strict";
 // Takes an application icon apart into the plates it is drawn on (rounded
 // squares, circles and the like, outermost first) and the symbol drawn on them,
 // so that it can be redrawn as glass plates under a one-color symbol.
@@ -8,6 +9,13 @@
 // plate that carries a picture keeps its shape, and the picture is taken as
 // the symbol. Pure computation on unpremultiplied RGBA, so that it runs in a
 // worker process as well as in tests.
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.oklabToSrgb = oklabToSrgb;
+exports.shapeDistance = shapeDistance;
+exports.plateColor = plateColor;
+exports.analyzeIcon = analyzeIcon;
+exports.withoutPlates = withoutPlates;
+exports.symbolLayer = symbolLayer;
 // A shape counts as a plate when it covers the candidate this well, a shape between a diamond and an ellipse only when
 // it covers it as well as FIT_POINTED: one that covers it less rounds off the corners of a polygon.
 const FIT_PLATE = 0.94;
@@ -135,7 +143,8 @@ function oklab(r, g, b, out, at) {
     out[at + 2] = 0.0259040371 * l + 0.7827717662 * m - 0.808650822 * s;
 }
 /** sRGB (0-255) of an Oklab color. */
-export function oklabToSrgb(L, a, b) {
+
+function oklabToSrgb(L, a, b) {
     const l = (L + 0.3963377774 * a + 0.2158037573 * b) ** 3;
     const m = (L - 0.1055613458 * a - 0.0638541728 * b) ** 3;
     const s = (L - 0.0894841775 * a - 1.291485548 * b) ** 3;
@@ -153,7 +162,8 @@ function smoothstep(lo, hi, x) {
     return t * t * (3 - 2 * t);
 }
 /** Signed distance (px, negative inside) from a pixel position to the shape's outline. */
-export function shapeDistance(shape, x, y) {
+
+function shapeDistance(shape, x, y) {
     const dx = x - shape.cx, dy = y - shape.cy;
     let d;
     if (shape.kind === 'roundrect') {
@@ -527,7 +537,8 @@ function terms(shape, x, y, out) {
     out[5] = v * v;
 }
 /** The plate's Oklab color at a pixel position. */
-export function plateColor(plate, x, y, out = [0, 0, 0]) {
+
+function plateColor(plate, x, y, out = [0, 0, 0]) {
     const t = new Float64Array(TERMS);
     terms(plate.shape, x, y, t);
     for (let c = 0; c < 3; c++) {
@@ -670,7 +681,8 @@ function alike(a, b) {
     const near = (x, y) => Math.abs(x - y) <= PEER_SIZE * Math.max(x, y);
     return near(a.mask.area, b.mask.area) && near(a.shape.rx, b.shape.rx) && near(a.shape.ry, b.shape.ry);
 }
-export function analyzeIcon(icon) {
+
+function analyzeIcon(icon) {
     const { width: w, height: h, data } = icon;
     const n = w * h;
     const lab = new Float32Array(n * 3);
@@ -879,7 +891,8 @@ export function analyzeIcon(icon) {
     return { width: w, height: h, plates, symbol, intensity };
 }
 /** The plates without those `leftOut` picks and the plates on them. A plate comes after the plate it sits on. */
-export function withoutPlates(plates, leftOut) {
+
+function withoutPlates(plates, leftOut) {
     const index = [];
     const out = [];
     plates.forEach((plate, k) => {
@@ -933,7 +946,8 @@ function segmentDistance(c, p, q) {
  * soft shadow) are measured pixel by pixel: a pixel's distance from the surface grows with how much of it the symbol
  * covers, up to the symbol's full color, taken from the strongest pixel next to it that differs the same way.
  */
-export function symbolLayer(plates, analysisWidth, pixels) {
+
+function symbolLayer(plates, analysisWidth, pixels) {
     const { width: w, height: h, data } = pixels;
     const n = w * h;
     // Analysis px per pixel.

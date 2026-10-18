@@ -1,6 +1,13 @@
-import GLib from 'gi://GLib';
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.PinStore = void 0;
+const 1 = __importDefault(require("gi://GLib"));
 const KEY = 'launcher-pinned';
-export class PinStore {
+
+class PinStore {
     _settings;
     constructor(_settings) {
         this._settings = _settings;
@@ -26,6 +33,7 @@ export class PinStore {
         return pinned;
     }
     _write(pins) {
-        this._settings.set_value(KEY, new GLib.Variant('aa{ss}', pins.map(p => ({ ...p }))));
+        this._settings.set_value(KEY, new 1.default.Variant('aa{ss}', pins.map(p => ({ ...p }))));
     }
 }
+exports.PinStore = PinStore;

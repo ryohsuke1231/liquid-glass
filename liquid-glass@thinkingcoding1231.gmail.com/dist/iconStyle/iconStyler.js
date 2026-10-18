@@ -1,23 +1,62 @@
+"use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.IconStyler = exports.SHOW_APPS_ID = void 0;
 // Redraws application icons in the dock (Dash to Dock), the launcher and the
 // overview's app grid as glass plates under a symbol (see iconEffect.ts), for
 // the applications the settings pick. Clear icons read what is behind them
 // from one backdrop per actor that holds them (iconBackdrop.ts).
-import * as Main from 'resource:///org/gnome/shell/ui/main.js';
-import * as MessageTray from 'resource:///org/gnome/shell/ui/messageTray.js';
-import Clutter from 'gi://Clutter';
-import Gio from 'gi://Gio';
-import GLib from 'gi://GLib';
-import Meta from 'gi://Meta';
-import Shell from 'gi://Shell';
-import St from 'gi://St';
-import { hexToColorArray } from '../animation/colors.js';
-import { accentColors, watchAccentColor } from '../shellVersion.js';
-import { IconBackdrop } from './iconBackdrop.js';
-import { IconStyleEffect, iconStylePipeline } from './iconEffect.js';
-import { IconMaps } from './iconMaps.js';
-import { iconStyleColors } from './styleColors.js';
+const Main = __importStar(require("resource:///org/gnome/shell/ui/main.js"));
+const MessageTray = __importStar(require("resource:///org/gnome/shell/ui/messageTray.js"));
+const 2 = __importDefault(require("gi://Clutter"));
+const 3 = __importDefault(require("gi://Gio"));
+const 4 = __importDefault(require("gi://GLib"));
+const 5 = __importDefault(require("gi://Meta"));
+const 6 = __importDefault(require("gi://Shell"));
+const 7 = __importDefault(require("gi://St"));
+const colors_js_1 = require("../animation/colors.js");
+const shellVersion_js_1 = require("../shellVersion.js");
+const iconBackdrop_js_1 = require("./iconBackdrop.js");
+const iconEffect_js_1 = require("./iconEffect.js");
+const iconMaps_js_1 = require("./iconMaps.js");
+const styleColors_js_1 = require("./styleColors.js");
 // The id the Show Apps button goes by in the application lists.
-export const SHOW_APPS_ID = 'show-apps';
+exports.SHOW_APPS_ID = 'show-apps';
 // Icons are looked up at the size their maps are taken from.
 const LOOKUP_SIZE = 128;
 const EFFECT_NAME = 'liquid-glass-icon-style';
@@ -33,7 +72,7 @@ function backdropHost(holder) {
     let host = holder, cached = false;
     for (let actor = holder; actor; actor = actor.get_parent()) {
         const parent = actor.get_parent();
-        if (parent && actor.offscreen_redirect & Clutter.OffscreenRedirect.ALWAYS) {
+        if (parent && actor.offscreen_redirect & 2.default.OffscreenRedirect.ALWAYS) {
             host = parent;
             cached = true;
         }
@@ -48,10 +87,10 @@ const COLOR_KEYS = ['icon-style-use-accent', 'icon-style-color', 'icon-style-tin
 function appIdOf(icon) {
     // The shell's and Dash to Dock's Show Apps buttons, whatever icon they show.
     if (icon.has_style_class_name('show-apps-icon'))
-        return SHOW_APPS_ID;
+        return exports.SHOW_APPS_ID;
     for (let actor = icon.get_parent(); actor; actor = actor.get_parent()) {
         const app = actor.app;
-        if (app instanceof Shell.App)
+        if (app instanceof 6.default.App)
             return app.get_id();
     }
     return folderAppIdOf(icon);
@@ -68,11 +107,12 @@ function folderAppIdOf(icon) {
         if (!Array.isArray(items))
             continue;
         const app = items[grid.get_children().indexOf(bin)]?.app;
-        return app instanceof Shell.App ? app.get_id() : null;
+        return app instanceof 6.default.App ? app.get_id() : null;
     }
     return null;
 }
-export class IconStyler {
+
+class IconStyler {
     _extensionPath;
     _settings;
     _logger;
@@ -83,7 +123,7 @@ export class IconStyler {
     _hosts = new Map();
     // The views of the app grid's folders, which their dialogs show over the grid.
     _folderViews = new WeakSet();
-    _theme = new St.IconTheme();
+    _theme = new 7.default.IconTheme();
     _styled = new Map();
     // Per dock and app grid, the actors in it watched for children, by the handlers on each.
     _roots = new Map();
@@ -94,13 +134,13 @@ export class IconStyler {
     _settingsIds = [];
     _themeId = 0;
     _unwatchAccent = () => { };
-    _cancellable = new Gio.Cancellable();
+    _cancellable = new 3.default.Cancellable();
     constructor(_extensionPath, _settings, _logger) {
         this._extensionPath = _extensionPath;
         this._settings = _settings;
         this._logger = _logger;
-        this._maps = new IconMaps(_extensionPath, _logger, busy => this._notify(busy));
-        const file = Gio.File.new_for_path(`${_extensionPath}/shaders/icon-style.frag`);
+        this._maps = new iconMaps_js_1.IconMaps(_extensionPath, _logger, busy => this._notify(busy));
+        const file = 3.default.File.new_for_path(`${_extensionPath}/shaders/icon-style.frag`);
         this._shader = new Promise((resolve, reject) => {
             file.load_contents_async(this._cancellable, (_f, res) => {
                 try {
@@ -112,7 +152,7 @@ export class IconStyler {
             });
         });
         this._shader.catch(e => {
-            if (!(e instanceof GLib.Error && e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED)))
+            if (!(e instanceof 4.default.Error && e.matches(3.default.IOErrorEnum, 3.default.IOErrorEnum.CANCELLED)))
                 this._logger.error(`[Liquid Glass] Could not read the icon shader: ${e}`);
         });
     }
@@ -126,13 +166,13 @@ export class IconStyler {
             this._settings.connect('changed::icon-style-size', () => this._resizeAll()),
             this._settings.connect('changed::icon-style-mode', () => this._restyleAll()),
         ];
-        this._themeId = St.TextureCache.get_default().connect('icon-theme-changed', () => {
-            this._theme = new St.IconTheme();
+        this._themeId = 7.default.TextureCache.get_default().connect('icon-theme-changed', () => {
+            this._theme = new 7.default.IconTheme();
             this._restyleAll();
             this._prepareSoon();
         });
-        this._installedId = Shell.AppSystem.get_default().connect('installed-changed', () => this._prepareSoon());
-        this._unwatchAccent = watchAccentColor(() => this._recolorAll());
+        this._installedId = 6.default.AppSystem.get_default().connect('installed-changed', () => this._prepareSoon());
+        this._unwatchAccent = (0, shellVersion_js_1.watchAccentColor)(() => this._recolorAll());
         this._watch(Main.overview._overview.controls._appDisplay, 'app-grid');
         this._prepareSoon();
     }
@@ -142,13 +182,13 @@ export class IconStyler {
             this._settings.disconnect(id);
         this._settingsIds = [];
         if (this._themeId)
-            St.TextureCache.get_default().disconnect(this._themeId);
+            7.default.TextureCache.get_default().disconnect(this._themeId);
         this._themeId = 0;
         if (this._installedId)
-            Shell.AppSystem.get_default().disconnect(this._installedId);
+            6.default.AppSystem.get_default().disconnect(this._installedId);
         this._installedId = 0;
         if (this._prepareId)
-            GLib.Source.remove(this._prepareId);
+            4.default.Source.remove(this._prepareId);
         this._prepareId = 0;
         this._notification?.destroy();
         this._notification = null;
@@ -196,15 +236,15 @@ export class IconStyler {
     _scanSoon() {
         if (this._scanId)
             return;
-        this._scanId = global.compositor.get_laters().add(Meta.LaterType.BEFORE_REDRAW, () => {
+        this._scanId = global.compositor.get_laters().add(5.default.LaterType.BEFORE_REDRAW, () => {
             this._scanId = 0;
             for (const [root, { surface, watched }] of this._roots)
                 this._scan(root, root, surface, watched);
-            return GLib.SOURCE_REMOVE;
+            return 4.default.SOURCE_REMOVE;
         });
     }
     _scan(actor, root, surface, watched) {
-        if (actor instanceof St.Icon) {
+        if (actor instanceof 7.default.Icon) {
             const appId = appIdOf(actor);
             if (appId && !this._styled.has(actor))
                 this._style(actor, appId, surface, root);
@@ -220,7 +260,7 @@ export class IconStyler {
             this._scan(child, root, surface, watched);
         // A folder's apps are laid out in a view of their own, which goes into a dialog over the overview once it opens.
         const folder = actor.view;
-        if (surface === 'app-grid' && folder instanceof Clutter.Actor) {
+        if (surface === 'app-grid' && folder instanceof 2.default.Actor) {
             this._folderViews.add(folder);
             this._scan(folder, root, surface, watched);
         }
@@ -267,7 +307,7 @@ export class IconStyler {
         let entry = this._hosts.get(host);
         if (!entry) {
             const icons = new Set();
-            const backdrop = new IconBackdrop({
+            const backdrop = new iconBackdrop_js_1.IconBackdrop({
                 extensionPath: this._extensionPath, settings: this._settings, logger: this._logger,
                 prefix: styled.surface === 'launcher' ? 'launcher' : 'dock', rect: () => this._extentsOf(icons),
                 copied: () => {
@@ -324,13 +364,13 @@ export class IconStyler {
             : s.get_strv('icon-style-whitelist').includes(appId);
     }
     _file(icon) {
-        const named = (name) => (name ? new Gio.ThemedIcon({ name }) : null);
+        const named = (name) => (name ? new 3.default.ThemedIcon({ name }) : null);
         return this._fileOf([icon.gicon ?? named(icon.icon_name), icon.fallback_gicon ?? named(icon.fallback_icon_name)]);
     }
     // The file an icon is drawn from, falling back the way St.Icon does when its own icon is not in the theme.
     _fileOf(gicons) {
         for (const gicon of gicons) {
-            if (gicon instanceof Gio.FileIcon)
+            if (gicon instanceof 3.default.FileIcon)
                 return gicon.get_file().get_path();
             const file = gicon ? this._theme.lookup_by_gicon(gicon, LOOKUP_SIZE, 0)?.get_filename() : null;
             if (file)
@@ -340,11 +380,11 @@ export class IconStyler {
     }
     _prepareSoon() {
         if (this._prepareId)
-            GLib.Source.remove(this._prepareId);
-        this._prepareId = GLib.timeout_add_seconds(GLib.PRIORITY_LOW, PREPARE_DELAY_S, () => {
+            4.default.Source.remove(this._prepareId);
+        this._prepareId = 4.default.timeout_add_seconds(4.default.PRIORITY_LOW, PREPARE_DELAY_S, () => {
             this._prepareId = 0;
             this._prepare();
-            return GLib.SOURCE_REMOVE;
+            return 4.default.SOURCE_REMOVE;
         });
     }
     // Makes the maps of every installed application's icon that will be styled, before any is shown.
@@ -354,8 +394,8 @@ export class IconStyler {
             this._maps.prepare([]);
             return;
         }
-        const fallback = new Gio.ThemedIcon({ name: FALLBACK_ICON });
-        const files = Shell.AppSystem.get_default().get_installed()
+        const fallback = new 3.default.ThemedIcon({ name: FALLBACK_ICON });
+        const files = 6.default.AppSystem.get_default().get_installed()
             .filter(info => info.should_show() && this._wantedApp(info.get_id() ?? ''))
             .map(info => this._fileOf([info.get_icon(), fallback]))
             .filter((file) => !!file);
@@ -382,13 +422,13 @@ export class IconStyler {
     }
     _colors() {
         const s = this._settings;
-        const accent = s.get_boolean('icon-style-use-accent') ? accentColors() : null;
+        const accent = s.get_boolean('icon-style-use-accent') ? (0, shellVersion_js_1.accentColors)() : null;
         const tint = accent ? [accent[0].red / 255, accent[0].green / 255, accent[0].blue / 255]
-            : hexToColorArray(s.get_string('icon-style-color'));
+            : (0, colors_js_1.hexToColorArray)(s.get_string('icon-style-color'));
         const mode = s.get_string('icon-style-mode');
         const variant = s.get_string('icon-style-tint-variant') === 'light' ? 'light' : 'dark';
         const tuning = s.get_value('icon-style-tuning').deep_unpack();
-        return iconStyleColors((['mono', 'clear'].includes(mode) ? mode : 'tinted'), tint, s.get_double('icon-style-tint-strength'), s.get_double('icon-style-symbol-opacity'), variant, tuning);
+        return (0, styleColors_js_1.iconStyleColors)((['mono', 'clear'].includes(mode) ? mode : 'tinted'), tint, s.get_double('icon-style-tint-strength'), s.get_double('icon-style-symbol-opacity'), variant, tuning);
     }
     _apply(icon) {
         const styled = this._styled.get(icon);
@@ -407,13 +447,13 @@ export class IconStyler {
             const clear = this._settings.get_string('icon-style-mode') === 'clear';
             let pipeline;
             if (clear)
-                pipeline = this._glassPipeline ??= iconStylePipeline(shader, true);
+                pipeline = this._glassPipeline ??= (0, iconEffect_js_1.iconStylePipeline)(shader, true);
             else
-                pipeline = this._pipeline ??= iconStylePipeline(shader);
+                pipeline = this._pipeline ??= (0, iconEffect_js_1.iconStylePipeline)(shader);
             const backdrop = clear ? this._backdropFor(icon, styled) : null;
             if (!clear)
                 this._leaveHost(icon, styled);
-            const effect = styled.effect ?? new IconStyleEffect();
+            const effect = styled.effect ?? new iconEffect_js_1.IconStyleEffect();
             effect.prepare(pipeline.copy(), textures, colors, backdrop);
             if (!styled.effect) {
                 styled.effect = effect;
@@ -421,7 +461,7 @@ export class IconStyler {
             }
             this._resize(icon);
         }).catch(e => {
-            if (!(e instanceof GLib.Error && e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED)))
+            if (!(e instanceof 4.default.Error && e.matches(3.default.IOErrorEnum, 3.default.IOErrorEnum.CANCELLED)))
                 this._logger.log(`[Liquid Glass] Could not style the icon of ${styled.appId}: ${e}`);
         });
     }
@@ -455,3 +495,4 @@ export class IconStyler {
             styled.effect?.setColors(colors);
     }
 }
+exports.IconStyler = IconStyler;

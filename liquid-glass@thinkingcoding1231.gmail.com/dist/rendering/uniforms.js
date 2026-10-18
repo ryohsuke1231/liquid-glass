@@ -1,5 +1,9 @@
-import { setUniformArray } from '../shellVersion.js';
-export class UniformState {
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.UniformState = void 0;
+const shellVersion_js_1 = require("../shellVersion.js");
+
+class UniformState {
     _pipeline = null;
     get values() { return this._pendingUniforms; }
     attach(pipeline) {
@@ -108,7 +112,8 @@ export class UniformState {
             loc = this._pipeline.get_uniform_location(name);
             this._compUniformArrays.set(name, loc);
         }
-        setUniformArray(this._pipeline, loc, name, values);
+        (0, shellVersion_js_1.setUniformArray)(this._pipeline, loc, name, values);
         this._appliedUniformArrays.set(name, values.slice());
     }
 }
+exports.UniformState = UniformState;

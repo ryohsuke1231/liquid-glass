@@ -1,17 +1,23 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.WindowListService = exports.WINDOW_LIST_INTERFACE_NAME = exports.WINDOW_LIST_OBJECT_PATH = void 0;
 // The preferences process cannot use Meta or Shell, so this service publishes
 // the list of open windows over D-Bus (on the shell's own bus name) for the
 // window picker, with a WindowsChanged signal to keep it current.
-import Meta from 'gi://Meta';
-import Shell from 'gi://Shell';
-import Gio from 'gi://Gio';
-import GLib from 'gi://GLib';
-export const WINDOW_LIST_OBJECT_PATH = '/org/gnome/Shell/Extensions/LiquidGlass';
-export const WINDOW_LIST_INTERFACE_NAME = 'org.gnome.Shell.Extensions.LiquidGlass';
+const 1 = __importDefault(require("gi://Meta"));
+const 2 = __importDefault(require("gi://Shell"));
+const 3 = __importDefault(require("gi://Gio"));
+const 4 = __importDefault(require("gi://GLib"));
+exports.WINDOW_LIST_OBJECT_PATH = '/org/gnome/Shell/Extensions/LiquidGlass';
+exports.WINDOW_LIST_INTERFACE_NAME = 'org.gnome.Shell.Extensions.LiquidGlass';
 // The payload is passed as a JSON string rather than a typed D-Bus structure so
 // that adding a field later does not break an older preferences process.
 const WINDOW_LIST_IFACE = `
 <node>
-  <interface name="${WINDOW_LIST_INTERFACE_NAME}">
+  <interface name="${exports.WINDOW_LIST_INTERFACE_NAME}">
     <method name="ListWindows">
       <arg type="s" direction="out" name="windows"/>
     </method>
@@ -24,11 +30,11 @@ function readWindow(metaWindow) {
     const windowType = metaWindow.get_window_type();
     const title = metaWindow.get_title() ?? '';
     // Desktop, dock and splash surfaces cannot get the effect.
-    if (!wmClass || windowType === Meta.WindowType.DESKTOP ||
-        windowType === Meta.WindowType.DOCK || windowType === Meta.WindowType.SPLASHSCREEN)
+    if (!wmClass || windowType === 1.default.WindowType.DESKTOP ||
+        windowType === 1.default.WindowType.DOCK || windowType === 1.default.WindowType.SPLASHSCREEN)
         return null;
-    const normal = windowType === Meta.WindowType.NORMAL ||
-        windowType === Meta.WindowType.DIALOG || windowType === Meta.WindowType.MODAL_DIALOG;
+    const normal = windowType === 1.default.WindowType.NORMAL ||
+        windowType === 1.default.WindowType.DIALOG || windowType === 1.default.WindowType.MODAL_DIALOG;
     return { wmClass, title, normal };
 }
 
@@ -43,7 +49,8 @@ function readApplication(entry, metaWindow, tracker) {
     if (icon)
         entry.iconName = icon.to_string() ?? '';
 }
-export class WindowListService {
+
+class WindowListService {
     _logger;
     _dbusImpl = null;
     _displaySignals = [];
@@ -56,8 +63,8 @@ export class WindowListService {
     setup() {
         // Exporting fails with a GError if the path is already taken.
         try {
-            this._dbusImpl = Gio.DBusExportedObject.wrapJSObject(WINDOW_LIST_IFACE, this);
-            this._dbusImpl.export(Gio.DBus.session, WINDOW_LIST_OBJECT_PATH);
+            this._dbusImpl = 3.default.DBusExportedObject.wrapJSObject(WINDOW_LIST_IFACE, this);
+            this._dbusImpl.export(3.default.DBus.session, exports.WINDOW_LIST_OBJECT_PATH);
         }
         catch (e) {
             this._logger.log('[Liquid Glass] Failed to export the window list service: ' + e);
@@ -74,11 +81,11 @@ export class WindowListService {
         connectDisplay('restacked', () => this._queueChanged());
         for (const metaWindow of this._listMetaWindows())
             this._trackWindow(metaWindow);
-        this._logger.log('[Liquid Glass] WindowListService exported at ' + WINDOW_LIST_OBJECT_PATH);
+        this._logger.log('[Liquid Glass] WindowListService exported at ' + exports.WINDOW_LIST_OBJECT_PATH);
     }
     cleanup() {
         if (this._emitIdleId) {
-            GLib.Source.remove(this._emitIdleId);
+            4.default.Source.remove(this._emitIdleId);
             this._emitIdleId = 0;
         }
         for (const sig of this._displaySignals)
@@ -123,7 +130,7 @@ export class WindowListService {
     }
     // One entry per WM_CLASS, the granularity the window lists match on.
     _collectWindows() {
-        const tracker = Shell.WindowTracker.get_default();
+        const tracker = 2.default.WindowTracker.get_default();
         const byClass = new Map();
         for (const metaWindow of this._listMetaWindows()) {
             const window = readWindow(metaWindow);
@@ -152,10 +159,11 @@ export class WindowListService {
     _queueChanged() {
         if (this._emitIdleId)
             return;
-        this._emitIdleId = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+        this._emitIdleId = 4.default.idle_add(4.default.PRIORITY_DEFAULT_IDLE, () => {
             this._emitIdleId = 0;
             this._dbusImpl?.emit_signal('WindowsChanged', null);
-            return GLib.SOURCE_REMOVE;
+            return 4.default.SOURCE_REMOVE;
         });
     }
 }
+exports.WindowListService = WindowListService;

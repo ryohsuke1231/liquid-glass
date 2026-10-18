@@ -25,6 +25,7 @@ function save(bytes: Uint8Array): Promise<string> {
     });
   });
 }
+// @ts-ignore: CommonJS module with GJS runtime supports top-level await
 
 await serveRequests(async request => {
   const digits = await maker.make(request);

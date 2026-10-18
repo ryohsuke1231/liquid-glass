@@ -1,10 +1,14 @@
+"use strict";
 // A rectangle that eases to each new target in a fixed time, without the
 // overshoot of a spring.
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.RectTween = void 0;
 
 function easeOutCubic(t) {
     return 1 - (1 - t) ** 3;
 }
-export class RectTween {
+
+class RectTween {
     _durationMs;
     _from = [0, 0, 1, 1];
     _to = [0, 0, 1, 1];
@@ -34,3 +38,4 @@ export class RectTween {
         return this._from.map((v, i) => v + (this._to[i] - v) * k);
     }
 }
+exports.RectTween = RectTween;

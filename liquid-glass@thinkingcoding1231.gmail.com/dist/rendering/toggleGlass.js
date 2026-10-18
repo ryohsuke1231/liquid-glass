@@ -1,3 +1,9 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.ToggleBackdropGlass = exports.BackdropReader = void 0;
 // Quick Settings' toggle mode puts a piece of glass behind each toggle, inside
 // the menu: over the panel's own background and under the toggles' labels.
 // The menu (a BoxPointer) is always drawn through an offscreen, where the
@@ -13,26 +19,26 @@
 // The glass holds the relays. A change behind the toggles then both puts the
 // area into the redraw clip, so the reader copies it, and dirties the menu,
 // whose offscreen would otherwise be reused without painting the glass.
-import GObject from 'gi://GObject';
-import Clutter from 'gi://Clutter';
-import Cogl from 'gi://Cogl';
-import Graphene from 'gi://Graphene';
-import Shell from 'gi://Shell';
-import { GlassActor } from './backdropGlass.js';
-import { StageCopier, addBlit, createTarget } from './stageCopy.js';
-import { RelaySet, localToStage } from './relays.js';
-import { configureSamplerLayer } from './pipelines.js';
-import { setTranslationIfChanged, setScaleIfChanged } from '../actors/writes.js';
-import { isActorValid } from '../actors/lifecycle.js';
-import { offscreenFormat, paintNodeWithContext, setUniformVector, uniformDeclarations } from '../shellVersion.js';
+const 4 = __importDefault(require("gi://GObject"));
+const 5 = __importDefault(require("gi://Clutter"));
+const 6 = __importDefault(require("gi://Cogl"));
+const 7 = __importDefault(require("gi://Graphene"));
+const 8 = __importDefault(require("gi://Shell"));
+const backdropGlass_js_1 = require("./backdropGlass.js");
+const stageCopy_js_1 = require("./stageCopy.js");
+const relays_js_1 = require("./relays.js");
+const pipelines_js_1 = require("./pipelines.js");
+const writes_js_1 = require("../actors/writes.js");
+const lifecycle_js_1 = require("../actors/lifecycle.js");
+const shellVersion_js_1 = require("../shellVersion.js");
 // The reader's fixed size; it is fitted to its rect by translation and scale
 // for the same reason as the sample area (relays.ts).
 const READER_BASE = 256;
-export const BackdropReader = GObject.registerClass(paintNodeWithContext(class BackdropReader extends Clutter.Actor {
+exports.BackdropReader = 4.default.registerClass((0, shellVersion_js_1.paintNodeWithContext)(class BackdropReader extends 5.default.Actor {
     _init(logger) {
         super._init({ name: 'liquid-glass-backdrop-reader', reactive: false, width: READER_BASE, height: READER_BASE });
-        Shell.util_set_hidden_from_pick(this, true);
-        this.copier = new StageCopier(logger);
+        8.default.util_set_hidden_from_pick(this, true);
+        this.copier = new stageCopy_js_1.StageCopier(logger);
         this._rect = null;
     }
     vfunc_pick(_pickContext) {
@@ -52,8 +58,8 @@ export const BackdropReader = GObject.registerClass(paintNodeWithContext(class B
         const [ok1, x1, y1] = parent.transform_stage_point(rect[2], rect[3]);
         if (!ok0 || !ok1 || ![x0, y0, x1, y1].every(Number.isFinite))
             return;
-        setTranslationIfChanged(this, x0, y0);
-        setScaleIfChanged(this, Math.max(x1 - x0, 1) / READER_BASE, Math.max(y1 - y0, 1) / READER_BASE);
+        (0, writes_js_1.setTranslationIfChanged)(this, x0, y0);
+        (0, writes_js_1.setScaleIfChanged)(this, Math.max(x1 - x0, 1) / READER_BASE, Math.max(y1 - y0, 1) / READER_BASE);
     }
     vfunc_paint_node(root, paintContext) {
         if (this._rect)
@@ -67,12 +73,12 @@ const COMPOSE_BODY = 'vec2 uv = cogl_tex_coord_in[0].st;\n' +
     'vec4 d = texture2D(cogl_sampler0, mix(d_rect.xy, d_rect.zw, uv));\n' +
     'vec4 m = texture2D(cogl_sampler1, mix(m_rect.xy, m_rect.zw, uv));\n' +
     'cogl_color_out = m + d * (1.0 - m.a);\n';
-export const ToggleBackdropGlass = GObject.registerClass(paintNodeWithContext(class ToggleBackdropGlass extends GlassActor {
+exports.ToggleBackdropGlass = 4.default.registerClass((0, shellVersion_js_1.paintNodeWithContext)(class ToggleBackdropGlass extends backdropGlass_js_1.GlassActor {
     _init(params = {}) {
         super._init(params);
-        this.reader = new BackdropReader(params.logger);
+        this.reader = new exports.BackdropReader(params.logger);
         this.reader.hide();
-        this._relays = new RelaySet(this, actor => actor === this.reader);
+        this._relays = new relays_js_1.RelaySet(this, actor => actor === this.reader);
         this._wasPainted = false;
         this._material = null;
         this._materialUV = null;
@@ -102,7 +108,7 @@ export const ToggleBackdropGlass = GObject.registerClass(paintNodeWithContext(cl
         if (!area)
             return;
         const changed = this._relays.sync(area);
-        this.reader.setStageRect(localToStage(this, area[0], area[1], area[0] + area[2], area[1] + area[3]));
+        this.reader.setStageRect((0, relays_js_1.localToStage)(this, area[0], area[1], area[0] + area[2], area[1] + area[3]));
         const painted = this.get_paint_opacity() > 0;
         if (changed || (painted && !this._wasPainted))
             this._relays.redrawArea();
@@ -148,7 +154,7 @@ export const ToggleBackdropGlass = GObject.registerClass(paintNodeWithContext(cl
     // The nearest ancestor drawn through an offscreen: the menu's BoxPointer.
     _offscreenAncestor() {
         for (let a = this.get_parent(); a; a = a.get_parent()) {
-            if (a.get_offscreen_redirect() & Clutter.OffscreenRedirect.ALWAYS)
+            if (a.get_offscreen_redirect() & 5.default.OffscreenRedirect.ALWAYS)
                 return a;
         }
         return null;
@@ -163,7 +169,7 @@ export const ToggleBackdropGlass = GObject.registerClass(paintNodeWithContext(cl
      */
     _takeMaterial(root, paintContext, local) {
         const fb = paintContext.get_framebuffer();
-        if (this.is_in_clone_paint() || !(fb instanceof Cogl.Offscreen) || StageCopier.liveView(this, fb))
+        if (this.is_in_clone_paint() || !(fb instanceof 6.default.Offscreen) || stageCopy_js_1.StageCopier.liveView(this, fb))
             return;
         const menu = this._offscreenAncestor();
         const pv = menu?.get_paint_volume();
@@ -176,8 +182,8 @@ export const ToggleBackdropGlass = GObject.registerClass(paintNodeWithContext(cl
         const offX = Math.trunc(Math.ceil(origin.x + pv.get_width() + 0.75) - width - 3);
         const offY = Math.trunc(Math.ceil(origin.y + pv.get_height() + 0.75) - height - 3);
         const cs = menu.get_resource_scale();
-        const a = this.apply_relative_transform_to_point(menu, new Graphene.Point3D({ x: local[0], y: local[1], z: 0 }));
-        const b = this.apply_relative_transform_to_point(menu, new Graphene.Point3D({ x: local[2], y: local[3], z: 0 }));
+        const a = this.apply_relative_transform_to_point(menu, new 7.default.Point3D({ x: local[0], y: local[1], z: 0 }));
+        const b = this.apply_relative_transform_to_point(menu, new 7.default.Point3D({ x: local[2], y: local[3], z: 0 }));
         const sx0 = (Math.min(a.x, b.x) - offX) * cs;
         const sy0 = (Math.min(a.y, b.y) - offY) * cs;
         const sx1 = (Math.max(a.x, b.x) - offX) * cs;
@@ -191,12 +197,12 @@ export const ToggleBackdropGlass = GObject.registerClass(paintNodeWithContext(cl
         if (!(w >= 1) || !(h >= 1))
             return;
         if (!this._material || this._material.width !== w || this._material.height !== h) {
-            const target = createTarget(w, h, offscreenFormat(fb), this._logger);
+            const target = (0, stageCopy_js_1.createTarget)(w, h, (0, shellVersion_js_1.offscreenFormat)(fb), this._logger);
             this._material = target ? { ...target, width: w, height: h } : null;
             if (!this._material)
                 return;
         }
-        addBlit(root, fb, this._material.framebuffer, this.color_state, [fx0, fy0, w, h]);
+        (0, stageCopy_js_1.addBlit)(root, fb, this._material.framebuffer, this.color_state, [fx0, fy0, w, h]);
         this._materialUV = [(sx0 - fx0) / w, (sy0 - fy0) / h, (sx1 - fx0) / w, (sy1 - fy0) / h];
         this._materialCopies++;
     }
@@ -207,16 +213,16 @@ export const ToggleBackdropGlass = GObject.registerClass(paintNodeWithContext(cl
         const w = material.width;
         const h = material.height;
         if (!this._composed || this._composed.width !== w || this._composed.height !== h) {
-            const target = createTarget(w, h, null, this._logger);
+            const target = (0, stageCopy_js_1.createTarget)(w, h, null, this._logger);
             this._composed = target ? { ...target, width: w, height: h } : null;
             if (!this._composed)
                 return null;
         }
         if (!this._composeBase) {
-            this._composeBase = Cogl.Pipeline.new(ctx);
-            configureSamplerLayer(this._composeBase, 0);
-            configureSamplerLayer(this._composeBase, 1);
-            const snippet = Cogl.Snippet.new(Cogl.SnippetHook.FRAGMENT, uniformDeclarations(COMPOSE_DECL), null);
+            this._composeBase = 6.default.Pipeline.new(ctx);
+            (0, pipelines_js_1.configureSamplerLayer)(this._composeBase, 0);
+            (0, pipelines_js_1.configureSamplerLayer)(this._composeBase, 1);
+            const snippet = 6.default.Snippet.new(6.default.SnippetHook.FRAGMENT, (0, shellVersion_js_1.uniformDeclarations)(COMPOSE_DECL), null);
             snippet.set_replace(COMPOSE_BODY);
             this._composeBase.add_snippet(snippet);
         }
@@ -224,14 +230,14 @@ export const ToggleBackdropGlass = GObject.registerClass(paintNodeWithContext(cl
         pipeline.set_layer_texture(0, desktop);
         pipeline.set_layer_texture(1, material.texture);
         // Where the sample rect lies in the desktop copy, by stage position.
-        const st = localToStage(this, local[0], local[1], local[2], local[3]);
+        const st = (0, relays_js_1.localToStage)(this, local[0], local[1], local[2], local[3]);
         const dw = desktopRect[2] - desktopRect[0];
         const dh = desktopRect[3] - desktopRect[1];
-        setUniformVector(pipeline, 'd_rect', [
+        (0, shellVersion_js_1.setUniformVector)(pipeline, 'd_rect', [
             (st[0] - desktopRect[0]) / dw, (st[1] - desktopRect[1]) / dh,
             (st[2] - desktopRect[0]) / dw, (st[3] - desktopRect[1]) / dh,
         ]);
-        setUniformVector(pipeline, 'm_rect', this._materialUV);
+        (0, shellVersion_js_1.setUniformVector)(pipeline, 'm_rect', this._materialUV);
         this._renderer.passes.add(root, this._composed.framebuffer, pipeline, w, h, [0, 0, 1, 1]);
         this._composeSerial++;
         return this._composed;
@@ -259,7 +265,7 @@ export const ToggleBackdropGlass = GObject.registerClass(paintNodeWithContext(cl
         super.cleanup();
         this._relays.clear();
         this.reader.copier.clear();
-        if (isActorValid(this.reader))
+        if ((0, lifecycle_js_1.isActorValid)(this.reader))
             this.reader.destroy();
         this._material = null;
         this._composed = null;

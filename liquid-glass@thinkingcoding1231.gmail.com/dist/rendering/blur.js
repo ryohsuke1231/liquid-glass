@@ -1,9 +1,16 @@
-import Cogl from 'gi://Cogl';
-import { configureSamplerLayer } from './pipelines.js';
-import { setPipelineFloat, setPipelineVec2 } from './passes.js';
-import { computeGaussianKernel, buildGaussianSnippet } from './shaderSource.js';
-import { uniformDeclarations } from '../shellVersion.js';
-export class BlurRenderer {
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.BlurRenderer = void 0;
+const 1 = __importDefault(require("gi://Cogl"));
+const pipelines_js_1 = require("./pipelines.js");
+const passes_js_1 = require("./passes.js");
+const shaderSource_js_1 = require("./shaderSource.js");
+const shellVersion_js_1 = require("../shellVersion.js");
+
+class BlurRenderer {
     _pipelines;
     _passes;
     _repaint;
@@ -144,16 +151,16 @@ export class BlurRenderer {
     _targetRadius = 15.0;
     // The caller drops the previous pipelines first.
     _compileGaussianPipelines(ctx, kernel) {
-        this._gaussianHPipeline = Cogl.Pipeline.new(ctx);
-        configureSamplerLayer(this._gaussianHPipeline, 0);
-        const hSnippet = buildGaussianSnippet(kernel, 'h');
-        const hSnip = Cogl.Snippet.new(Cogl.SnippetHook.FRAGMENT, uniformDeclarations(hSnippet.decl), null);
+        this._gaussianHPipeline = 1.default.Pipeline.new(ctx);
+        (0, pipelines_js_1.configureSamplerLayer)(this._gaussianHPipeline, 0);
+        const hSnippet = (0, shaderSource_js_1.buildGaussianSnippet)(kernel, 'h');
+        const hSnip = 1.default.Snippet.new(1.default.SnippetHook.FRAGMENT, (0, shellVersion_js_1.uniformDeclarations)(hSnippet.decl), null);
         hSnip.set_replace(hSnippet.body);
         this._gaussianHPipeline.add_snippet(hSnip);
-        this._gaussianVPipeline = Cogl.Pipeline.new(ctx);
-        configureSamplerLayer(this._gaussianVPipeline, 0);
-        const vSnippet = buildGaussianSnippet(kernel, 'v');
-        const vSnip = Cogl.Snippet.new(Cogl.SnippetHook.FRAGMENT, uniformDeclarations(vSnippet.decl), null);
+        this._gaussianVPipeline = 1.default.Pipeline.new(ctx);
+        (0, pipelines_js_1.configureSamplerLayer)(this._gaussianVPipeline, 0);
+        const vSnippet = (0, shaderSource_js_1.buildGaussianSnippet)(kernel, 'v');
+        const vSnip = 1.default.Snippet.new(1.default.SnippetHook.FRAGMENT, (0, shellVersion_js_1.uniformDeclarations)(vSnippet.decl), null);
         vSnip.set_replace(vSnippet.body);
         this._gaussianVPipeline.add_snippet(vSnip);
         this._gaussianKernel = kernel;
@@ -171,15 +178,15 @@ export class BlurRenderer {
         let pw = Math.max(w >> shift, 1);
         let ph = Math.max(h >> shift, 1);
         for (let i = 0; i < this.PASS_COUNT; i++) {
-            const tex = Cogl.Texture2D.new_with_size(ctx, pw, ph);
+            const tex = 1.default.Texture2D.new_with_size(ctx, pw, ph);
             this._blurTextures.push(tex);
-            this._blurFbos.push(Cogl.Offscreen.new_with_texture(tex));
-            const tmpTex = Cogl.Texture2D.new_with_size(ctx, pw, ph);
+            this._blurFbos.push(1.default.Offscreen.new_with_texture(tex));
+            const tmpTex = 1.default.Texture2D.new_with_size(ctx, pw, ph);
             this._gaussianTempTextures.push(tmpTex);
-            this._gaussianTempFbos.push(Cogl.Offscreen.new_with_texture(tmpTex));
-            const upTex = Cogl.Texture2D.new_with_size(ctx, pw, ph);
+            this._gaussianTempFbos.push(1.default.Offscreen.new_with_texture(tmpTex));
+            const upTex = 1.default.Texture2D.new_with_size(ctx, pw, ph);
             this._upTextures.push(upTex);
-            this._upFbos.push(Cogl.Offscreen.new_with_texture(upTex));
+            this._upFbos.push(1.default.Offscreen.new_with_texture(upTex));
             pw = Math.max(pw >> 1, 1);
             ph = Math.max(ph >> 1, 1);
         }
@@ -206,9 +213,9 @@ export class BlurRenderer {
                 ? this._passes.pipeline('kawase-down-0-box', this._pipelines.boxDown)
                 : this._passes.pipeline(`kawase-down-${i}`, this._pipelines.downsample);
             pipeline.set_layer_texture(0, currentSrc);
-            setPipelineVec2(pipeline, 'inv_size', invW, invH);
+            (0, passes_js_1.setPipelineVec2)(pipeline, 'inv_size', invW, invH);
             if (!boxFirst)
-                setPipelineFloat(pipeline, 'blur_radius', this._blurRadiusDown);
+                (0, passes_js_1.setPipelineFloat)(pipeline, 'blur_radius', this._blurRadiusDown);
             this._passes.add(parentNode, destFbo, pipeline, destW, destH, uv);
             currentSrc = destTex;
         }
@@ -228,8 +235,8 @@ export class BlurRenderer {
             const invH = 1.0 / srcTexture.get_height();
             const pipeline = this._passes.pipeline(`kawase-up-${i}`, this._pipelines.upsample);
             pipeline.set_layer_texture(0, srcTexture);
-            setPipelineVec2(pipeline, 'inv_size', invW, invH);
-            setPipelineFloat(pipeline, 'blur_radius', this._blurRadiusUp);
+            (0, passes_js_1.setPipelineVec2)(pipeline, 'inv_size', invW, invH);
+            (0, passes_js_1.setPipelineFloat)(pipeline, 'blur_radius', this._blurRadiusUp);
             this._passes.add(parentNode, destFbo, pipeline, destW, destH, [0, 0, 1, 1]);
         }
         this._blurResultTex = this._upTextures[0];
@@ -252,19 +259,19 @@ export class BlurRenderer {
             : this._passes.pipeline('gauss-pre', this._pipelines.passthrough);
         prePipeline.set_layer_texture(0, srcTex);
         if (wideDownsample) {
-            setPipelineVec2(prePipeline, 'inv_size', 1.0 / srcTex.get_width(), 1.0 / srcTex.get_height());
+            (0, passes_js_1.setPipelineVec2)(prePipeline, 'inv_size', 1.0 / srcTex.get_width(), 1.0 / srcTex.get_height());
         }
         this._passes.add(parentNode, destFbo, prePipeline, destW, destH, srcUV);
         const hPipeline = this._passes.pipeline('gauss-h', this._gaussianHPipeline);
         hPipeline.set_layer_texture(0, destTex);
-        setPipelineVec2(hPipeline, 'inv_size', 1.0 / destW, 1.0 / destH);
-        setPipelineFloat(hPipeline, 'kernel_scale', this._gaussianScale);
+        (0, passes_js_1.setPipelineVec2)(hPipeline, 'inv_size', 1.0 / destW, 1.0 / destH);
+        (0, passes_js_1.setPipelineFloat)(hPipeline, 'kernel_scale', this._gaussianScale);
         this._passes.add(parentNode, tempFbo, hPipeline, destW, destH, [0, 0, 1, 1]);
         // Not back into destFbo, which the horizontal pass read (see _upTextures).
         const vPipeline = this._passes.pipeline('gauss-v', this._gaussianVPipeline);
         vPipeline.set_layer_texture(0, tempTex);
-        setPipelineVec2(vPipeline, 'inv_size', 1.0 / destW, 1.0 / destH);
-        setPipelineFloat(vPipeline, 'kernel_scale', this._gaussianScale);
+        (0, passes_js_1.setPipelineVec2)(vPipeline, 'inv_size', 1.0 / destW, 1.0 / destH);
+        (0, passes_js_1.setPipelineFloat)(vPipeline, 'kernel_scale', this._gaussianScale);
         const outFbo = this._upFbos[0];
         this._passes.add(parentNode, outFbo, vPipeline, destW, destH, [0, 0, 1, 1]);
         this._blurResultTex = this._upTextures[0];
@@ -332,7 +339,7 @@ export class BlurRenderer {
         const needsRecompile = this._gaussianFetchPairs !== fetchPairs ||
             (!this._gaussianKernel && !this._pendingGaussianKernel);
         if (needsRecompile) {
-            const kernel = computeGaussianKernel(kernelSigma, fetchPairs);
+            const kernel = (0, shaderSource_js_1.computeGaussianKernel)(kernelSigma, fetchPairs);
             this._pendingGaussianKernel = kernel;
             this._gaussianPipelineDirty = true;
             this._gaussianFetchPairs = fetchPairs;
@@ -388,3 +395,4 @@ export class BlurRenderer {
         }
     }
 }
+exports.BlurRenderer = BlurRenderer;

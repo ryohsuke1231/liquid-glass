@@ -1,17 +1,57 @@
-import * as Main from 'resource:///org/gnome/shell/ui/main.js';
-import GLib from 'gi://GLib';
-import { BackdropGlass } from './rendering/backdropGlass.js';
-import { reportFrameLoopError } from './diagnostics/logging.js';
-import { ensureGlassAllocated } from './actors/allocation.js';
-import { isFrameSyncFrozen, SAME_FRAME_WINDOW_US } from './animation/frameSync.js';
-import { startStageLoop, stopStageLoop } from './animation/frameLoops.js';
-import { setClipIfChanged } from './actors/writes.js';
-import { isActorValid } from './actors/lifecycle.js';
-import { hexToColorArray } from './animation/colors.js';
-import { clipDockBounds, dockEdges, balanceDockBounds, insetDockBounds, visibleDockSize } from './actors/dockGeometry.js';
+"use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.DashManager = void 0;
+const Main = __importStar(require("resource:///org/gnome/shell/ui/main.js"));
+const 4 = __importDefault(require("gi://GLib"));
+const backdropGlass_js_1 = require("./rendering/backdropGlass.js");
+const logging_js_1 = require("./diagnostics/logging.js");
+const allocation_js_1 = require("./actors/allocation.js");
+const frameSync_js_1 = require("./animation/frameSync.js");
+const frameLoops_js_1 = require("./animation/frameLoops.js");
+const writes_js_1 = require("./actors/writes.js");
+const lifecycle_js_1 = require("./actors/lifecycle.js");
+const colors_js_1 = require("./animation/colors.js");
+const dockGeometry_js_1 = require("./actors/dockGeometry.js");
 // Room around the glass rect for the shader's edge effects.
 const SHADER_PADDING = 20;
-export class DashManager {
+
+class DashManager {
     extensionPath;
     targetActor;
     _settings;
@@ -95,7 +135,7 @@ export class DashManager {
         });
         connectSetting('dock-tint-color', () => {
             if (this.glass && this._isEffectActive) {
-                let colorArray = hexToColorArray(this._settings.get_string('dock-tint-color'));
+                let colorArray = (0, colors_js_1.hexToColorArray)(this._settings.get_string('dock-tint-color'));
                 this.glass.setTintColor(...colorArray);
             }
         });
@@ -183,7 +223,7 @@ export class DashManager {
         if (this._dockParent) {
             this._dockParent.add_style_class_name('liquid-glass-transparent');
         }
-        const glass = new BackdropGlass({
+        const glass = new backdropGlass_js_1.BackdropGlass({
             extensionPath: this.extensionPath, settings: this._settings, logger: this._logger, owner: 'dock',
         });
         this.glass = glass;
@@ -213,7 +253,7 @@ export class DashManager {
         let contrast = this._settings.get_double('dock-contrast');
         let saturation = this._settings.get_double('dock-saturation');
         glass.setPadding(SHADER_PADDING);
-        glass.setTintColor(...hexToColorArray(tintColorStr));
+        glass.setTintColor(...(0, colors_js_1.hexToColorArray)(tintColorStr));
         glass.setTintStrength(tintStrength);
         glass.setCornerRadius(cornerRadius);
         glass.setBrightness(brightness);
@@ -232,25 +272,25 @@ export class DashManager {
         let frameTick = () => {
             if (!this._isEffectActive || !this.glass || !this.targetActor.mapped)
                 return;
-            if (isFrameSyncFrozen())
+            if ((0, frameSync_js_1.isFrameSyncFrozen)())
                 return;
-            const nowUs = GLib.get_monotonic_time();
-            if (nowUs - this._lastTickUs < SAME_FRAME_WINDOW_US)
+            const nowUs = 4.default.get_monotonic_time();
+            if (nowUs - this._lastTickUs < frameSync_js_1.SAME_FRAME_WINDOW_US)
                 return;
             this._lastTickUs = nowUs;
             try {
                 // Checked before this frame's sync dirties anything.
-                ensureGlassAllocated(this.glass);
+                (0, allocation_js_1.ensureGlassAllocated)(this.glass);
                 this._syncGeometry();
             }
             catch (e) {
-                reportFrameLoopError('DockManager', e);
+                (0, logging_js_1.reportFrameLoopError)('DockManager', e);
             }
         };
         let startFrameSync = () => {
             if (this._frameSignalId !== 0)
                 return;
-            startStageLoop(this._frameSignalSlot, this._frameSlot, frameTick);
+            (0, frameLoops_js_1.startStageLoop)(this._frameSignalSlot, this._frameSlot, frameTick);
         };
         // The glass is the dock's sibling, so it stays up when the dock is
         // hidden as a whole (for instance over a fullscreen window).
@@ -294,11 +334,11 @@ export class DashManager {
             monitorIndex = Main.layoutManager.primaryIndex;
         }
         let monitor = Main.layoutManager.monitors[monitorIndex] || Main.layoutManager.primaryMonitor;
-        const edges = dockEdges(bounds, monitor);
+        const edges = (0, dockGeometry_js_1.dockEdges)(bounds, monitor);
         bounds = this._stabilizeDockBounds(bounds, edges);
         const refActor = this._findReferenceActor(this.targetActor);
         if (refActor)
-            bounds = balanceDockBounds(bounds, this._actorBounds(refActor), edges);
+            bounds = (0, dockGeometry_js_1.balanceDockBounds)(bounds, this._actorBounds(refActor), edges);
         bounds = this._applyDockMargin(bounds, monitor, edges);
         const { baseW, baseH } = bounds;
         if (baseW <= 9 || baseH <= 9) {
@@ -332,7 +372,7 @@ export class DashManager {
         // The uncorrected position, which _syncGlassGeometryLive() compares against.
         this._liveSource = { actor: sourceActor, rawX: absX, rawY: absY };
         const bounds = { absX, absY, baseW, baseH };
-        return sourceActor === this.targetActor ? bounds : clipDockBounds(bounds, this._actorBounds(this.targetActor));
+        return sourceActor === this.targetActor ? bounds : (0, dockGeometry_js_1.clipDockBounds)(bounds, this._actorBounds(this.targetActor));
     }
     _stabilizeDockBounds(bounds, edges) {
         let { baseW, baseH } = bounds;
@@ -381,11 +421,11 @@ export class DashManager {
         }
         let stableBaseW = tW + this._stableDeltaW;
         let stableBaseH = tH + this._stableDeltaH;
-        return isMoving ? bounds : insetDockBounds(bounds, monitor, edges, marginValue, stableBaseW, stableBaseH);
+        return isMoving ? bounds : (0, dockGeometry_js_1.insetDockBounds)(bounds, monitor, edges, marginValue, stableBaseW, stableBaseH);
     }
     _syncDockVisibility(bounds, monitor) {
         const { absX, absY, baseW, baseH } = bounds;
-        const [visibleW, visibleH] = visibleDockSize(bounds, monitor);
+        const [visibleW, visibleH] = (0, dockGeometry_js_1.visibleDockSize)(bounds, monitor);
         // Only a degenerate box hides the glass: a dock flush against the screen
         // edge is only a few pixels wide on screen. Logged on transition.
         if (visibleW <= 1 || visibleH <= 1) {
@@ -440,7 +480,7 @@ export class DashManager {
         // Limit drawing to the dock plus room for its shadow (not
         // clip_to_allocation, which would cut the shadow off).
         const CLIP_PADDING = 200;
-        setClipIfChanged(this.glass, localBgX - CLIP_PADDING, localBgY - CLIP_PADDING, bgW + CLIP_PADDING * 2, bgH + CLIP_PADDING * 2);
+        (0, writes_js_1.setClipIfChanged)(this.glass, localBgX - CLIP_PADDING, localBgY - CLIP_PADDING, bgW + CLIP_PADDING * 2, bgH + CLIP_PADDING * 2);
         const SHADOW_MAX_RADIUS = CLIP_PADDING - 20;
         this.glass?.setShadowMaxRadius(SHADOW_MAX_RADIUS);
         this.glass?.setResolution(screenW, screenH);
@@ -469,7 +509,7 @@ export class DashManager {
         this._lastBgY = undefined;
     }
     _stopFrameSync() {
-        stopStageLoop(this._frameSignalSlot, this._frameSlot);
+        (0, frameLoops_js_1.stopStageLoop)(this._frameSignalSlot, this._frameSlot);
     }
     _removeEffect() {
         if (!this._isEffectActive)
@@ -478,7 +518,7 @@ export class DashManager {
         this._currentMarginStyle = undefined;
         this._stopFrameSync();
         // The dock may already have been destroyed by Dash to Dock.
-        const dockAlive = isActorValid(this.targetActor);
+        const dockAlive = (0, lifecycle_js_1.isActorValid)(this.targetActor);
         for (const id of this._signals) {
             if (dockAlive)
                 this.targetActor.disconnect(id);
@@ -494,14 +534,14 @@ export class DashManager {
             }
         }
         this._originalStyle = undefined;
-        if (isActorValid(this._dockParent))
+        if ((0, lifecycle_js_1.isActorValid)(this._dockParent))
             this._dockParent.remove_style_class_name('liquid-glass-transparent');
         this._dockParent = null;
         const glass = this.glass;
         this.glass = null;
         if (glass) {
             glass.cleanup();
-            if (isActorValid(glass))
+            if ((0, lifecycle_js_1.isActorValid)(glass))
                 glass.destroy();
         }
     }
@@ -528,3 +568,4 @@ export class DashManager {
         return null;
     }
 }
+exports.DashManager = DashManager;

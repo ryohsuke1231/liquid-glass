@@ -1,3 +1,7 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.LENS_RANGE = exports.LENS_SIZE = exports.MAP_RANGE = exports.MAP_SIZE = void 0;
+exports.buildStyleMap = buildStyleMap;
 // The texture an icon is redrawn from (see shaders/icon-style.frag): the
 // plates as distance fields and the symbol's coverage, on a square of
 // MAP_SIZE px that stands for the icon's square.
@@ -26,11 +30,11 @@
 //                A     the same for the plates on those
 // A distance d is stored as (d + LENS_RANGE) / (2 * LENS_RANGE).
 // Pure computation, for the worker and the tests.
-import { plateColor, shapeDistance, symbolLayer, withoutPlates } from './iconAnalysis.js';
-export const MAP_SIZE = 256;
-export const MAP_RANGE = 16;
-export const LENS_SIZE = 128;
-export const LENS_RANGE = 128;
+const iconAnalysis_js_1 = require("./iconAnalysis.js");
+exports.MAP_SIZE = 256;
+exports.MAP_RANGE = 16;
+exports.LENS_SIZE = 128;
+exports.LENS_RANGE = 128;
 // Every outer plate is brought to this half size (a share of the icon's), so
 // that all icons in a row are the same size. The one put around icons that
 // have none is a squircle.
@@ -84,7 +88,7 @@ function outsideShare(pixels, scale, shape) {
         if (!a)
             continue;
         total += a;
-        if (shapeDistance(shape, (i % pixels.width + 0.5) * scale, (Math.floor(i / pixels.width) + 0.5) * scale) > 1)
+        if ((0, iconAnalysis_js_1.shapeDistance)(shape, (i % pixels.width + 0.5) * scale, (Math.floor(i / pixels.width) + 0.5) * scale) > 1)
             outside += a;
     }
     return total ? outside / total : 0;
@@ -93,7 +97,7 @@ function outsideShare(pixels, scale, shape) {
 function dropSliver(symbol, pixels, scale, shape) {
     const { width: w, height: h } = pixels;
     const reach = Math.ceil(1.5 / scale);
-    const outside = (i) => shapeDistance(shape, (i % w + 0.5) * scale, (Math.floor(i / w) + 0.5) * scale);
+    const outside = (i) => (0, iconAnalysis_js_1.shapeDistance)(shape, (i % w + 0.5) * scale, (Math.floor(i / w) + 0.5) * scale);
     const drop = [];
     for (let i = 0; i < symbol.length; i++) {
         if (!symbol[i] || outside(i) <= 0 || outside(i) > SLIVER_WIDTH)
@@ -135,12 +139,12 @@ function depthOf(plates, k) {
 }
 
 function encode(d) {
-    return Math.round(Math.min(Math.max(0.5 - d / (2 * MAP_RANGE), 0), 1) * 255);
+    return Math.round(Math.min(Math.max(0.5 - d / (2 * exports.MAP_RANGE), 0), 1) * 255);
 }
 // A lens distance as its high and low byte.
 
 function encodeLens(d) {
-    const v = Math.round(Math.min(Math.max((d + LENS_RANGE) / (2 * LENS_RANGE), 0), 1) * 65535);
+    const v = Math.round(Math.min(Math.max((d + exports.LENS_RANGE) / (2 * exports.LENS_RANGE), 0), 1) * 65535);
     return [v >> 8, v & 255];
 }
 // The largest distance from a shape's outline inside it.
@@ -152,9 +156,10 @@ function halfWidth(shape) {
  * The style map of an icon, from its analysis and the icon drawn again at
  * `detail` (any size; twice the analysis's keeps the symbol's edges smooth).
  */
-export function buildStyleMap(analysis, detail, size = MAP_SIZE) {
+
+function buildStyleMap(analysis, detail, size = exports.MAP_SIZE) {
     // A plate that carries a picture is not glass: the picture is drawn as symbol, in shades that keep its colors apart.
-    const plates = withoutPlates(analysis.plates, plate => !plate.plain);
+    const plates = (0, iconAnalysis_js_1.withoutPlates)(analysis.plates, plate => !plate.plain);
     const A = analysis.width;
     const scale = A / detail.width;
     const center = A / 2;
@@ -180,7 +185,7 @@ export function buildStyleMap(analysis, detail, size = MAP_SIZE) {
         fromY = e.cy;
     }
     const level = plates.map((_, i) => depthOf(plates, i) + (own ? 0 : 1));
-    const { symbol, intensity, surface } = symbolLayer(plates, A, detail);
+    const { symbol, intensity, surface } = (0, iconAnalysis_js_1.symbolLayer)(plates, A, detail);
     if (own)
         dropSliver(symbol, detail, scale, plates[tops[0]].shape);
     const field = new Float32Array(symbol.length);
@@ -213,13 +218,13 @@ export function buildStyleMap(analysis, detail, size = MAP_SIZE) {
             // them all the nearest plate's, so that it does not bleed in at the edges.
             const inner = [Infinity, Infinity], innerTone = [0.5, 0.5], toneLevel = [-1, -1];
             // The level of the innermost plate here, which its surface's shade goes to.
-            let here = own && shapeDistance(plates[tops[0]].shape, qx, qy) < 0 ? 0 : -1;
+            let here = own && (0, iconAnalysis_js_1.shapeDistance)(plates[tops[0]].shape, qx, qy) < 0 ? 0 : -1;
             plates.forEach((plate, i) => {
                 const l = level[i];
                 if (l === 0)
                     return;
                 const slot = Math.min(l, 2) - 1;
-                const d = shapeDistance(plate.shape, qx, qy) * k * mapPx;
+                const d = (0, iconAnalysis_js_1.shapeDistance)(plate.shape, qx, qy) * k * mapPx;
                 // How much of the map pixel the plate covers: a plate inside another of its channel (a disc in a ring) shows
                 // only in the tone, whose step along its outline is anti-aliased so.
                 const cover = Math.min(Math.max(0.5 - d, 0), 1);
@@ -247,7 +252,7 @@ export function buildStyleMap(analysis, detail, size = MAP_SIZE) {
                 }
             }
             const at = (y * size + x) * 4;
-            data[at] = encode(shapeDistance(outer, fx, fy) * mapPx);
+            data[at] = encode((0, iconAnalysis_js_1.shapeDistance)(outer, fx, fy) * mapPx);
             data[at + 1] = encode(inner[0]);
             data[at + 2] = encode(inner[1]);
             data[at + 3] = Math.round(Math.min(sym / (taps * taps), 1) * 255);
@@ -255,10 +260,10 @@ export function buildStyleMap(analysis, detail, size = MAP_SIZE) {
             tone.set([byte(innerTone[0]), byte(innerTone[1]), byte(outerTone), 255], at);
         }
     }
-    const lens = new Uint8Array(LENS_SIZE * LENS_SIZE * 2 * 4);
-    const lensPx = size / LENS_SIZE;
-    for (let y = 0; y < LENS_SIZE; y++) {
-        for (let x = 0; x < LENS_SIZE; x++) {
+    const lens = new Uint8Array(exports.LENS_SIZE * exports.LENS_SIZE * 2 * 4);
+    const lensPx = size / exports.LENS_SIZE;
+    for (let y = 0; y < exports.LENS_SIZE; y++) {
+        for (let x = 0; x < exports.LENS_SIZE; x++) {
             const fx = (x + 0.5) * lensPx / mapPx, fy = (y + 0.5) * lensPx / mapPx;
             const qx = fromX + (fx - center) / k, qy = fromY + (fy - center) / k;
             const inner = [Infinity, Infinity], half = [0, 0];
@@ -266,15 +271,15 @@ export function buildStyleMap(analysis, detail, size = MAP_SIZE) {
                 if (level[i] === 0)
                     return;
                 const slot = Math.min(level[i], 2) - 1;
-                const d = shapeDistance(plate.shape, qx, qy) * k * mapPx;
+                const d = (0, iconAnalysis_js_1.shapeDistance)(plate.shape, qx, qy) * k * mapPx;
                 if (d < inner[slot]) {
                     inner[slot] = d;
                     half[slot] = halfWidth(plate.shape) * k * mapPx;
                 }
             });
-            const halfByte = (h) => Math.round(Math.min(h / LENS_RANGE, 1) * 255);
-            const top = (y * LENS_SIZE + x) * 4, bottom = ((y + LENS_SIZE) * LENS_SIZE + x) * 4;
-            lens.set([...encodeLens(shapeDistance(outer, fx, fy) * mapPx), ...encodeLens(inner[0])], top);
+            const halfByte = (h) => Math.round(Math.min(h / exports.LENS_RANGE, 1) * 255);
+            const top = (y * exports.LENS_SIZE + x) * 4, bottom = ((y + exports.LENS_SIZE) * exports.LENS_SIZE + x) * 4;
+            lens.set([...encodeLens((0, iconAnalysis_js_1.shapeDistance)(outer, fx, fy) * mapPx), ...encodeLens(inner[0])], top);
             lens.set([...encodeLens(inner[1]), halfByte(half[0]), halfByte(half[1])], bottom);
         }
     }
@@ -290,7 +295,7 @@ function plateTones(plates, level) {
         const members = plates.map((_, i) => i).filter(i => level[i] > 0 && Math.min(level[i], 2) === slot);
         if (members.length < 2)
             continue;
-        const colors = members.map(i => plateColor(plates[i], plates[i].shape.cx, plates[i].shape.cy));
+        const colors = members.map(i => (0, iconAnalysis_js_1.plateColor)(plates[i], plates[i].shape.cx, plates[i].shape.cy));
         const mean = [0, 1, 2].map(c => colors.reduce((sum, col) => sum + col[c], 0) / colors.length);
         const centerd = colors.map(col => col.map((v, c) => v - mean[c]));
         // The principal direction, by power iteration on the covariance, starting along lightness.

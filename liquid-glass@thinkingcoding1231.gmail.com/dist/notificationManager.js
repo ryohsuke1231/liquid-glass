@@ -1,20 +1,60 @@
-import * as Main from 'resource:///org/gnome/shell/ui/main.js';
-import Clutter from 'gi://Clutter';
-import St from 'gi://St';
-import GLib from 'gi://GLib';
-import { BackdropGlass } from './rendering/backdropGlass.js';
-import { isActorValid } from './actors/lifecycle.js';
-import { addFrameTicker, removeFrameTicker } from './animation/frameTicker.js';
-import { StageContrastSampler, AdaptiveContrastConfig, sanitizeColorPreference } from './contrastSampler.js';
-import { ensureGlassAllocated } from './actors/allocation.js';
-import { getTransformedRect, resolveMonitorGeometry } from './actors/geometry.js';
-import { startSyncLoop, stopStageLoop } from './animation/frameLoops.js';
-import { setClipIfChanged } from './actors/writes.js';
-import { resolveCrossFade, adaptiveColorTweener, hexToColorArray, hexToRgb } from './animation/colors.js';
-import { BANNER_TRANSPARENT_CLASS } from './shellVersion.js';
+"use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.NotificationManager = void 0;
+const Main = __importStar(require("resource:///org/gnome/shell/ui/main.js"));
+const 2 = __importDefault(require("gi://Clutter"));
+const 3 = __importDefault(require("gi://St"));
+const 4 = __importDefault(require("gi://GLib"));
+const backdropGlass_js_1 = require("./rendering/backdropGlass.js");
+const lifecycle_js_1 = require("./actors/lifecycle.js");
+const frameTicker_js_1 = require("./animation/frameTicker.js");
+const contrastSampler_js_1 = require("./contrastSampler.js");
+const allocation_js_1 = require("./actors/allocation.js");
+const geometry_js_1 = require("./actors/geometry.js");
+const frameLoops_js_1 = require("./animation/frameLoops.js");
+const writes_js_1 = require("./actors/writes.js");
+const colors_js_1 = require("./animation/colors.js");
+const shellVersion_js_1 = require("./shellVersion.js");
 // Room around the glass rect for the shader's edge effects.
 const SHADER_PADDING = 20;
-export class NotificationManager {
+
+class NotificationManager {
     extensionPath;
     _settings;
     _logger;
@@ -65,9 +105,9 @@ export class NotificationManager {
         this._settingsSignals = [];
         this._frameSyncId = 0;
         this._isEffectActive = false;
-        this._contrastSampler = new StageContrastSampler();
+        this._contrastSampler = new contrastSampler_js_1.StageContrastSampler();
         this._adaptiveConfig = {
-            ...AdaptiveContrastConfig,
+            ...contrastSampler_js_1.AdaptiveContrastConfig,
             enabled: true,
             samplePerElement: false,
             sampleIntervalMs: 400,
@@ -102,7 +142,7 @@ export class NotificationManager {
         });
         connectSetting('notification-tint-color', () => {
             if (this.glass && this._isEffectActive) {
-                let colorArray = hexToColorArray(this._settings.get_string('notification-tint-color'));
+                let colorArray = (0, colors_js_1.hexToColorArray)(this._settings.get_string('notification-tint-color'));
                 this.glass.setTintColor(...colorArray);
             }
         });
@@ -147,7 +187,7 @@ export class NotificationManager {
             this._adaptiveConfig.enabled = this._settings.get_boolean('notification-enable-adaptive-text-color');
         });
         connectSetting('notification-adaptive-text-preference', () => {
-            this._adaptiveConfig.preference = sanitizeColorPreference(this._settings.get_string('notification-adaptive-text-preference'));
+            this._adaptiveConfig.preference = (0, contrastSampler_js_1.sanitizeColorPreference)(this._settings.get_string('notification-adaptive-text-preference'));
         });
         connectSetting('notification-sample-interval-ms', () => {
             this._adaptiveConfig.sampleIntervalMs = this._settings.get_int('notification-sample-interval-ms');
@@ -176,20 +216,20 @@ export class NotificationManager {
             if (actor.get_name() === 'liquid-glass-bg-actor')
                 return;
             if (this._bannerIdleId)
-                GLib.Source.remove(this._bannerIdleId);
+                4.default.Source.remove(this._bannerIdleId);
             this._pendingBanner = actor;
-            this._bannerIdleId = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+            this._bannerIdleId = 4.default.idle_add(4.default.PRIORITY_DEFAULT_IDLE, () => {
                 this._bannerIdleId = 0;
                 this._pendingBanner = null;
                 // A queued setup may outlive the notification or the effect toggle.
                 if (!this._isEffectActive || actor.get_parent() !== bannerBin)
-                    return GLib.SOURCE_REMOVE;
+                    return 4.default.SOURCE_REMOVE;
                 if (actor !== this.currentBanner) {
                     this._cleanupCurrentBanner();
                     this.currentBanner = actor;
                     this._setupBannerEffect(actor);
                 }
-                return GLib.SOURCE_REMOVE;
+                return 4.default.SOURCE_REMOVE;
             });
         }));
         this._signals.push(bannerBin.connect('child-removed', (container, actor) => {
@@ -197,7 +237,7 @@ export class NotificationManager {
                 return;
             if (actor === this._pendingBanner) {
                 if (this._bannerIdleId)
-                    GLib.Source.remove(this._bannerIdleId);
+                    4.default.Source.remove(this._bannerIdleId);
                 this._bannerIdleId = 0;
                 this._pendingBanner = null;
             }
@@ -213,7 +253,7 @@ export class NotificationManager {
         }
     }
     _setupBannerEffect(targetActor) {
-        targetActor.add_style_class_name(BANNER_TRANSPARENT_CLASS);
+        targetActor.add_style_class_name(shellVersion_js_1.BANNER_TRANSPARENT_CLASS);
         // @ts-expect-error
         if (this.tray._bannerBin) {
             // @ts-expect-error
@@ -221,7 +261,7 @@ export class NotificationManager {
             // @ts-expect-error: shell-owned container
             this.tray._bannerBin.translation_y = this._originalBannerOffset + this._notificationYOffset;
         }
-        const glass = new BackdropGlass({
+        const glass = new backdropGlass_js_1.BackdropGlass({
             extensionPath: this.extensionPath, settings: this._settings, logger: this._logger, owner: 'notification',
         });
         this.glass = glass;
@@ -255,7 +295,7 @@ export class NotificationManager {
         let contrast = this._settings.get_double('notification-contrast');
         this._baseTint = tintStrength;
         glass.setPadding(SHADER_PADDING);
-        glass.setTintColor(...hexToColorArray(tintColorStr));
+        glass.setTintColor(...(0, colors_js_1.hexToColorArray)(tintColorStr));
         glass.setTintStrength(this._baseTint);
         glass.setCornerRadius(cornerRadius);
         glass.setIsDock(false);
@@ -267,14 +307,14 @@ export class NotificationManager {
         // position; the paint-time hook corrects it.
         glass.setLiveGeometryHook(() => this._syncGlassGeometryLive());
         // The first geometry sync shows the glass.
-        stopStageLoop(this._frameSignalSlot, this._frameSlot);
-        startSyncLoop(this._frameSignalSlot, this._frameSlot, {
+        (0, frameLoops_js_1.stopStageLoop)(this._frameSignalSlot, this._frameSlot);
+        (0, frameLoops_js_1.startSyncLoop)(this._frameSignalSlot, this._frameSlot, {
             alive: () => !!this.glass && !!this.currentBanner,
             honourFreeze: true,
             errorTag: 'NotificationManager',
             step: () => {
                 // Checked before this frame's sync dirties anything.
-                ensureGlassAllocated(this.glass);
+                (0, allocation_js_1.ensureGlassAllocated)(this.glass);
                 this._syncGeometry();
                 this._syncHoverTint();
             },
@@ -292,7 +332,7 @@ export class NotificationManager {
     _syncHoverTint() {
         if (this._tintTickId || Math.abs(this._currentTint - this._hoverTint()) <= 0.001)
             return;
-        this._tintTickId = addFrameTicker(() => {
+        this._tintTickId = (0, frameTicker_js_1.addFrameTicker)(() => {
             if (!this.currentBanner || !this.glass) {
                 this._tintTickId = 0;
                 return false;
@@ -309,7 +349,7 @@ export class NotificationManager {
     _stopHoverTint() {
         if (!this._tintTickId)
             return;
-        removeFrameTicker(this._tintTickId);
+        (0, frameTicker_js_1.removeFrameTicker)(this._tintTickId);
         this._tintTickId = 0;
     }
     // Every frame. The glass covers the banner's monitor; the shader draws only
@@ -328,7 +368,7 @@ export class NotificationManager {
             bannerBin.translation_y = offset;
         // GNOME animates opacity and scale on _bannerBin, not on the banner.
         // Both the origin and size must include that ancestor transform.
-        const [absX, absY, w, h] = getTransformedRect(this.currentBanner);
+        const [absX, absY, w, h] = (0, geometry_js_1.getTransformedRect)(this.currentBanner);
         const opacity = this.currentBanner.get_paint_opacity();
         if (!this.currentBanner.mapped || !this.tray.visible || opacity === 0 ||
             ![absX, absY, w, h].every(Number.isFinite) || w <= 0 || h <= 0) {
@@ -341,7 +381,7 @@ export class NotificationManager {
         const bgH = h + this._glassExpand * 2 + SHADER_PADDING * 2;
         const bgX_abs = absX - this._glassExpand - SHADER_PADDING;
         const bgY_abs = absY - this._glassExpand - SHADER_PADDING;
-        const monitor = resolveMonitorGeometry([this.currentBanner, this.tray]);
+        const monitor = (0, geometry_js_1.resolveMonitorGeometry)([this.currentBanner, this.tray]);
         let monitorX = monitor?.x ?? 0;
         let monitorY = monitor?.y ?? 0;
         let screenW = Math.max(1, monitor?.width ?? 1);
@@ -362,7 +402,7 @@ export class NotificationManager {
             this.glass.remove_transition('position');
             // Limit drawing to the glass plus room for its shadow.
             const CLIP_PADDING = 200;
-            setClipIfChanged(this.glass, localBgX - CLIP_PADDING, localBgY - CLIP_PADDING, bgW + CLIP_PADDING * 2, bgH + CLIP_PADDING * 2);
+            (0, writes_js_1.setClipIfChanged)(this.glass, localBgX - CLIP_PADDING, localBgY - CLIP_PADDING, bgW + CLIP_PADDING * 2, bgH + CLIP_PADDING * 2);
             const SHADOW_MAX_RADIUS = CLIP_PADDING - 20;
             this.glass.setShadowMaxRadius(SHADOW_MAX_RADIUS);
             this.glass.setResolution(screenW, screenH);
@@ -387,7 +427,7 @@ export class NotificationManager {
             return;
         if (!banner.mapped)
             return;
-        const [absX, absY, w, h] = getTransformedRect(banner);
+        const [absX, absY, w, h] = (0, geometry_js_1.getTransformedRect)(banner);
         if (![absX, absY, w, h].every(Number.isFinite) || w <= 0 || h <= 0)
             return;
         const bgW = w + this._glassExpand * 2 + SHADER_PADDING * 2;
@@ -405,17 +445,17 @@ export class NotificationManager {
             this.tray._bannerBin.translation_y = this._originalBannerOffset;
         }
         if (this.currentBanner) {
-            this.currentBanner.remove_style_class_name(BANNER_TRANSPARENT_CLASS);
+            this.currentBanner.remove_style_class_name(shellVersion_js_1.BANNER_TRANSPARENT_CLASS);
             this.currentBanner = null;
         }
-        stopStageLoop(this._frameSignalSlot, this._frameSlot);
+        (0, frameLoops_js_1.stopStageLoop)(this._frameSignalSlot, this._frameSlot);
         this._stopHoverTint();
         const glass = this.glass;
         this.glass = null;
         if (glass) {
             glass.cleanup();
             // At shell shutdown the stage may have destroyed it already.
-            if (isActorValid(glass))
+            if ((0, lifecycle_js_1.isActorValid)(glass))
                 glass.destroy();
         }
         this._lastBgW = undefined;
@@ -431,7 +471,7 @@ export class NotificationManager {
             return;
         this._isEffectActive = false;
         if (this._bannerIdleId)
-            GLib.Source.remove(this._bannerIdleId);
+            4.default.Source.remove(this._bannerIdleId);
         this._bannerIdleId = 0;
         this._pendingBanner = null;
         // @ts-expect-error
@@ -443,7 +483,7 @@ export class NotificationManager {
     }
     cleanup() {
         this._liveMonitorOrigin = null;
-        stopStageLoop(this._frameSignalSlot, this._frameSlot);
+        (0, frameLoops_js_1.stopStageLoop)(this._frameSignalSlot, this._frameSlot);
         this._stopHoverTint();
         for (let sigId of this._settingsSignals)
             this._settings.disconnect(sigId);
@@ -457,12 +497,12 @@ export class NotificationManager {
     }
     _setActorColor(actor, color, skipAnimations = false, batchStart) {
         // Clutter.Text targets have no St style.
-        if (!(actor instanceof St.Widget))
+        if (!(actor instanceof 3.default.Widget))
             return;
         if (!this._styledActors.has(actor)) {
             this._styledActors.set(actor, actor.get_style() || '');
             actor.connect('destroy', () => {
-                adaptiveColorTweener.cancel(actor);
+                colors_js_1.adaptiveColorTweener.cancel(actor);
                 this._styledActors.delete(actor);
             });
         }
@@ -473,7 +513,7 @@ export class NotificationManager {
     }
     _clearAdaptiveStyles() {
         for (const [actor, style] of this._styledActors.entries()) {
-            adaptiveColorTweener.cancel(actor);
+            colors_js_1.adaptiveColorTweener.cancel(actor);
             actor._currentTargetColor = undefined;
             actor.set_style(style);
         }
@@ -483,7 +523,7 @@ export class NotificationManager {
         if (!colorMap || colorMap.size === 0)
             return;
         // One timestamp for the whole map, so every label in the banner flips together.
-        const batchStart = GLib.get_monotonic_time();
+        const batchStart = 4.default.get_monotonic_time();
         for (const [actor, color] of colorMap.entries()) {
             this._setActorColor(actor, color, skipAnimations, batchStart);
         }
@@ -494,25 +534,25 @@ export class NotificationManager {
         this._updateAdaptiveTextColors();
         if (this._adaptiveTimerId !== 0)
             return;
-        this._adaptiveTimerId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, this._adaptiveConfig.sampleIntervalMs, () => {
+        this._adaptiveTimerId = 4.default.timeout_add(4.default.PRIORITY_DEFAULT, this._adaptiveConfig.sampleIntervalMs, () => {
             if (!this.currentBanner || !this.glass) {
                 this._adaptiveTimerId = 0;
-                return GLib.SOURCE_REMOVE;
+                return 4.default.SOURCE_REMOVE;
             }
             this._updateAdaptiveTextColors();
-            return GLib.SOURCE_CONTINUE;
+            return 4.default.SOURCE_CONTINUE;
         });
     }
     _stopAdaptiveColorSampling() {
         if (this._adaptiveTimerId !== 0) {
-            GLib.source_remove(this._adaptiveTimerId);
+            4.default.source_remove(this._adaptiveTimerId);
             this._adaptiveTimerId = 0;
         }
     }
     _findAllTextActors(actor, foundActors = []) {
         if (!actor)
             return foundActors;
-        if (actor instanceof St.Label || actor instanceof Clutter.Text || actor instanceof St.Button) {
+        if (actor instanceof 3.default.Label || actor instanceof 2.default.Text || actor instanceof 3.default.Button) {
             if (actor.visible)
                 foundActors.push(actor);
         }
@@ -555,24 +595,25 @@ export class NotificationManager {
         const stylePrefix = originalStyle ? `${originalStyle.replace(/;$/, '')}; ` : '';
         let themeNode = actor.get_theme_node();
         let startColor = themeNode.get_foreground_color();
-        let targetRgb = hexToRgb(targetHexColor);
+        let targetRgb = (0, colors_js_1.hexToRgb)(targetHexColor);
         const apply = (r, g, b, a) => {
             const rgba = `rgba(${r}, ${g}, ${b}, ${a.toFixed(3)})`;
             actor.set_style(`${stylePrefix}color: ${rgba}; -st-icon-foreground-color: ${rgba};`);
         };
         if (skipAnimations) {
-            adaptiveColorTweener.cancel(actor);
+            colors_js_1.adaptiveColorTweener.cancel(actor);
             actor.set_style(`${stylePrefix}color: ${targetHexColor}; -st-icon-foreground-color: ${targetHexColor};`);
             return;
         }
         const startRgb = { r: startColor.red, g: startColor.green, b: startColor.blue };
         const startAlpha = startColor.alpha / 255.0;
-        adaptiveColorTweener.add(actor, {
+        colors_js_1.adaptiveColorTweener.add(actor, {
             startRgb, startAlpha,
             targetRgb, targetAlpha: 1.0,
-            crossFade: resolveCrossFade(startRgb, targetRgb),
+            crossFade: (0, colors_js_1.resolveCrossFade)(startRgb, targetRgb),
             durationMs,
             apply,
         }, batchStart);
     }
 }
+exports.NotificationManager = NotificationManager;

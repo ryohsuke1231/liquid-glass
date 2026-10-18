@@ -1,12 +1,23 @@
-import Cogl from 'gi://Cogl';
-import Shell from 'gi://Shell';
-import Gio from 'gi://Gio';
-import GLib from 'gi://GLib';
-import Mtk from 'gi://Mtk';
-import { getTransformedRect } from './actors/geometry.js';
-import { utilsLog } from './diagnostics/logging.js';
-import { createTarget } from './rendering/stageCopy.js';
-import { coglContext, paintStageToContent } from './shellVersion.js';
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.StageContrastSampler = exports.AdaptiveContrastConfig = void 0;
+exports.sanitizeColorPreference = sanitizeColorPreference;
+exports.glassToneOf = glassToneOf;
+exports.tonedLuminance = tonedLuminance;
+exports.backdropLuminance = backdropLuminance;
+exports.luminanceSamples = luminanceSamples;
+const 4 = __importDefault(require("gi://Cogl"));
+const 5 = __importDefault(require("gi://Shell"));
+const 6 = __importDefault(require("gi://Gio"));
+const 7 = __importDefault(require("gi://GLib"));
+const 8 = __importDefault(require("gi://Mtk"));
+const geometry_js_1 = require("./actors/geometry.js");
+const logging_js_1 = require("./diagnostics/logging.js");
+const stageCopy_js_1 = require("./rendering/stageCopy.js");
+const shellVersion_js_1 = require("./shellVersion.js");
 // How much better the other color has to score before the decision flips.
 // With a preferred color set, flipping towards it is easy and away from it
 // hard.
@@ -27,7 +38,7 @@ const BACKDROP_SEARCH_DEPTH = 8;
 // With preferredMinContrast set, the preferred color comes back once it
 // reads this many times better than that.
 const PREFERRED_RETURN = 1.15;
-export const AdaptiveContrastConfig = {
+exports.AdaptiveContrastConfig = {
     enabled: true,
     // Sample each text actor separately instead of one merged rect (costlier).
     samplePerElement: false,
@@ -41,7 +52,8 @@ export const AdaptiveContrastConfig = {
     preferredMinContrast: 0,
 };
 // Anything unrecognised in the setting counts as 'auto'.
-export function sanitizeColorPreference(value) {
+
+function sanitizeColorPreference(value) {
     return (value === 'light' || value === 'dark') ? value : 'auto';
 }
 
@@ -81,7 +93,7 @@ function _getActorRect(actor) {
         return null;
     if (!actor.mapped)
         return null;
-    const [x, y, w, h] = getTransformedRect(actor);
+    const [x, y, w, h] = (0, geometry_js_1.getTransformedRect)(actor);
     if (![x, y, w, h].every(Number.isFinite) || w <= 0 || h <= 0)
         return null;
     // Shell.Screenshot expects stage coordinates, including ancestor scale.
@@ -127,7 +139,7 @@ function _reportCapturePath(msg) {
     if (_capturePathLogged)
         return;
     _capturePathLogged = true;
-    utilsLog(`[Liquid Glass][contrast] ${msg}`);
+    (0, logging_js_1.utilsLog)(`[Liquid Glass][contrast] ${msg}`);
 }
 // Pixels are sampled on a grid of about this many steps per edge.
 const SAMPLE_MAX_EDGE = 48;
@@ -138,10 +150,10 @@ const SAMPLE_MAX_EDGE = 48;
 
 function _readTexture(texture, width, height) {
     return new Promise(resolve => {
-        Shell.Screenshot.composite_to_stream(texture, 0, 0, width, height, 1, null, 0, 0, 1, Gio.MemoryOutputStream.new_resizable(), (_obj, res) => {
+        5.default.Screenshot.composite_to_stream(texture, 0, 0, width, height, 1, null, 0, 0, 1, 6.default.MemoryOutputStream.new_resizable(), (_obj, res) => {
             // The finish call throws a GError on failure.
             try {
-                resolve(_imageOf(Shell.Screenshot.composite_to_stream_finish(res)));
+                resolve(_imageOf(5.default.Screenshot.composite_to_stream_finish(res)));
             }
             catch {
                 resolve(null);
@@ -157,15 +169,15 @@ function _readTexture(texture, width, height) {
  */
 
 function _drawAndRead(texture, s0, t0, s1, t1, width, height) {
-    const target = createTarget(width, height);
+    const target = (0, stageCopy_js_1.createTarget)(width, height);
     if (!target)
         return Promise.resolve(null);
-    const pipeline = Cogl.Pipeline.new(coglContext());
+    const pipeline = 4.default.Pipeline.new((0, shellVersion_js_1.coglContext)());
     pipeline.set_layer_texture(0, texture);
-    pipeline.set_layer_filters(0, Cogl.PipelineFilter.LINEAR, Cogl.PipelineFilter.LINEAR);
+    pipeline.set_layer_filters(0, 4.default.PipelineFilter.LINEAR, 4.default.PipelineFilter.LINEAR);
     const fb = target.framebuffer;
     fb.orthographic(0, 0, width, height, -1, 1);
-    fb.clear4f(Cogl.BufferBit.COLOR, 0, 0, 0, 0);
+    fb.clear4f(4.default.BufferBit.COLOR, 0, 0, 0, 0);
     fb.draw_textured_rectangle(pipeline, 0, 0, width, height, s0, t0, s1, t1);
     // The read goes through a sub-texture, which does not flush the drawing
     // queued on this framebuffer.
@@ -187,7 +199,7 @@ function _captureViaStage(rect) {
     let content;
     // Painting into an offscreen throws a GError when it cannot be allocated.
     try {
-        content = paintStageToContent(new Mtk.Rectangle({ x, y, width, height }), scale);
+        content = (0, shellVersion_js_1.paintStageToContent)(new 8.default.Rectangle({ x, y, width, height }), scale);
     }
     catch {
         return Promise.resolve(null);
@@ -214,7 +226,8 @@ function _imageOf(pixbuf) {
 }
 // The z of glass.frag's light direction, normalize(cos a, sin a, 0.38).
 const LIGHT_FACING = 0.38 / Math.sqrt(1 + 0.38 * 0.38);
-export function glassToneOf(values) {
+
+function glassToneOf(values) {
     const get = (name, fallback) => {
         const v = values.get(name);
         return v !== undefined && Number.isFinite(v) ? v : fallback;
@@ -230,7 +243,8 @@ export function glassToneOf(values) {
         light: (specular + sheen) * get('surface_light_enabled', 1),
     };
 }
-export function tonedLuminance(r, g, b, tone) {
+
+function tonedLuminance(r, g, b, tone) {
     const scb = (c) => 0.5 + ((c / 255) * tone.brightness - 0.5) * tone.contrast;
     let cr = scb(r), cg = scb(g), cb = scb(b);
     const luma = 0.299 * cr + 0.587 * cg + 0.114 * cb;
@@ -298,7 +312,8 @@ function _bestCopy(rect, drawn) {
     }
     return best;
 }
-export function backdropLuminance(actor, root = null) {
+
+function backdropLuminance(actor, root = null) {
     let node = actor;
     for (let depth = 0; node && depth < BACKDROP_SEARCH_DEPTH; depth++) {
         // Only St widgets have a theme node; plain Clutter actors are skipped.
@@ -363,7 +378,8 @@ function _pixelLuminance(data, idx, channels, tone) {
     return measure(unpremultiply(data[idx]), unpremultiply(data[idx + 1]), unpremultiply(data[idx + 2]));
 }
 /** @param tone When given, each pixel is measured as the glass would show it. */
-export function luminanceSamples(shot, tone) {
+
+function luminanceSamples(shot, tone) {
     const { data, width, height, stride, channels, step } = shot;
     const values = [];
     for (let y = 0; y < height; y += step) {
@@ -376,7 +392,8 @@ export function luminanceSamples(shot, tone) {
     }
     return values;
 }
-export class StageContrastSampler {
+
+class StageContrastSampler {
     _lastLuma = null;
     _lastIsBright = null;
     // Monotonic time of the last flip; see SWITCH_SETTLE_MS.
@@ -479,7 +496,7 @@ export class StageContrastSampler {
         }
         return sum / weight;
     }
-    decideTextColor(luminance, config = AdaptiveContrastConfig) {
+    decideTextColor(luminance, config = exports.AdaptiveContrastConfig) {
         if (luminance === null || luminance === undefined)
             return null;
         if (!Number.isFinite(luminance))
@@ -513,7 +530,7 @@ export class StageContrastSampler {
         // Hold the decision for SWITCH_SETTLE_MS after a flip, unless the held
         // color is unreadable and the other one is not. A configuration change
         // ends the hold: it should apply at once.
-        const now = GLib.get_monotonic_time();
+        const now = 7.default.get_monotonic_time();
         const holdConfig = `${preference}|${floor}|${config.lightTextColor}|${config.darkTextColor}`;
         if (holdConfig !== this._holdConfig) {
             this._holdConfig = holdConfig;
@@ -572,7 +589,7 @@ export class StageContrastSampler {
         this._lastIsBright = isBright;
         return isBright ? config.darkTextColor : config.lightTextColor;
     }
-    _inSettleHold(now = GLib.get_monotonic_time()) {
+    _inSettleHold(now = 7.default.get_monotonic_time()) {
         return this._lastSwitchAt !== null && now - this._lastSwitchAt < SWITCH_SETTLE_MS * 1000;
     }
     _backdropColorFor(actor, config, root) {
@@ -589,7 +606,7 @@ export class StageContrastSampler {
      * @param backdrops The glasses under the text, whose backdrops are measured
      *   in place of the screen; see _measure().
      */
-    async chooseColorsForActors(actors, config = AdaptiveContrastConfig, root = null, paintSignature, backdrops) {
+    async chooseColorsForActors(actors, config = exports.AdaptiveContrastConfig, root = null, paintSignature, backdrops) {
         const { targets, rects } = _visibleTargets(actors);
         if (targets.length === 0)
             return new Map();
@@ -692,3 +709,4 @@ export class StageContrastSampler {
         return result;
     }
 }
+exports.StageContrastSampler = StageContrastSampler;

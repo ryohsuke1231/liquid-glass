@@ -25,3 +25,4 @@ function walk(target) {
 }
 
 for (const target of process.argv.slice(2)) walk(target);
+/* Copyright (c) 2026 Dae Euhwa. MIT License. */

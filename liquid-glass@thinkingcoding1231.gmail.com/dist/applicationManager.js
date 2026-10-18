@@ -1,15 +1,21 @@
-import Meta from 'gi://Meta';
-import GLib from 'gi://GLib';
-import { BackdropGlass } from './rendering/backdropGlass.js';
-import { getWindowActors } from './actors/windows.js';
-import { isActorValid } from './actors/lifecycle.js';
-import { getAllocatedSize } from './actors/geometry.js';
-import { setActorVisible, ensureGlassAllocated, ensureWindowActorAllocated } from './actors/allocation.js';
-import { setPositionIfChanged, setSizeIfChanged } from './actors/writes.js';
-import { isFrameSyncFrozen, SAME_FRAME_WINDOW_US } from './animation/frameSync.js';
-import { hexToColorArray } from './animation/colors.js';
-import { noteStrandEntry } from './diagnostics/glass.js';
-import { reportFrameLoopError } from './diagnostics/logging.js';
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.ApplicationManager = void 0;
+const 2 = __importDefault(require("gi://Meta"));
+const 3 = __importDefault(require("gi://GLib"));
+const backdropGlass_js_1 = require("./rendering/backdropGlass.js");
+const windows_js_1 = require("./actors/windows.js");
+const lifecycle_js_1 = require("./actors/lifecycle.js");
+const geometry_js_1 = require("./actors/geometry.js");
+const allocation_js_1 = require("./actors/allocation.js");
+const writes_js_1 = require("./actors/writes.js");
+const frameSync_js_1 = require("./animation/frameSync.js");
+const colors_js_1 = require("./animation/colors.js");
+const glass_js_1 = require("./diagnostics/glass.js");
+const logging_js_1 = require("./diagnostics/logging.js");
 // How far the glass extends past the window on each side. It is both the
 // sampling headroom for refraction and blur and the only room the drop shadow
 // has to render into, so it grows with the shadow settings instead of
@@ -28,14 +34,15 @@ const WINDOW_ACTOR_STRANDED_FRAMES = 14;
 // GTK's Wayland backend maps a menu xdg_popup onto DROPDOWN_MENU; the other
 // two cover X11 and toolkits that pick a different hint.
 const MENU_WINDOW_TYPES = [
-    Meta.WindowType.DROPDOWN_MENU,
-    Meta.WindowType.POPUP_MENU,
-    Meta.WindowType.MENU,
+    2.default.WindowType.DROPDOWN_MENU,
+    2.default.WindowType.POPUP_MENU,
+    2.default.WindowType.MENU,
 ];
 // Bound on the transient_for walk, so a cycle cannot hang the first-frame
 // handler. A desktop menu is one hop from the desktop, submenus a few more.
 const MAX_TRANSIENT_DEPTH = 8;
-export class ApplicationManager {
+
+class ApplicationManager {
     _extensionPath;
     _settings;
     _logger;
@@ -123,7 +130,7 @@ export class ApplicationManager {
     }
     _updateWindowOpacities() {
         for (const state of this._states.values()) {
-            if (isActorValid(state.surfaceActor))
+            if ((0, lifecycle_js_1.isActorValid)(state.surfaceActor))
                 state.surfaceActor.opacity = Math.round(this._getContentOpacity(state.profile) * 255);
         }
     }
@@ -174,7 +181,7 @@ export class ApplicationManager {
             return false;
         let parent = metaWindow.get_transient_for();
         for (let depth = 0; parent && depth < MAX_TRANSIENT_DEPTH; depth++) {
-            if (parent.get_window_type() === Meta.WindowType.DESKTOP)
+            if (parent.get_window_type() === 2.default.WindowType.DESKTOP)
                 return true;
             // A submenu is transient for its parent menu. Walk through menus only,
             // never up through an ordinary app window.
@@ -202,9 +209,9 @@ export class ApplicationManager {
         // and dialog windows, and still honours the blacklist.
         if (this._settings.get_boolean('application-glass-all-windows')) {
             const windowType = metaWindow.get_window_type();
-            const isNormal = windowType === Meta.WindowType.NORMAL ||
-                windowType === Meta.WindowType.DIALOG ||
-                windowType === Meta.WindowType.MODAL_DIALOG;
+            const isNormal = windowType === 2.default.WindowType.NORMAL ||
+                windowType === 2.default.WindowType.DIALOG ||
+                windowType === 2.default.WindowType.MODAL_DIALOG;
             if (!isNormal || this._windowMatchesBlacklist(metaWindow))
                 return null;
             return 'application';
@@ -237,7 +244,7 @@ export class ApplicationManager {
                 this._states.delete(actor);
             }
         }
-        for (const actor of getWindowActors()) {
+        for (const actor of (0, windows_js_1.getWindowActors)()) {
             if (this._shouldApplyToWindow(actor) && !this._states.has(actor))
                 this._setupWindow(actor);
         }
@@ -270,7 +277,7 @@ export class ApplicationManager {
     }
     _applyAppearance(glass, profile) {
         const k = (suffix) => this._profileKey(profile, suffix);
-        glass.setTintColor(...hexToColorArray(this._settings.get_string(k('tint-color'))));
+        glass.setTintColor(...(0, colors_js_1.hexToColorArray)(this._settings.get_string(k('tint-color'))));
         glass.setTintStrength(this._settings.get_double(k('tint-strength')));
         glass.setCornerRadius(this._settings.get_double(k('corner-radius')));
         glass.setBlurRadius(this._settings.get_int(k('blur-radius')));
@@ -293,7 +300,7 @@ export class ApplicationManager {
         this._frameSignalId = 0;
     }
     _buildForExistingWindows() {
-        for (const actor of getWindowActors()) {
+        for (const actor of (0, windows_js_1.getWindowActors)()) {
             if (this._shouldApplyToWindow(actor))
                 this._setupWindow(actor);
         }
@@ -312,7 +319,7 @@ export class ApplicationManager {
         // Inside the window actor and below its surface: it moves, scales and
         // fades with the window, and it reads the stage after everything below
         // the window and before the window itself.
-        const glass = new BackdropGlass({
+        const glass = new backdropGlass_js_1.BackdropGlass({
             extensionPath: this._extensionPath,
             settings: this._settings,
             logger: this._logger,
@@ -385,7 +392,7 @@ export class ApplicationManager {
     // Hides the glass while its window is not shown on this workspace. The
     // geometry signature is dropped so the next sync places it again.
     _hideGlass(state) {
-        setActorVisible(state.glass, false);
+        (0, allocation_js_1.setActorVisible)(state.glass, false);
         state.geomSig = undefined;
     }
     _syncState(state) {
@@ -425,13 +432,13 @@ export class ApplicationManager {
             this._hideGlass(state);
             return;
         }
-        setActorVisible(state.glass, true);
+        (0, allocation_js_1.setActorVisible)(state.glass, true);
         const [frameLocalX, frameLocalY] = this._frameLocalOffset(state, actor, rect, bufferRect);
         const margin = this._glassMargin;
         const w = rect.width + margin * 2;
         const h = rect.height + margin * 2;
         const [pivotX, pivotY] = actor.get_pivot_point();
-        const [actorW, actorH] = getAllocatedSize(actor);
+        const [actorW, actorH] = (0, geometry_js_1.getAllocatedSize)(actor);
         const moved = !this._updateGeometrySignature(state, [
             w, h, frameLocalX, frameLocalY,
             actor.x, actor.y,
@@ -441,8 +448,8 @@ export class ApplicationManager {
             pivotY * (Number.isFinite(actorH) ? actorH : 0),
         ]);
         if (moved) {
-            setPositionIfChanged(state.glass, frameLocalX - margin, frameLocalY - margin);
-            setSizeIfChanged(state.glass, w, h);
+            (0, writes_js_1.setPositionIfChanged)(state.glass, frameLocalX - margin, frameLocalY - margin);
+            (0, writes_js_1.setSizeIfChanged)(state.glass, w, h);
             state.glass.setResolution(w, h);
             state.glass.setGlassGeometry(0, 0, w, h);
         }
@@ -468,11 +475,11 @@ export class ApplicationManager {
     }
     _frameTick() {
         // Diagnostic switch that freezes the sync so its cost can be measured.
-        if (isFrameSyncFrozen())
+        if ((0, frameSync_js_1.isFrameSyncFrozen)())
             return;
         // Two stage views updating in the same frame each emit 'before-update'.
-        const nowUs = GLib.get_monotonic_time();
-        if (nowUs - this._lastTickUs < SAME_FRAME_WINDOW_US)
+        const nowUs = 3.default.get_monotonic_time();
+        if (nowUs - this._lastTickUs < frameSync_js_1.SAME_FRAME_WINDOW_US)
             return;
         this._lastTickUs = nowUs;
         // One window's failure must not stop the others.
@@ -481,7 +488,7 @@ export class ApplicationManager {
                 this._syncFrameState(state);
             }
             catch (e) {
-                reportFrameLoopError('ApplicationManager', e);
+                (0, logging_js_1.reportFrameLoopError)('ApplicationManager', e);
             }
         }
     }
@@ -495,16 +502,16 @@ export class ApplicationManager {
         // The window actor is rescued before the glass. Its children are laid out
         // by its default layout, so a stranded window actor swallows every
         // relayout they queue and the glass's own rescue could never land.
-        const rescue = ensureWindowActorAllocated(state.windowActor, WINDOW_ACTOR_RELAYOUT_FRAMES, WINDOW_ACTOR_STRANDED_FRAMES);
+        const rescue = (0, allocation_js_1.ensureWindowActorAllocated)(state.windowActor, WINDOW_ACTOR_RELAYOUT_FRAMES, WINDOW_ACTOR_STRANDED_FRAMES);
         if (rescue)
             this._logStrand(state, metaWin, title, rescue);
-        ensureGlassAllocated(state.glass);
+        (0, allocation_js_1.ensureGlassAllocated)(state.glass);
         this._syncState(state);
     }
     _logStrand(state, metaWin, title, rescue) {
         const wa = state.windowActor;
         const parent = wa.get_parent();
-        noteStrandEntry(title, `wa.alloc=${wa.has_allocation()} wg.alloc=${parent ? parent.has_allocation() : '-'} ` +
+        (0, glass_js_1.noteStrandEntry)(title, `wa.alloc=${wa.has_allocation()} wg.alloc=${parent ? parent.has_allocation() : '-'} ` +
             `scale=${wa.scale_x.toFixed(3)} op=${wa.opacity} min=${metaWin.minimized} stage=${rescue}`);
         this._logger.log(`[Liquid Glass][strand] ${rescue} for "${title}" — ` +
             `wa(mapped=${wa.mapped},vis=${wa.visible},alloc=${wa.has_allocation()},op=${wa.opacity},` +
@@ -522,15 +529,15 @@ export class ApplicationManager {
     _forceGlassReallocation(state) {
         if (state.remapReallocLaterId)
             return;
-        state.remapReallocLaterId = global.compositor.get_laters().add(Meta.LaterType.BEFORE_REDRAW, () => {
+        state.remapReallocLaterId = global.compositor.get_laters().add(2.default.LaterType.BEFORE_REDRAW, () => {
             state.remapReallocLaterId = 0;
             if (!state.windowActor.mapped)
-                return GLib.SOURCE_REMOVE;
-            if (ensureGlassAllocated(state.glass, 1)) {
+                return 3.default.SOURCE_REMOVE;
+            if ((0, allocation_js_1.ensureGlassAllocated)(state.glass, 1)) {
                 const title = state.windowActor.get_meta_window()?.get_title() || '(untitled)';
                 this._logger.log(`[Liquid Glass][min-restore] re-allocated the glass for "${title}"`);
             }
-            return GLib.SOURCE_REMOVE;
+            return 3.default.SOURCE_REMOVE;
         });
     }
     _cleanupState(state) {
@@ -543,10 +550,11 @@ export class ApplicationManager {
         state.signals = [];
         // The glass is a child of the window actor, and already disposed when
         // this runs from the window actor's destroy handler.
-        if (isActorValid(state.surfaceActor))
+        if ((0, lifecycle_js_1.isActorValid)(state.surfaceActor))
             state.surfaceActor.opacity = state.originalOpacity;
         state.glass.cleanup();
-        if (isActorValid(state.glass))
+        if ((0, lifecycle_js_1.isActorValid)(state.glass))
             state.glass.destroy();
     }
 }
+exports.ApplicationManager = ApplicationManager;

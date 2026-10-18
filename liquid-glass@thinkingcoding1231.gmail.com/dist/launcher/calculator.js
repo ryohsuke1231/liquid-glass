@@ -1,5 +1,9 @@
+"use strict";
 // Arithmetic typed into the launcher, such as "3*8", "3*8=" or "1-5": + - * / % ^, parentheses, decimals,
 // and the × ÷ − signs. Parsed by hand rather than evaluated, so nothing typed can run as code.
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.evaluate = evaluate;
+exports.formatNumber = formatNumber;
 const OPERATORS = '+-*/%^()';
 
 function tokenize(text) {
@@ -97,7 +101,8 @@ class Parser {
     }
 }
 /** The value of `text` when it is a calculation, else null. */
-export function evaluate(text) {
+
+function evaluate(text) {
     const expression = text.replace(/[×✕]/g, '*').replace(/÷/g, '/').replace(/[−–]/g, '-').trim().replace(/=$/, '');
     const tokens = tokenize(expression);
     if (!tokens || tokens.length < 3)
@@ -107,7 +112,8 @@ export function evaluate(text) {
     return value !== null && parser.binary && Number.isFinite(value) ? value : null;
 }
 /** `value` with no more digits than a double holds reliably, and no exponent for everyday sizes. */
-export function formatNumber(value) {
+
+function formatNumber(value) {
     const rounded = Number(value.toPrecision(12));
     return Object.is(rounded, -0) ? '0' : String(rounded);
 }

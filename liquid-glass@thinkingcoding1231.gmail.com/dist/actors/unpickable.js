@@ -1,16 +1,22 @@
-import GObject from 'gi://GObject';
-import Clutter from 'gi://Clutter';
-import Shell from 'gi://Shell';
-import St from 'gi://St';
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.LayoutOpaqueActor = exports.UnpickableWidget = exports.UnpickableActor = void 0;
+const 1 = __importDefault(require("gi://GObject"));
+const 2 = __importDefault(require("gi://Clutter"));
+const 3 = __importDefault(require("gi://Shell"));
+const 4 = __importDefault(require("gi://St"));
 // Helper actors layered around real shell UI. They are hidden from picking so
 // that pointer events and Looking Glass's picker reach the real actors
 // instead.
 // A plain Clutter.Actor rather than an St.Widget, so no theme padding gets in
 // the way of pixel-exact layout.
-export const UnpickableActor = GObject.registerClass(class UnpickableActor extends Clutter.Actor {
+exports.UnpickableActor = 1.default.registerClass(class UnpickableActor extends 2.default.Actor {
     _init(params = {}) {
         super._init(params);
-        Shell.util_set_hidden_from_pick(this, true);
+        3.default.util_set_hidden_from_pick(this, true);
     }
     vfunc_pick(_pickContext) {
     }
@@ -21,10 +27,10 @@ export const UnpickableActor = GObject.registerClass(class UnpickableActor exten
  * radius) without cloning the widget and its children. Only selectors that
  * match the class itself apply, not descendant selectors.
  */
-export const UnpickableWidget = GObject.registerClass(class UnpickableWidget extends St.Widget {
+exports.UnpickableWidget = 1.default.registerClass(class UnpickableWidget extends 4.default.Widget {
     _init(params = {}) {
         super._init(params);
-        Shell.util_set_hidden_from_pick(this, true);
+        3.default.util_set_hidden_from_pick(this, true);
     }
     vfunc_pick(_pickContext) {
     }
@@ -36,7 +42,7 @@ export const UnpickableWidget = GObject.registerClass(class UnpickableWidget ext
  * sizes, and a full-screen child made Quick Settings cover the screen. The
  * caller positions it explicitly.
  */
-export const LayoutOpaqueActor = GObject.registerClass(class LayoutOpaqueActor extends UnpickableActor {
+exports.LayoutOpaqueActor = 1.default.registerClass(class LayoutOpaqueActor extends exports.UnpickableActor {
     vfunc_get_preferred_width(_forHeight) {
         return [0, 0];
     }

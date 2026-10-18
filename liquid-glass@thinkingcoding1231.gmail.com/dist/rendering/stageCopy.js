@@ -1,21 +1,30 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.StageCopier = void 0;
+exports.createTarget = createTarget;
+exports.addBlit = addBlit;
 // Copies a rect of a stage view's framebuffer while the stage is painted.
 // Everything painted before the copying actor is in the framebuffer by the
 // time its paint nodes run. Only the frame's redraw clip holds current pixels,
 // though; outside it the framebuffer still has the previous frame. So a copy
 // is taken only when the clip contains the whole rect, and reused otherwise.
-import Clutter from 'gi://Clutter';
-import Cogl from 'gi://Cogl';
-import Mtk from 'gi://Mtk';
-import { coglContext, newRootNode, offscreenFormat } from '../shellVersion.js';
+const 4 = __importDefault(require("gi://Clutter"));
+const 5 = __importDefault(require("gi://Cogl"));
+const 6 = __importDefault(require("gi://Mtk"));
+const shellVersion_js_1 = require("../shellVersion.js");
 // An offscreen texture to render or blit into. A blit needs both sides fixed
 // point or both floating point, so `format` follows the source when that is
 // an offscreen (rotated or HDR views); null is the default RGBA8888_PRE.
-export function createTarget(width, height, format = null, logger) {
-    const ctx = coglContext();
+
+function createTarget(width, height, format = null, logger) {
+    const ctx = (0, shellVersion_js_1.coglContext)();
     const texture = format === null
-        ? Cogl.Texture2D.new_with_size(ctx, width, height)
-        : Cogl.Texture2D.new_with_format(ctx, width, height, format);
-    const framebuffer = Cogl.Offscreen.new_with_texture(texture);
+        ? 5.default.Texture2D.new_with_size(ctx, width, height)
+        : 5.default.Texture2D.new_with_format(ctx, width, height, format);
+    const framebuffer = 5.default.Offscreen.new_with_texture(texture);
     try {
         framebuffer.allocate();
     }
@@ -28,14 +37,16 @@ export function createTarget(width, height, format = null, logger) {
 // Queues a blit of `rect` [x, y, w, h] of `source` to the origin of `target`.
 // A RootNode makes the target the blit's destination and, with no clear
 // flags, leaves it alone otherwise. Its color state must be the source's.
-export function addBlit(root, source, target, colorState, rect) {
-    const node = newRootNode(target, colorState);
+
+function addBlit(root, source, target, colorState, rect) {
+    const node = (0, shellVersion_js_1.newRootNode)(target, colorState);
     root.add_child(node);
-    const blit = Clutter.BlitNode.new(source);
+    const blit = 4.default.BlitNode.new(source);
     blit.add_blit_rectangle(rect[0], rect[1], 0, 0, rect[2], rect[3]);
     node.add_child(blit);
 }
-export class StageCopier {
+
+class StageCopier {
     _logger;
     _copies = new Map();
     _serial = 0;
@@ -93,9 +104,9 @@ export class StageCopier {
         const clip = paintContext.get_redraw_clip();
         const clipX = Math.floor(rect[0]);
         const clipY = Math.floor(rect[1]);
-        const inClip = !clip || clip.contains_rectangle(new Mtk.Rectangle({
+        const inClip = !clip || clip.contains_rectangle(new 6.default.Rectangle({
             x: clipX, y: clipY, width: Math.ceil(rect[2]) - clipX, height: Math.ceil(rect[3]) - clipY,
-        })) === Mtk.RegionOverlap.IN;
+        })) === 6.default.RegionOverlap.IN;
         if (!inClip) {
             if (copy?.rect) {
                 this.reuseCount++;
@@ -104,7 +115,7 @@ export class StageCopier {
             this.missCount++;
             return { copy: null, missed: true };
         }
-        const format = fb instanceof Cogl.Offscreen ? offscreenFormat(fb) : null;
+        const format = fb instanceof 5.default.Offscreen ? (0, shellVersion_js_1.offscreenFormat)(fb) : null;
         copy = this._target(view, copy, fx1 - fx0, fy1 - fy0, format);
         if (!copy)
             return { copy: null, missed: false };
@@ -137,3 +148,4 @@ export class StageCopier {
         this.lastCopy = null;
     }
 }
+exports.StageCopier = StageCopier;

@@ -1,8 +1,13 @@
+"use strict";
 // Outlines from a TrueType font file, for the fonts the extension ships with.
 // Pango finds fonts through fontconfig only; adding a file to it needs Pango
 // 1.56, newer than GNOME 46 and 47 have. Only what drawing a line of digits
 // needs is read: the glyph outlines, their advances and the line's metrics.
-export class TrueTypeFont {
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.TrueTypeFont = void 0;
+exports.traceGlyph = traceGlyph;
+
+class TrueTypeFont {
     unitsPerEm;
     ascender;
     descender;
@@ -217,11 +222,13 @@ export class TrueTypeFont {
         return contours;
     }
 }
+exports.TrueTypeFont = TrueTypeFont;
 /**
  * Traces `glyph` on Cairo context `cr` with its origin at (x, y) and `scale`
  * px per font unit, y down.
  */
-export function traceGlyph(cr, glyph, x, y, scale) {
+
+function traceGlyph(cr, glyph, x, y, scale) {
     const at = (q) => [x + q.x * scale, y - q.y * scale];
     for (const contour of glyph.contours) {
         const n = contour.length;

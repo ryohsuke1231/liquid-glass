@@ -1,11 +1,51 @@
-import * as Main from 'resource:///org/gnome/shell/ui/main.js';
-import Clutter from 'gi://Clutter';
-import Shell from 'gi://Shell';
-import St from 'gi://St';
-import { isActorValid } from '../actors/lifecycle.js';
-import { resetHoverCursor, setHoverCursor } from '../shellVersion.js';
-import { snapMove } from './guides.js';
-import { placeBeside, resizeRect } from './placement.js';
+"use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.EditFrame = void 0;
+exports.itemRect = itemRect;
+const Main = __importStar(require("resource:///org/gnome/shell/ui/main.js"));
+const 2 = __importDefault(require("gi://Clutter"));
+const 3 = __importDefault(require("gi://Shell"));
+const 4 = __importDefault(require("gi://St"));
+const lifecycle_js_1 = require("../actors/lifecycle.js");
+const shellVersion_js_1 = require("../shellVersion.js");
+const guides_js_1 = require("./guides.js");
+const placement_js_1 = require("./placement.js");
 // Room between the item and its frame, px.
 const FRAME_GAP = 8;
 const HANDLE_SIZE = 14;
@@ -29,7 +69,8 @@ const HANDLES = [
  * It holds the pointer and keyboard until Escape, Enter, the Done button or
  * a click outside it.
  */
-export class EditFrame {
+
+class EditFrame {
     item;
     _callbacks;
     _layer;
@@ -46,21 +87,21 @@ export class EditFrame {
     constructor(item, _callbacks) {
         this.item = item;
         this._callbacks = _callbacks;
-        this._layer = new St.Widget({ name: 'liquid-glass-edit', reactive: true, x: 0, y: 0 });
+        this._layer = new 4.default.Widget({ name: 'liquid-glass-edit', reactive: true, x: 0, y: 0 });
         this._layer.set_size(global.stage.width, global.stage.height);
-        this._frame = new St.Widget({ style_class: 'liquid-glass-edit-frame', reactive: true });
-        setHoverCursor(this._frame, 'move');
+        this._frame = new 4.default.Widget({ style_class: 'liquid-glass-edit-frame', reactive: true });
+        (0, shellVersion_js_1.setHoverCursor)(this._frame, 'move');
         this._layer.add_child(this._frame);
         if (_callbacks.resized) {
             for (const [, , cursor] of HANDLES) {
-                const handle = new St.Widget({ style_class: 'liquid-glass-edit-handle', reactive: true,
+                const handle = new 4.default.Widget({ style_class: 'liquid-glass-edit-handle', reactive: true,
                     width: HANDLE_SIZE, height: HANDLE_SIZE });
-                setHoverCursor(handle, cursor);
+                (0, shellVersion_js_1.setHoverCursor)(handle, cursor);
                 this._layer.add_child(handle);
                 this._handles.push(handle);
             }
         }
-        this._done = new St.Button({ style_class: 'liquid-glass-edit-done', label: 'Done', can_focus: true });
+        this._done = new 4.default.Button({ style_class: 'liquid-glass-edit-done', label: 'Done', can_focus: true });
         this._done.connect('clicked', () => this.end());
         this._layer.add_child(this._done);
         // Presses are told apart by where they are, not by the actor they reach:
@@ -71,10 +112,10 @@ export class EditFrame {
         this._layer.connect('button-release-event', (_a, event) => this._release(event));
         this._layer.connect('key-press-event', (_a, event) => {
             const key = event.get_key_symbol();
-            if (key !== Clutter.KEY_Escape && key !== Clutter.KEY_Return && key !== Clutter.KEY_KP_Enter)
-                return Clutter.EVENT_PROPAGATE;
+            if (key !== 2.default.KEY_Escape && key !== 2.default.KEY_Return && key !== 2.default.KEY_KP_Enter)
+                return 2.default.EVENT_PROPAGATE;
             this.end();
-            return Clutter.EVENT_STOP;
+            return 2.default.EVENT_STOP;
         });
     }
     get dragging() {
@@ -82,7 +123,7 @@ export class EditFrame {
     }
     start() {
         Main.layoutManager.uiGroup.add_child(this._layer);
-        this._grab = Main.pushModal(this._layer, { actionMode: Shell.ActionMode.POPUP });
+        this._grab = Main.pushModal(this._layer, { actionMode: 3.default.ActionMode.POPUP });
         this.sync();
     }
     // The frame round the item, or round the size it is being resized to.
@@ -105,12 +146,12 @@ export class EditFrame {
         });
         const [, doneW] = this._done.get_preferred_width(-1);
         const [, doneH] = this._done.get_preferred_height(doneW);
-        this._done.set_position(...placeBeside(f, [doneW, doneH], HANDLE_SIZE, this._workArea(f), this._docks()));
+        this._done.set_position(...(0, placement_js_1.placeBeside)(f, [doneW, doneH], HANDLE_SIZE, this._workArea(f), this._docks()));
     }
     _showGuides(guides) {
         this._guides = guides;
         while (this._guideActors.length < guides.length) {
-            const actor = new St.DrawingArea({ style_class: 'liquid-glass-edit-guide' });
+            const actor = new 4.default.DrawingArea({ style_class: 'liquid-glass-edit-guide' });
             const index = this._guideActors.length;
             actor.connect('repaint', () => this._drawGuide(actor, this._guides[index]));
             this._layer.insert_child_below(actor, this._frame);
@@ -194,40 +235,40 @@ export class EditFrame {
         return x >= f.x && x < f.x + f.width && y >= f.y && y < f.y + f.height ? [0, 0] : null;
     }
     _press(event) {
-        if (event.get_button() !== Clutter.BUTTON_PRIMARY)
-            return Clutter.EVENT_STOP;
+        if (event.get_button() !== 2.default.BUTTON_PRIMARY)
+            return 2.default.EVENT_STOP;
         const [x, y] = event.get_coords();
         const hit = this._hit(x, y);
         if (!hit) {
             this.end();
-            return Clutter.EVENT_STOP;
+            return 2.default.EVENT_STOP;
         }
         this._drag = { start: [x, y], origin: itemOrigin(this.item), rect: itemRect(this.item), hx: hit[0], hy: hit[1] };
-        return Clutter.EVENT_STOP;
+        return 2.default.EVENT_STOP;
     }
     _motion(event) {
         const drag = this._drag;
         if (!drag)
-            return Clutter.EVENT_PROPAGATE;
+            return 2.default.EVENT_PROPAGATE;
         const [x, y] = event.get_coords();
         const dx = x - drag.start[0], dy = y - drag.start[1];
         if (drag.hx === 0 && drag.hy === 0) {
             const [px, py] = this.item.actor.get_parent().get_transformed_position();
             const moved = { ...drag.rect, x: drag.rect.x + dx, y: drag.rect.y + dy };
-            const snap = snapMove(moved, this._callbacks.others(), this._workArea(moved), SNAP_REACH);
+            const snap = (0, guides_js_1.snapMove)(moved, this._callbacks.others(), this._workArea(moved), SNAP_REACH);
             this.item.actor.set_position(Math.round(drag.origin[0] + dx + snap.dx - px), Math.round(drag.origin[1] + dy + snap.dy - py));
             this._showGuides(snap.guides);
         }
         else {
-            this._resizing = resizeRect(drag.rect, drag.hx, drag.hy, dx, dy, MIN_SIZE);
+            this._resizing = (0, placement_js_1.resizeRect)(drag.rect, drag.hx, drag.hy, dx, dy, MIN_SIZE);
         }
         this.sync();
-        return Clutter.EVENT_STOP;
+        return 2.default.EVENT_STOP;
     }
     _release(event) {
         const drag = this._drag;
-        if (!drag || event.get_button() !== Clutter.BUTTON_PRIMARY)
-            return Clutter.EVENT_PROPAGATE;
+        if (!drag || event.get_button() !== 2.default.BUTTON_PRIMARY)
+            return 2.default.EVENT_PROPAGATE;
         this._drag = null;
         this._showGuides([]);
         const resized = this._resizing;
@@ -237,7 +278,7 @@ export class EditFrame {
         else
             this._callbacks.moved(...itemOrigin(this.item));
         this.sync();
-        return Clutter.EVENT_STOP;
+        return 2.default.EVENT_STOP;
     }
     /** Takes the frame away. */
     end() {
@@ -245,12 +286,13 @@ export class EditFrame {
             Main.popModal(this._grab);
             this._grab = null;
         }
-        if (isActorValid(this._layer))
+        if ((0, lifecycle_js_1.isActorValid)(this._layer))
             this._layer.destroy();
-        resetHoverCursor();
+        (0, shellVersion_js_1.resetHoverCursor)();
         this._callbacks.ended();
     }
 }
+exports.EditFrame = EditFrame;
 // An item's top left corner, stage coordinates. Its x and y, not its
 // allocation, which lags a frame behind a new position.
 
@@ -259,7 +301,8 @@ function itemOrigin(item) {
     return [px + item.actor.x, py + item.actor.y];
 }
 /** An item's shown part, stage coordinates. */
-export function itemRect(item) {
+
+function itemRect(item) {
     const [x, y] = itemOrigin(item);
     const [bx, by, width, height] = item.bounds();
     return { x: x + bx, y: y + by, width, height };

@@ -1,6 +1,11 @@
+"use strict";
 // The colors icon-style.frag draws a style map in, per look, after macOS 26's
 // tinted, white and clear icons. Pure, so that the contact sheet and the
 // preferences can use it too.
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.ICON_TUNING = void 0;
+exports.iconStyleColors = iconStyleColors;
+exports.iconStyleUniforms = iconStyleUniforms;
 // Per look: the rim's width (map px), its light on the sides away from the light, the sheen, and how far the plates'
 // tones spread.
 const GLASS = {
@@ -9,7 +14,7 @@ const GLASS = {
 // The clear look's plates are glass drawn with the glass settings over what is behind the icon. Until that is known
 // they are drawn as light added to it, with a rim lit on two sides as the glass's is.
 const CLEAR_WITHOUT_BACKDROP = { rim: 0.8, rimWidth: 12, rimBase: 0, sheen: 0.5, edgeShade: 0.2 };
-export const ICON_TUNING = [
+exports.ICON_TUNING = [
     ...Object.entries(GLASS).flatMap(([look, [width, base, sheen, spread]]) => [
         { key: `${look}RimWidth`, title: 'Rim width', looks: [look], min: 1, max: 16, value: width },
         { key: `${look}RimBase`, title: 'Rim light away from the light', looks: [look], min: 0, max: 1, value: base },
@@ -63,8 +68,9 @@ function glass(lightness) {
  * @param symbolOpacity How strongly the symbol shows, 0 to 1.
  * @param tuning Values that replace ICON_TUNING's, by key.
  */
-export function iconStyleColors(mode, tint, strength, symbolOpacity, variant = 'light', tuning = {}) {
-    const v = (key) => tuning[key] ?? ICON_TUNING.find(p => p.key === key).value;
+
+function iconStyleColors(mode, tint, strength, symbolOpacity, variant = 'light', tuning = {}) {
+    const v = (key) => tuning[key] ?? exports.ICON_TUNING.find(p => p.key === key).value;
     if (mode === 'clear') {
         // Barely frosted, so that the white symbol stands apart from the plates. The frost is light added, which keeps
         // the colors of what is behind.
@@ -97,7 +103,8 @@ export function iconStyleColors(mode, tint, strength, symbolOpacity, variant = '
         rim: v('darkRim'), tint: [t[0], t[1], t[2]] };
 }
 /** The shader's uniforms for `colors`, by name. */
-export function iconStyleUniforms(colors) {
+
+function iconStyleUniforms(colors) {
     const out = [['rim_a', colors.rim], ['rim_width', colors.rimWidth], ['rim_base', colors.rimBase],
         ['sheen', colors.sheen], ['tone_spread', colors.toneSpread], ['additive', colors.additive],
         ['edge_shade', colors.edgeShade], ['symbol_shadow', colors.symbolShadow], ['rim_scale', colors.rimScale]];

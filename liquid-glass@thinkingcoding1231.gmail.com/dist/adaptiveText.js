@@ -1,8 +1,14 @@
-import GLib from 'gi://GLib';
-import St from 'gi://St';
-import { StageContrastSampler, AdaptiveContrastConfig } from './contrastSampler.js';
-import { adaptiveColorTweener, hexToRgb, resolveCrossFade } from './animation/colors.js';
-import { isActorValid } from './actors/lifecycle.js';
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.AdaptiveTextColor = void 0;
+const 1 = __importDefault(require("gi://GLib"));
+const 2 = __importDefault(require("gi://St"));
+const contrastSampler_js_1 = require("./contrastSampler.js");
+const colors_js_1 = require("./animation/colors.js");
+const lifecycle_js_1 = require("./actors/lifecycle.js");
 const COLOR_TWEEN_MS = 380;
 /**
  * Keeps the labels and icons under `roots` readable on their glass: every
@@ -11,14 +17,15 @@ const COLOR_TWEEN_MS = 380;
  * the launcher); a measurement is skipped while nothing behind them was
  * repainted.
  */
-export class AdaptiveTextColor {
+
+class AdaptiveTextColor {
     _roots;
     _glasses;
     _logger;
     _label;
     _options;
-    _sampler = new StageContrastSampler();
-    _config = { ...AdaptiveContrastConfig, enabled: true, samplePerElement: false };
+    _sampler = new contrastSampler_js_1.StageContrastSampler();
+    _config = { ...contrastSampler_js_1.AdaptiveContrastConfig, enabled: true, samplePerElement: false };
     _timerId = 0;
     _inFlight = false;
     _first = true;
@@ -45,14 +52,14 @@ export class AdaptiveTextColor {
         this._first = true;
         this._sampler.reset();
         this.update();
-        this._timerId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, Math.max(100, intervalMs), () => {
+        this._timerId = 1.default.timeout_add(1.default.PRIORITY_DEFAULT, Math.max(100, intervalMs), () => {
             this.update();
-            return GLib.SOURCE_CONTINUE;
+            return 1.default.SOURCE_CONTINUE;
         });
     }
     stop() {
         if (this._timerId) {
-            GLib.Source.remove(this._timerId);
+            1.default.Source.remove(this._timerId);
             this._timerId = 0;
         }
     }
@@ -64,7 +71,7 @@ export class AdaptiveTextColor {
     // that derive geometry from those actors can hold their last stable bounds.
     isAnimating() {
         for (const actor of this._styled.keys()) {
-            if (adaptiveColorTweener.isAnimating(actor))
+            if (colors_js_1.adaptiveColorTweener.isAnimating(actor))
                 return true;
         }
         return false;
@@ -87,7 +94,7 @@ export class AdaptiveTextColor {
         const glasses = () => this._glasses().filter(g => g.mapped);
         this._sampler.chooseColorsForActors(targets, this._config, null, () => glasses().reduce((sum, g) => sum + (g.paintCount ?? NaN), 0), glasses)
             .then(colors => {
-            const batch = GLib.get_monotonic_time();
+            const batch = 1.default.get_monotonic_time();
             for (const [actor, color] of colors)
                 this._apply(actor, color, skip, batch);
         })
@@ -106,7 +113,7 @@ export class AdaptiveTextColor {
             .then(color => {
             if (!color)
                 return;
-            const batch = GLib.get_monotonic_time();
+            const batch = 1.default.get_monotonic_time();
             for (const root of this._roots())
                 this._apply(root, color, true, batch);
         })
@@ -114,19 +121,19 @@ export class AdaptiveTextColor {
             .finally(() => { this._pending--; });
     }
     _apply(actor, color, skip, batch) {
-        if (!(actor instanceof St.Widget) || !isActorValid(actor))
+        if (!(actor instanceof 2.default.Widget) || !(0, lifecycle_js_1.isActorValid)(actor))
             return;
         let entry = this._styled.get(actor);
         if (!entry) {
             entry = { style: actor.get_style() ?? '', destroyId: 0, color: '' };
             entry.destroyId = actor.connect('destroy', () => {
-                adaptiveColorTweener.cancel(actor);
+                colors_js_1.adaptiveColorTweener.cancel(actor);
                 this._styled.delete(actor);
             });
             this._styled.set(actor, entry);
         }
         // A style that went back to the actor's own was reset by someone else; the color is put on again.
-        const reset = entry.color !== '' && (actor.get_style() ?? '') === entry.style && !adaptiveColorTweener.isAnimating(actor);
+        const reset = entry.color !== '' && (actor.get_style() ?? '') === entry.style && !colors_js_1.adaptiveColorTweener.isAnimating(actor);
         if (entry.color === color && !skip && !reset)
             return;
         entry.color = color;
@@ -136,18 +143,18 @@ export class AdaptiveTextColor {
             const rgba = `rgba(${r}, ${g}, ${b}, ${a.toFixed(3)})`;
             actor.set_style(`${prefix}color: ${rgba}; -st-icon-foreground-color: ${rgba};`);
         };
-        const target = hexToRgb(color);
+        const target = (0, colors_js_1.hexToRgb)(color);
         if (skip) {
-            adaptiveColorTweener.cancel(actor);
+            colors_js_1.adaptiveColorTweener.cancel(actor);
             apply(target.r, target.g, target.b, 1);
             return;
         }
         const start = actor.get_theme_node().get_foreground_color();
         const startRgb = { r: start.red, g: start.green, b: start.blue };
-        adaptiveColorTweener.add(actor, {
+        colors_js_1.adaptiveColorTweener.add(actor, {
             startRgb, startAlpha: start.alpha / 255,
             targetRgb: target, targetAlpha: 1,
-            crossFade: resolveCrossFade(startRgb, target),
+            crossFade: (0, colors_js_1.resolveCrossFade)(startRgb, target),
             durationMs: COLOR_TWEEN_MS,
             apply,
             coalesce: true,
@@ -157,18 +164,19 @@ export class AdaptiveTextColor {
     clear() {
         this.stop();
         for (const [actor, entry] of this._styled) {
-            adaptiveColorTweener.cancel(actor);
+            colors_js_1.adaptiveColorTweener.cancel(actor);
             actor.disconnect(entry.destroyId);
             actor.set_style(entry.style || null);
         }
         this._styled.clear();
     }
 }
+exports.AdaptiveTextColor = AdaptiveTextColor;
 
 function collectText(actor, out) {
     if (!actor.visible)
         return;
-    if (actor instanceof St.Label || actor instanceof St.Icon) {
+    if (actor instanceof 2.default.Label || actor instanceof 2.default.Icon) {
         out.push(actor);
         return;
     }

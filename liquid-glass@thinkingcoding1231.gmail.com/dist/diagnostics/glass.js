@@ -1,11 +1,60 @@
-import GLib from 'gi://GLib';
-import * as Main from 'resource:///org/gnome/shell/ui/main.js';
-import { setFrameSyncFrozen, isFrameSyncFrozen } from '../animation/frameSync.js';
-import { setDiffWritesEnabled, isDiffWritesEnabled } from '../actors/writes.js';
-import { setAdaptiveColorMode, getAdaptiveColorMode } from '../animation/colors.js';
-import { setWindowActorRescueMode, getWindowActorRescueMode } from '../actors/allocation.js';
-import { diagnosticLog } from './logging.js';
-import { startGlassMonitor, stopGlassMonitor, isGlassMonitorRunning, setGlassMonitorLabel } from './monitor.js';
+"use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.dumpGlassState = dumpGlassState;
+exports.noteStrandEntry = noteStrandEntry;
+exports.setGlassRingArmed = setGlassRingArmed;
+exports.isGlassRingArmed = isGlassRingArmed;
+exports.startGlassRingSampler = startGlassRingSampler;
+exports.stopGlassRingSampler = stopGlassRingSampler;
+exports.flushGlassRing = flushGlassRing;
+exports.installGlassDiagnostics = installGlassDiagnostics;
+exports.removeGlassDiagnostics = removeGlassDiagnostics;
+exports.registerGlass = registerGlass;
+exports.unregisterGlass = unregisterGlass;
+const 1 = __importDefault(require("gi://GLib"));
+const Main = __importStar(require("resource:///org/gnome/shell/ui/main.js"));
+const frameSync_js_1 = require("../animation/frameSync.js");
+const writes_js_1 = require("../actors/writes.js");
+const colors_js_1 = require("../animation/colors.js");
+const allocation_js_1 = require("../actors/allocation.js");
+const logging_js_1 = require("./logging.js");
+const monitor_js_1 = require("./monitor.js");
 // Every live glass registers here so its last frame can be inspected from
 // Looking Glass through global._lgGlass (installed by enable(), removed by
 // disable()).
@@ -53,7 +102,7 @@ function _isWindowGlass(glass) {
 }
 
 function _ringSampleOnce() {
-    const t = GLib.get_monotonic_time();
+    const t = 1.default.get_monotonic_time();
     for (const glass of _liveGlasses) {
         if (!_isWindowGlass(glass))
             continue;
@@ -113,13 +162,14 @@ function _dumpWindowState(glass) {
     live.glassViews = glass.peek_stage_views().length;
     return live;
 }
-export function dumpGlassState() {
+
+function dumpGlassState() {
     const rows = [..._liveGlasses].map(glass => JSON.stringify({
         ...glass.describe(),
         ...(_isWindowGlass(glass) ? _dumpWindowState(glass) : {}),
     }));
     const out = rows.length ? rows.join('\n') : '(no live glass)';
-    diagnosticLog(`[Liquid Glass][dump]\n${out}`);
+    (0, logging_js_1.diagnosticLog)(`[Liquid Glass][dump]\n${out}`);
     return out;
 }
 // While the recorder is armed, flush it automatically the first few times a
@@ -127,13 +177,14 @@ export function dumpGlassState() {
 // journal.
 let _autoCaptures = 0;
 const AUTO_CAPTURE_LIMIT = 6;
-export function noteStrandEntry(label, detail) {
+
+function noteStrandEntry(label, detail) {
     if (!_ringArmed)
         return;
     if (_autoCaptures >= AUTO_CAPTURE_LIMIT)
         return;
     _autoCaptures++;
-    diagnosticLog(`[Liquid Glass][ring] AUTO-CAPTURE ${_autoCaptures}/${AUTO_CAPTURE_LIMIT} ` +
+    (0, logging_js_1.diagnosticLog)(`[Liquid Glass][ring] AUTO-CAPTURE ${_autoCaptures}/${AUTO_CAPTURE_LIMIT} ` +
         `on strand entry for "${label}" — ${detail}`);
     flushGlassRing();
 }
@@ -147,17 +198,18 @@ let _ringSamplerInterval = 50;
 function syncGlassRingSampler() {
     if (!_ringArmed || !_ringSamplerEnabled) {
         if (_ringSamplerId)
-            GLib.Source.remove(_ringSamplerId);
+            1.default.Source.remove(_ringSamplerId);
         _ringSamplerId = 0;
     }
     else if (!_ringSamplerId) {
-        _ringSamplerId = GLib.timeout_add(GLib.PRIORITY_DEFAULT_IDLE, _ringSamplerInterval, () => {
+        _ringSamplerId = 1.default.timeout_add(1.default.PRIORITY_DEFAULT_IDLE, _ringSamplerInterval, () => {
             _ringSampleOnce();
-            return GLib.SOURCE_CONTINUE;
+            return 1.default.SOURCE_CONTINUE;
         });
     }
 }
-export function setGlassRingArmed(armed) {
+
+function setGlassRingArmed(armed) {
     _ringArmed = !!armed;
     syncGlassRingSampler();
     if (!_ringArmed) {
@@ -166,26 +218,30 @@ export function setGlassRingArmed(armed) {
         _autoCaptures = 0;
     }
 }
-export function isGlassRingArmed() {
+
+function isGlassRingArmed() {
     return _ringArmed;
 }
 /**
  * Lets the sampler run whenever the recorder is armed. Pair with
  * stopGlassRingSampler() in disable().
  */
-export function startGlassRingSampler(intervalMs = 50) {
+
+function startGlassRingSampler(intervalMs = 50) {
     _ringSamplerInterval = intervalMs;
     _ringSamplerEnabled = true;
     syncGlassRingSampler();
 }
-export function stopGlassRingSampler() {
+
+function stopGlassRingSampler() {
     _ringSamplerEnabled = false;
     setGlassRingArmed(false);
 }
 /** Writes the ring buffer out and clears it. */
-export function flushGlassRing() {
+
+function flushGlassRing() {
     if (!_ring.length) {
-        diagnosticLog('[Liquid Glass][ring] empty');
+        (0, logging_js_1.diagnosticLog)('[Liquid Glass][ring] empty');
         return;
     }
     const t0 = parseInt(_ring[0].split(' ')[0], 10);
@@ -199,19 +255,19 @@ export function flushGlassRing() {
     // of small ones can block the compositor thread.
     const CHUNK = 150;
     const total = Math.ceil(lines.length / CHUNK);
-    diagnosticLog(`[Liquid Glass][ring] BEGIN ${lines.length} samples spanning ` +
+    (0, logging_js_1.diagnosticLog)(`[Liquid Glass][ring] BEGIN ${lines.length} samples spanning ` +
         `${Math.round((tN - t0) / 1000)}ms in ${total} chunk(s)`);
     for (let i = 0; i < total; i++) {
-        diagnosticLog(`[Liquid Glass][ring] ${i + 1}/${total}\n` +
+        (0, logging_js_1.diagnosticLog)(`[Liquid Glass][ring] ${i + 1}/${total}\n` +
             lines.slice(i * CHUNK, (i + 1) * CHUNK).join('\n'));
     }
-    diagnosticLog('[Liquid Glass][ring] END');
+    (0, logging_js_1.diagnosticLog)('[Liquid Glass][ring] END');
     _ring.length = 0;
     _ringLast = new Map();
 }
 
 function report(msg) {
-    diagnosticLog(`[Liquid Glass] ${msg}`);
+    (0, logging_js_1.diagnosticLog)(`[Liquid Glass] ${msg}`);
     return msg;
 }
 
@@ -237,26 +293,26 @@ function createDebugApi() {
         // the cost of the polling itself can be measured. The glass stops
         // following anything that moves.
         freezeSync: (frozen) => {
-            setFrameSyncFrozen(frozen);
+            (0, frameSync_js_1.setFrameSyncFrozen)(frozen);
             return report(`per-frame sync ${frozen ? 'FROZEN' : 'RUNNING'}`);
         },
-        syncFrozen: () => isFrameSyncFrozen(),
+        syncFrozen: () => (0, frameSync_js_1.isFrameSyncFrozen)(),
         // 'cross-fade' (default) dissolves through alpha so a white/black flip
         // never sits at mid-grey; 'rgb-lerp' interpolates the channels.
         textColorMode: (mode) => {
             const m = mode === 'rgb-lerp' ? 'rgb-lerp' : 'cross-fade';
-            setAdaptiveColorMode(m);
+            (0, colors_js_1.setAdaptiveColorMode)(m);
             return report(`adaptive text color mode = ${m}`);
         },
-        textColorModeName: () => getAdaptiveColorMode(),
+        textColorModeName: () => (0, colors_js_1.getAdaptiveColorMode)(),
         // 'two-stage' (default) asks the window group to relayout first and only
         // then remaps the window actor; 'remap' goes straight to hide()/show();
         // 'off' never touches the window actor.
         windowRescue: (mode) => {
-            setWindowActorRescueMode(mode);
-            return report(`window-actor rescue = ${getWindowActorRescueMode()}`);
+            (0, allocation_js_1.setWindowActorRescueMode)(mode);
+            return report(`window-actor rescue = ${(0, allocation_js_1.getWindowActorRescueMode)()}`);
         },
-        windowRescueMode: () => getWindowActorRescueMode(),
+        windowRescueMode: () => (0, allocation_js_1.getWindowActorRescueMode)(),
         ring: (on) => {
             setGlassRingArmed(on);
             return report(`ring recorder ${on ? 'ARMED (50ms)' : 'disarmed'}`);
@@ -266,10 +322,10 @@ function createDebugApi() {
         // Compare-then-write in the per-frame sync loops. Changes how often the
         // stage is damaged, not what is drawn.
         diffWrites: (enabled) => {
-            setDiffWritesEnabled(enabled);
+            (0, writes_js_1.setDiffWritesEnabled)(enabled);
             return report(`diff writes ${onOff(enabled)}`);
         },
-        diffWritesEnabled: () => isDiffWritesEnabled(),
+        diffWritesEnabled: () => (0, writes_js_1.isDiffWritesEnabled)(),
         // The rect each glass is drawing with right now, straight from its
         // uniforms, for per-frame tracking probes.
         geom: (owner) => {
@@ -290,15 +346,15 @@ function createDebugApi() {
         // work and the GPU's busy percentage (see diagnostics/monitor.ts).
         // 0 runs until monitorStop().
         monitor: (seconds = 30) => {
-            startGlassMonitor(() => _liveGlasses, seconds);
+            (0, monitor_js_1.startGlassMonitor)(() => _liveGlasses, seconds);
             return report(`monitor running${seconds > 0 ? ` for ${seconds}s` : ''}; see journalctl -o cat | grep '[monitor]'`);
         },
         monitorStop: () => {
-            stopGlassMonitor();
+            (0, monitor_js_1.stopGlassMonitor)();
             return report('monitor stopped');
         },
-        monitorRunning: () => isGlassMonitorRunning(),
-        monitorLabel: (label) => setGlassMonitorLabel(label),
+        monitorRunning: () => (0, monitor_js_1.isGlassMonitorRunning)(),
+        monitorLabel: (label) => (0, monitor_js_1.setGlassMonitorLabel)(label),
         blurRect: (enabled) => report(`blur sub-rect ${onOff(enabled)} on ${onEveryGlass(fx => fx.setBlurRectEnabled(enabled))} instance(s)`),
         compositeRect: (enabled) => report(`composite sub-rect ${onOff(enabled)} on ${onEveryGlass(fx => fx.setCompositeRectEnabled(enabled))} instance(s)`),
         // false = the plain four-tap pattern along the edge.
@@ -307,19 +363,23 @@ function createDebugApi() {
     };
 }
 /** Called from enable(): publishes global._lgGlass and the ring sampler. */
-export function installGlassDiagnostics() {
+
+function installGlassDiagnostics() {
     global._lgGlass = createDebugApi();
     startGlassRingSampler(50);
 }
 /** Called from disable(). */
-export function removeGlassDiagnostics() {
-    stopGlassMonitor();
+
+function removeGlassDiagnostics() {
+    (0, monitor_js_1.stopGlassMonitor)();
     stopGlassRingSampler();
     delete global._lgGlass;
 }
-export function registerGlass(glass) {
+
+function registerGlass(glass) {
     _liveGlasses.add(glass);
 }
-export function unregisterGlass(glass) {
+
+function unregisterGlass(glass) {
     _liveGlasses.delete(glass);
 }

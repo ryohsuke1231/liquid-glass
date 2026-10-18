@@ -1,12 +1,19 @@
-import Clutter from 'gi://Clutter';
-import St from 'gi://St';
-import { BackdropGlass } from '../rendering/backdropGlass.js';
-import { ensureGlassAllocated } from '../actors/allocation.js';
-import { isActorValid } from '../actors/lifecycle.js';
-import { hexToColorArray } from '../animation/colors.js';
-import { AdaptiveTextColor } from '../adaptiveText.js';
-import { sanitizeColorPreference } from '../contrastSampler.js';
-import { verticalBoxParams } from '../shellVersion.js';
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.GlassCard = exports.PREFERRED_MIN_CONTRAST = void 0;
+exports.connectClicks = connectClicks;
+const 2 = __importDefault(require("gi://Clutter"));
+const 3 = __importDefault(require("gi://St"));
+const backdropGlass_js_1 = require("../rendering/backdropGlass.js");
+const allocation_js_1 = require("../actors/allocation.js");
+const lifecycle_js_1 = require("../actors/lifecycle.js");
+const colors_js_1 = require("../animation/colors.js");
+const adaptiveText_js_1 = require("../adaptiveText.js");
+const contrastSampler_js_1 = require("../contrastSampler.js");
+const shellVersion_js_1 = require("../shellVersion.js");
 // Room around the glass rect for the shader's edge effects.
 const SHADER_PADDING = 20;
 // Room around a card for its shadow.
@@ -15,44 +22,46 @@ const SHADOW_MARGIN = 40;
 const CLICK_SLOP = 6;
 // The text on the desktop stays in the preferred color down to this contrast
 // ratio (WCAG's for large text), so a busy wallpaper does not keep flipping it.
-export const PREFERRED_MIN_CONTRAST = 3;
+exports.PREFERRED_MIN_CONTRAST = 3;
 /**
  * A left click on `actor` calls `onClick` and a right click opens its menu.
  * Items move only in the menu's edit mode, so a stray drag does nothing.
  */
-export function connectClicks(actor, onClick, onMenu) {
+
+function connectClicks(actor, onClick, onMenu) {
     let start = null;
     actor.connect('button-press-event', (_a, event) => {
         const button = event.get_button();
-        if (button === Clutter.BUTTON_SECONDARY) {
+        if (button === 2.default.BUTTON_SECONDARY) {
             onMenu(...event.get_coords());
-            return Clutter.EVENT_STOP;
+            return 2.default.EVENT_STOP;
         }
-        if (button !== Clutter.BUTTON_PRIMARY)
-            return Clutter.EVENT_PROPAGATE;
+        if (button !== 2.default.BUTTON_PRIMARY)
+            return 2.default.EVENT_PROPAGATE;
         // A button inside gets the press: stopping it here would also cancel the
         // button's click gesture.
         if (global.stage.get_event_actor(event) !== actor)
-            return Clutter.EVENT_PROPAGATE;
+            return 2.default.EVENT_PROPAGATE;
         start = event.get_coords();
-        return Clutter.EVENT_STOP;
+        return 2.default.EVENT_STOP;
     });
     actor.connect('button-release-event', (_a, event) => {
-        if (!start || event.get_button() !== Clutter.BUTTON_PRIMARY)
-            return Clutter.EVENT_PROPAGATE;
+        if (!start || event.get_button() !== 2.default.BUTTON_PRIMARY)
+            return 2.default.EVENT_PROPAGATE;
         const [x, y] = event.get_coords();
         const moved = Math.hypot(x - start[0], y - start[1]);
         start = null;
         if (moved < CLICK_SLOP)
             onClick();
-        return Clutter.EVENT_STOP;
+        return 2.default.EVENT_STOP;
     });
 }
 /**
  * A desktop widget: content on a rounded card of glass. Subclasses fill
  * `box` and may hide the card (`shown`) when they have nothing to show.
  */
-export class GlassCard {
+
+class GlassCard {
     id;
     actor;
     box;
@@ -66,18 +75,18 @@ export class GlassCard {
     constructor(id, env, width) {
         this.id = id;
         this.env = env;
-        this.actor = new St.Widget({ name: `liquid-glass-desktop-${id}`, reactive: true, track_hover: true });
-        this.glass = new BackdropGlass({
+        this.actor = new 3.default.Widget({ name: `liquid-glass-desktop-${id}`, reactive: true, track_hover: true });
+        this.glass = new backdropGlass_js_1.BackdropGlass({
             extensionPath: env.path, settings: env.settings, logger: env.logger, owner: `desktop-${id}`,
         });
         this.glass.setPadding(SHADER_PADDING);
         this.glass.setIsDock(false);
         this.glass.setShadowMaxRadius(SHADOW_MARGIN - 8);
         this.actor.add_child(this.glass);
-        this.box = new St.BoxLayout({ style_class: 'liquid-glass-desktop-card', width, ...verticalBoxParams() });
+        this.box = new 3.default.BoxLayout({ style_class: 'liquid-glass-desktop-card', width, ...(0, shellVersion_js_1.verticalBoxParams)() });
         this.actor.add_child(this.box);
         connectClicks(this.actor, () => this.activate(), (x, y) => env.menu(this, x, y));
-        this._text = new AdaptiveTextColor(() => [this.box], () => [this.glass], env.logger, `desktop ${id}`);
+        this._text = new adaptiveText_js_1.AdaptiveTextColor(() => [this.box], () => [this.glass], env.logger, `desktop ${id}`);
         const watch = (key, fn) => this._settingsIds.push(env.settings.connect(`changed::${key}`, fn));
         for (const key of ['tint-color', 'tint-strength', 'blur-radius', 'corner-radius', 'brightness', 'contrast', 'saturation'])
             watch(`desktop-widget-${key}`, () => this._applyMaterial());
@@ -100,7 +109,7 @@ export class GlassCard {
     _applyMaterial() {
         const s = this.env.settings;
         const g = this.glass;
-        g.setTintColor(...hexToColorArray(s.get_string('desktop-widget-tint-color')));
+        g.setTintColor(...(0, colors_js_1.hexToColorArray)(s.get_string('desktop-widget-tint-color')));
         g.setTintStrength(s.get_double('desktop-widget-tint-strength'));
         g.setBlurRadius(s.get_int('desktop-widget-blur-radius'));
         g.setCornerRadius(s.get_double('desktop-widget-corner-radius'));
@@ -115,7 +124,7 @@ export class GlassCard {
             this._text.clear();
             return;
         }
-        this._text.start(s.get_int('desktop-widget-sample-interval-ms'), sanitizeColorPreference(s.get_string('desktop-widget-adaptive-text-preference')), PREFERRED_MIN_CONTRAST);
+        this._text.start(s.get_int('desktop-widget-sample-interval-ms'), (0, contrastSampler_js_1.sanitizeColorPreference)(s.get_string('desktop-widget-adaptive-text-preference')), exports.PREFERRED_MIN_CONTRAST);
     }
     // The content changed; measure the text color again.
     contentChanged() {
@@ -149,7 +158,7 @@ export class GlassCard {
             this._text.invalidate();
         }
         if (shown && this.actor.mapped) {
-            ensureGlassAllocated(this.glass);
+            (0, allocation_js_1.ensureGlassAllocated)(this.glass);
             this.glass.syncSources();
         }
         return changed;
@@ -160,7 +169,8 @@ export class GlassCard {
         this._settingsIds = [];
         this._text.clear();
         this.glass.cleanup();
-        if (isActorValid(this.actor))
+        if ((0, lifecycle_js_1.isActorValid)(this.actor))
             this.actor.destroy();
     }
 }
+exports.GlassCard = GlassCard;

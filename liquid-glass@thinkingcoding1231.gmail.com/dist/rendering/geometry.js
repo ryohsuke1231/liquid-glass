@@ -1,4 +1,8 @@
-export class GlassGeometry {
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.GlassGeometry = void 0;
+
+class GlassGeometry {
     _uniforms;
     constructor(_uniforms) {
         this._uniforms = _uniforms;
@@ -162,3 +166,4 @@ export class GlassGeometry {
         return [bx, by, bw, bh];
     }
 }
+exports.GlassGeometry = GlassGeometry;

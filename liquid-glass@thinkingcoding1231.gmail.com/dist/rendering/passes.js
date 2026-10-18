@@ -1,6 +1,15 @@
-import Clutter from 'gi://Clutter';
-import { setUniformVector } from '../shellVersion.js';
-export class RenderPasses {
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.RenderPasses = void 0;
+exports.setPipelineVec2 = setPipelineVec2;
+exports.setPipelineFloat = setPipelineFloat;
+const 4 = __importDefault(require("gi://Clutter"));
+const shellVersion_js_1 = require("../shellVersion.js");
+
+class RenderPasses {
     // Per-pass pipeline copies; see pipeline().
     _passPipelines = new Map();
     clear() {
@@ -31,11 +40,11 @@ export class RenderPasses {
      */
     add(parentNode, targetFbo, pipeline, destW, destH, uv) {
         targetFbo.orthographic(0, 0, destW, destH, -1, 1);
-        const layerNode = Clutter.LayerNode.new_to_framebuffer(targetFbo, pipeline);
+        const layerNode = 4.default.LayerNode.new_to_framebuffer(targetFbo, pipeline);
         parentNode.add_child(layerNode);
-        const drawNode = Clutter.PipelineNode.new(pipeline);
+        const drawNode = 4.default.PipelineNode.new(pipeline);
         layerNode.add_child(drawNode);
-        drawNode.add_texture_rectangle(new Clutter.ActorBox({ x1: 0, y1: 0, x2: destW, y2: destH }), uv[0], uv[1], uv[2], uv[3]);
+        drawNode.add_texture_rectangle(new 4.default.ActorBox({ x1: 0, y1: 0, x2: destW, y2: destH }), uv[0], uv[1], uv[2], uv[3]);
     }
     /**
      * Queues the final composite as a paint node, after the copy and the blur
@@ -44,15 +53,18 @@ export class RenderPasses {
      * shell.
      */
     composite(parentNode, pipeline, dest, uv) {
-        const drawNode = Clutter.PipelineNode.new(pipeline);
+        const drawNode = 4.default.PipelineNode.new(pipeline);
         parentNode.add_child(drawNode);
-        drawNode.add_texture_rectangle(new Clutter.ActorBox({ x1: dest[0], y1: dest[1], x2: dest[2], y2: dest[3] }), uv[0], uv[1], uv[2], uv[3]);
+        drawNode.add_texture_rectangle(new 4.default.ActorBox({ x1: dest[0], y1: dest[1], x2: dest[2], y2: dest[3] }), uv[0], uv[1], uv[2], uv[3]);
     }
 }
+exports.RenderPasses = RenderPasses;
 // Cogl caches uniform locations, so these are cheap to call every frame.
-export function setPipelineVec2(pipeline, name, x, y) {
-    setUniformVector(pipeline, name, [x, y]);
+
+function setPipelineVec2(pipeline, name, x, y) {
+    (0, shellVersion_js_1.setUniformVector)(pipeline, name, [x, y]);
 }
-export function setPipelineFloat(pipeline, name, value) {
+
+function setPipelineFloat(pipeline, name, value) {
     pipeline.set_uniform_1f(pipeline.get_uniform_location(name), value);
 }

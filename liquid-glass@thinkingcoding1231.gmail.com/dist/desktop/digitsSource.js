@@ -1,30 +1,37 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.DigitsSource = void 0;
 // Where the glass clock gets its digits from: a worker process
 // (digitsWorker.js) that makes them while the shell goes on drawing, started
 // on first use. Where gjs cannot be found or the worker keeps failing, they
 // are made in the shell instead, a step at a time.
-import Gio from 'gi://Gio';
-import GLib from 'gi://GLib';
-import { WorkerProcess } from '../workers/workerProcess.js';
-import { DigitsMaker } from './digits.js';
-export class DigitsSource {
+const 2 = __importDefault(require("gi://Gio"));
+const 3 = __importDefault(require("gi://GLib"));
+const workerProcess_js_1 = require("../workers/workerProcess.js");
+const digits_js_1 = require("./digits.js");
+
+class DigitsSource {
     _logger;
     _worker;
     _local = null;
-    _cancellable = new Gio.Cancellable();
+    _cancellable = new 2.default.Cancellable();
     constructor(extensionPath, _logger) {
         this._logger = _logger;
-        this._worker = new WorkerProcess(`${extensionPath}/dist/desktop/digitsWorker.js`, 'clock\'s worker', _logger);
+        this._worker = new workerProcess_js_1.WorkerProcess(`${extensionPath}/dist/desktop/digitsWorker.js`, 'clock\'s worker', _logger);
     }
     /** Rejects when the digits cannot be made. */
     async make(request) {
         if (!this._local && !this._worker.available) {
             this._logger.log('[Liquid Glass] The clock\'s digits are made in the shell');
-            this._local = new DigitsMaker();
+            this._local = new digits_js_1.DigitsMaker();
         }
         if (this._local)
             return this._local.make(request);
         const message = await this._worker.request(request);
-        const file = Gio.File.new_for_path(message.path);
+        const file = 2.default.File.new_for_path(message.path);
         try {
             const bytes = await new Promise((resolve, reject) => {
                 file.load_contents_async(this._cancellable, (_f, res) => {
@@ -39,7 +46,7 @@ export class DigitsSource {
             return { bytes, width: message.width, height: message.height, band: message.band, digitHeight: message.digitHeight };
         }
         finally {
-            file.delete_async(GLib.PRIORITY_DEFAULT, null, (_f, res) => {
+            file.delete_async(3.default.PRIORITY_DEFAULT, null, (_f, res) => {
                 // Throws a GError when the file is already gone; nothing is left behind then.
                 try {
                     file.delete_finish(res);
@@ -56,3 +63,4 @@ export class DigitsSource {
         this._local = null;
     }
 }
+exports.DigitsSource = DigitsSource;

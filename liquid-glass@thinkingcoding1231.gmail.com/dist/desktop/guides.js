@@ -1,7 +1,10 @@
+"use strict";
 // Guides for an item being moved on the desktop: where it lines up with the
 // other items (the same edge, or the same center line), with the middle of
 // the work area, and where it sits as far from one item as that item is from
 // the next. Near such a place the item is pulled onto it.
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.snapMove = snapMove;
 // Lines up within this, px.
 const EXACT = 0.5;
 
@@ -58,7 +61,8 @@ function stops(m, others, area, horizontal) {
  * Where an item at `rect` goes near the guides, within `reach` px each way,
  * and the guides it then lines up with. `area` is the work area.
  */
-export function snapMove(rect, others, area, reach) {
+
+function snapMove(rect, others, area, reach) {
     const axis = (horizontal, at) => {
         const m = span(at, horizontal);
         const list = stops(m, others.map(o => span(o, horizontal)), area ? span(area, horizontal) : null, horizontal);

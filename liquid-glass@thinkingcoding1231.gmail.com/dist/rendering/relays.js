@@ -1,19 +1,27 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.RelaySet = exports.SAMPLE_MARGIN = void 0;
+exports.relayHolder = relayHolder;
+exports.localToStage = localToStage;
 // Relays keep a reused backdrop copy correct. Every actor painted before a
 // glass gets an invisible clone (a relay) whose paint volume is the glass's
 // sample area, so a redraw anywhere in that actor, which Clutter forwards to
 // its clones, puts the whole sample area into the same frame's redraw clip,
 // and the glass copies its backdrop again.
-import GObject from 'gi://GObject';
-import Clutter from 'gi://Clutter';
-import Graphene from 'gi://Graphene';
-import Meta from 'gi://Meta';
-import Shell from 'gi://Shell';
-import { UnpickableActor } from '../actors/unpickable.js';
-import { setTranslationIfChanged, setScaleIfChanged } from '../actors/writes.js';
-import { undoCloneScale } from '../shellVersion.js';
+const 4 = __importDefault(require("gi://GObject"));
+const 5 = __importDefault(require("gi://Clutter"));
+const 6 = __importDefault(require("gi://Graphene"));
+const 7 = __importDefault(require("gi://Meta"));
+const 8 = __importDefault(require("gi://Shell"));
+const unpickable_js_1 = require("../actors/unpickable.js");
+const writes_js_1 = require("../actors/writes.js");
+const shellVersion_js_1 = require("../shellVersion.js");
 // Room around the sample rect, so the rect can shift a little at paint time
 // (the live geometry hook) and still be inside the redrawn area.
-export const SAMPLE_MARGIN = 32;
+exports.SAMPLE_MARGIN = 32;
 // The fixed size of the sample area actor and of every relay. The area is
 // fitted to the sample rect by translation and scale only: moving or resizing
 // an actor through its position or size goes through a relayout, and
@@ -32,10 +40,10 @@ const RELAY_KEEP_MARGIN = 16;
  * redraw anywhere in the source then damages exactly the sample area,
  * whatever happens to the source's size in that frame.
  */
-const BackdropRelay = GObject.registerClass(class BackdropRelay extends Clutter.Clone {
+const BackdropRelay = 4.default.registerClass(class BackdropRelay extends 5.default.Clone {
     _init(params) {
         super._init(params);
-        Shell.util_set_hidden_from_pick(this, true);
+        8.default.util_set_hidden_from_pick(this, true);
         this._allocated = false;
     }
     vfunc_allocate(box) {
@@ -55,7 +63,7 @@ const BackdropRelay = GObject.registerClass(class BackdropRelay extends Clutter.
     vfunc_get_paint_volume(volume) {
         if (!volume.set_from_allocation(this))
             return false;
-        undoCloneScale(this, volume);
+        (0, shellVersion_js_1.undoCloneScale)(this, volume);
         return true;
     }
 });
@@ -67,12 +75,14 @@ const holders = new WeakSet();
  * children to. It goes on top of the UI group, which is at the stage's
  * origin, so its coordinates are the stage's.
  */
-export function relayHolder() {
-    const holder = new UnpickableActor({ name: 'liquid-glass-relay-holder' });
+
+function relayHolder() {
+    const holder = new unpickable_js_1.UnpickableActor({ name: 'liquid-glass-relay-holder' });
     holders.add(holder);
     return holder;
 }
-export class RelaySet {
+
+class RelaySet {
     _owner;
     _exclude;
     _holder;
@@ -88,7 +98,7 @@ export class RelaySet {
         this._owner = _owner;
         this._exclude = _exclude;
         this._holder = _holder;
-        this.area = new UnpickableActor({ name: 'liquid-glass-sample-area', width: SAMPLE_BASE, height: SAMPLE_BASE });
+        this.area = new unpickable_js_1.UnpickableActor({ name: 'liquid-glass-sample-area', width: SAMPLE_BASE, height: SAMPLE_BASE });
         _holder.add_child(this.area);
     }
     /**
@@ -99,8 +109,8 @@ export class RelaySet {
      */
     sync(rect) {
         const [x, y, w, h] = rect;
-        setTranslationIfChanged(this.area, x, y);
-        setScaleIfChanged(this.area, w / SAMPLE_BASE, h / SAMPLE_BASE);
+        (0, writes_js_1.setTranslationIfChanged)(this.area, x, y);
+        (0, writes_js_1.setScaleIfChanged)(this.area, w / SAMPLE_BASE, h / SAMPLE_BASE);
         // A relay out of reach is hidden rather than destroyed, and shown again
         // when its source comes back: Clutter redraws the whole stage for an
         // actor's first frame on stage, since it has no previous paint volume to
@@ -152,7 +162,7 @@ export class RelaySet {
             const a = relay.source;
             if (!a)
                 return '(destroyed)';
-            if (a instanceof Meta.WindowActor)
+            if (a instanceof 7.default.WindowActor)
                 return `window:${a.get_meta_window()?.get_title() ?? '?'}`;
             return a.get_name() || a.constructor.$gtype.name;
         });
@@ -196,16 +206,18 @@ export class RelaySet {
         }
     }
 }
+exports.RelaySet = RelaySet;
 
 function sourceReach(actor, near, keep) {
-    if (actor instanceof Meta.WindowActor)
+    if (actor instanceof 7.default.WindowActor)
         return { near: windowReaches(actor, near), keep: windowReaches(actor, keep) };
     return { near: actorReaches(actor, near), keep: actorReaches(actor, keep) };
 }
 // The stage rect [x0, y0, x1, y1] of a rect in `actor`'s coordinates.
-export function localToStage(actor, x0, y0, x1, y1) {
-    const a = actor.apply_transform_to_point(new Graphene.Point3D({ x: x0, y: y0, z: 0 }));
-    const b = actor.apply_transform_to_point(new Graphene.Point3D({ x: x1, y: y1, z: 0 }));
+
+function localToStage(actor, x0, y0, x1, y1) {
+    const a = actor.apply_transform_to_point(new 6.default.Point3D({ x: x0, y: y0, z: 0 }));
+    const b = actor.apply_transform_to_point(new 6.default.Point3D({ x: x1, y: y1, z: 0 }));
     return [Math.min(a.x, b.x), Math.min(a.y, b.y), Math.max(a.x, b.x), Math.max(a.y, b.y)];
 }
 // Moving an actor queues its redraw at once but changes its allocation only

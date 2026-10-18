@@ -1,3 +1,4 @@
+"use strict";
 // A menu's items seen through the glass they sit in while it changes shape:
 // cut to its rounded outline and, when they are deep in it, refracted by its
 // rim the way the glass refracts what is behind it. At no depth it only cuts
@@ -6,11 +7,17 @@
 // Note: this implementation is inspired by and adapted from:
 // https://github.com/AndrewPrifer/liquid-dom
 // Big thanks to the original author (@AndrewPrifer) for the elegant solution.
-import Clutter from 'gi://Clutter';
-import Cogl from 'gi://Cogl';
-import GObject from 'gi://GObject';
-import { coglContext, setUniformVector, uniformDeclarations } from '../shellVersion.js';
-import { configureSamplerLayer } from './pipelines.js';
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.ContentLens = void 0;
+exports.rectInOffscreen = rectInOffscreen;
+const 1 = __importDefault(require("gi://Clutter"));
+const 4 = __importDefault(require("gi://Cogl"));
+const 5 = __importDefault(require("gi://GObject"));
+const shellVersion_js_1 = require("../shellVersion.js");
+const pipelines_js_1 = require("./pipelines.js");
 const DECL = `
 // The glass's box in the offscreen (texture coordinates), and px on screen per
 // texture width and height.
@@ -55,7 +62,8 @@ const BAND = 70;
  * texture covers. The texture covers the actor's paint volume as
  * _clutter_actor_box_enlarge_for_effects() pads it.
  */
-export function rectInOffscreen(actor, rect) {
+
+function rectInOffscreen(actor, rect) {
     const volume = actor.get_paint_volume();
     if (!volume)
         return null;
@@ -67,7 +75,7 @@ export function rectInOffscreen(actor, rect) {
     return { box: [(cx - x0) / w, (cy - y0) / h, (cx + cw - x0) / w, (cy + ch - y0) / h], width: w, height: h };
 }
 /** Put on the actor that holds the items, clipped to the glass's box. */
-export const ContentLens = GObject.registerClass(class ContentLens extends Clutter.OffscreenEffect {
+exports.ContentLens = 5.default.registerClass(class ContentLens extends 1.default.OffscreenEffect {
     _init() {
         super._init();
         this._pipeline = null;
@@ -81,9 +89,9 @@ export const ContentLens = GObject.registerClass(class ContentLens extends Clutt
         if (!texture)
             return;
         if (!this._pipeline) {
-            this._pipeline = Cogl.Pipeline.new(coglContext());
-            configureSamplerLayer(this._pipeline, 0);
-            const snippet = Cogl.Snippet.new(Cogl.SnippetHook.FRAGMENT, uniformDeclarations(DECL), null);
+            this._pipeline = 4.default.Pipeline.new((0, shellVersion_js_1.coglContext)());
+            (0, pipelines_js_1.configureSamplerLayer)(this._pipeline, 0);
+            const snippet = 4.default.Snippet.new(4.default.SnippetHook.FRAGMENT, (0, shellVersion_js_1.uniformDeclarations)(DECL), null);
             snippet.set_replace(BODY);
             this._pipeline.add_snippet(snippet);
             this._apply();
@@ -92,9 +100,9 @@ export const ContentLens = GObject.registerClass(class ContentLens extends Clutt
         const pipeline = this._pipeline;
         pipeline.set_layer_texture(0, texture);
         pipeline.set_uniform_1f(pipeline.get_uniform_location('lens_opacity'), this.get_actor().get_paint_opacity() / 255);
-        const drawNode = Clutter.PipelineNode.new(pipeline);
+        const drawNode = 1.default.PipelineNode.new(pipeline);
         node.add_child(drawNode);
-        drawNode.add_rectangle(new Clutter.ActorBox({ x1: 0, y1: 0, x2: texture.get_width(), y2: texture.get_height() }));
+        drawNode.add_rectangle(new 1.default.ActorBox({ x1: 0, y1: 0, x2: texture.get_width(), y2: texture.get_height() }));
     }
     /**
      * The glass is `clip` [x, y, w, h] in the actor's own px, which are
@@ -127,8 +135,8 @@ export const ContentLens = GObject.registerClass(class ContentLens extends Clutt
         if (!p)
             return;
         const u = this._uniforms;
-        setUniformVector(p, 'lens_box', u.box);
-        setUniformVector(p, 'lens_px', u.px);
+        (0, shellVersion_js_1.setUniformVector)(p, 'lens_box', u.box);
+        (0, shellVersion_js_1.setUniformVector)(p, 'lens_px', u.px);
         p.set_uniform_1f(p.get_uniform_location('lens_radius'), u.radius);
         p.set_uniform_1f(p.get_uniform_location('lens_band'), u.band);
         p.set_uniform_1f(p.get_uniform_location('lens_depth'), u.depth);

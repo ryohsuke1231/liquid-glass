@@ -1,26 +1,32 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.BackdropGlass = exports.GlassActor = void 0;
 // Glass that reads what is behind it from the stage framebuffer while the
 // stage is painted (see stageCopy.ts). Relays (relays.ts) put the whole sample
 // area into the redraw clip whenever anything behind it changes, so a reused
 // copy is never stale.
-import GObject from 'gi://GObject';
-import Clutter from 'gi://Clutter';
-import GLib from 'gi://GLib';
-import Shell from 'gi://Shell';
-import Gio from 'gi://Gio';
-import { GlassRenderer } from './glassRenderer.js';
-import { StageCopier } from './stageCopy.js';
-import { coglContext, paintNodeWithContext } from '../shellVersion.js';
-import { RelaySet, SAMPLE_MARGIN, localToStage } from './relays.js';
-import { registerGlass, unregisterGlass } from '../diagnostics/glass.js';
+const 4 = __importDefault(require("gi://GObject"));
+const 5 = __importDefault(require("gi://Clutter"));
+const 6 = __importDefault(require("gi://GLib"));
+const 7 = __importDefault(require("gi://Shell"));
+const 8 = __importDefault(require("gi://Gio"));
+const glassRenderer_js_1 = require("./glassRenderer.js");
+const stageCopy_js_1 = require("./stageCopy.js");
+const shellVersion_js_1 = require("../shellVersion.js");
+const relays_js_1 = require("./relays.js");
+const glass_js_1 = require("../diagnostics/glass.js");
 /**
  * What every stage-reading glass shares: the renderer and its setters, the
  * shaders, the paint-time geometry hook, the sample rect and the composite.
  * Subclasses supply the backdrop texture.
  */
-export const GlassActor = GObject.registerClass(class GlassActor extends Clutter.Actor {
+exports.GlassActor = 4.default.registerClass(class GlassActor extends 5.default.Actor {
     _init(params = {}) {
         super._init({ name: 'liquid-glass-bg-actor', reactive: false });
-        Shell.util_set_hidden_from_pick(this, true);
+        7.default.util_set_hidden_from_pick(this, true);
         this._owner = params.owner ?? '?';
         this._diagOwnerLabel = '';
         this._extensionPath = params.extensionPath;
@@ -31,38 +37,38 @@ export const GlassActor = GObject.registerClass(class GlassActor extends Clutter
         this._inLiveGeometry = false;
         this._batchDepth = 0;
         this._batchDirty = false;
-        this._shaderLoad = new Gio.Cancellable();
+        this._shaderLoad = new 8.default.Cancellable();
         this._paints = 0;
         this._blurRuns = 0;
         this._blurSkips = 0;
         this._diagLast = null;
         this._diagLastSnapshotAt = 0;
-        this._renderer = new GlassRenderer({
+        this._renderer = new glassRenderer_js_1.GlassRenderer({
             settings: params.settings,
             logger: params.logger,
             repaint: () => this._queueRepaint(),
             setDiagnostics: enabled => { this._diagEnabled = enabled; },
             shapeTexture: params.shapeTexture,
         });
-        registerGlass(this);
+        (0, glass_js_1.registerGlass)(this);
         this._loadShaders();
     }
     vfunc_pick(_pickContext) {
     }
     async _loadShaders() {
-        const start = GLib.get_monotonic_time();
+        const start = 6.default.get_monotonic_time();
         try {
             await this._renderer.pipelines.load(this._extensionPath, this._shaderLoad);
         }
         catch (e) {
             // Cancelled by cleanup(): the glass is gone.
-            if (e instanceof GLib.Error && e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED))
+            if (e instanceof 6.default.Error && e.matches(8.default.IOErrorEnum, 8.default.IOErrorEnum.CANCELLED))
                 return;
             this._logger?.error(`[Liquid Glass] Failed to load shaders: ${e}`);
             return;
         }
         this._shadersLoaded = true;
-        const elapsedMs = (GLib.get_monotonic_time() - start) / 1000;
+        const elapsedMs = (6.default.get_monotonic_time() - start) / 1000;
         this._logger?.log(`[Liquid Glass] shaders loaded in ${elapsedMs.toFixed(1)}ms`);
         this._onShadersLoaded();
     }
@@ -92,10 +98,10 @@ export const GlassActor = GObject.registerClass(class GlassActor extends Clutter
         const k = this._shaderScale();
         if (!s || !k)
             return null;
-        const x0 = Math.floor(s[0] * k[0]) - SAMPLE_MARGIN;
-        const y0 = Math.floor(s[1] * k[1]) - SAMPLE_MARGIN;
-        const x1 = Math.ceil((s[0] + s[2]) * k[0]) + SAMPLE_MARGIN;
-        const y1 = Math.ceil((s[1] + s[3]) * k[1]) + SAMPLE_MARGIN;
+        const x0 = Math.floor(s[0] * k[0]) - relays_js_1.SAMPLE_MARGIN;
+        const y0 = Math.floor(s[1] * k[1]) - relays_js_1.SAMPLE_MARGIN;
+        const x1 = Math.ceil((s[0] + s[2]) * k[0]) + relays_js_1.SAMPLE_MARGIN;
+        const y1 = Math.ceil((s[1] + s[3]) * k[1]) + relays_js_1.SAMPLE_MARGIN;
         return [x0, y0, x1 - x0, y1 - y0];
     }
     // A stage rect [x0, y0, x1, y1] as [x, y, w, h] in shader space.
@@ -128,7 +134,7 @@ export const GlassActor = GObject.registerClass(class GlassActor extends Clutter
         this._runLiveGeometryHook();
         if (!this._shadersLoaded)
             return null;
-        const ctx = coglContext();
+        const ctx = (0, shellVersion_js_1.coglContext)();
         this._renderer.prepare(ctx);
         return ctx;
     }
@@ -188,7 +194,7 @@ export const GlassActor = GObject.registerClass(class GlassActor extends Clutter
     // The state behind global._lgGlass.dump(): every paint with diagnostics
     // on, about once a second otherwise.
     _snapshot(fields) {
-        const now = GLib.get_monotonic_time();
+        const now = 6.default.get_monotonic_time();
         if (!this._diagEnabled && now - this._diagLastSnapshotAt < 1000 * 1000)
             return;
         this._diagLastSnapshotAt = now;
@@ -242,7 +248,7 @@ export const GlassActor = GObject.registerClass(class GlassActor extends Clutter
         this._shaderLoad.cancel();
         // The hook's closure holds the manager and its actors.
         this._liveGeometryHook = null;
-        unregisterGlass(this);
+        (0, glass_js_1.unregisterGlass)(this);
         this._renderer.cleanup();
     }
     getResolution() {
@@ -282,11 +288,11 @@ export const GlassActor = GObject.registerClass(class GlassActor extends Clutter
  * Quick Settings' background mode): it copies its own backdrop from the
  * stage view it is painted on.
  */
-export const BackdropGlass = GObject.registerClass(paintNodeWithContext(class BackdropGlass extends GlassActor {
+exports.BackdropGlass = 4.default.registerClass((0, shellVersion_js_1.paintNodeWithContext)(class BackdropGlass extends exports.GlassActor {
     _init(params = {}) {
         super._init(params);
-        this._relays = new RelaySet(this);
-        this._copier = new StageCopier(this._logger);
+        this._relays = new relays_js_1.RelaySet(this);
+        this._copier = new stageCopy_js_1.StageCopier(this._logger);
         this._wasPainted = false;
         this._serialAtMap = 0;
     }
@@ -342,7 +348,7 @@ export const BackdropGlass = GObject.registerClass(paintNodeWithContext(class Ba
         if (!scale || !s)
             return;
         const { kx, ky, resW, resH } = scale;
-        const stageRect = localToStage(this, s[0] * kx, s[1] * ky, (s[0] + s[2]) * kx, (s[1] + s[3]) * ky);
+        const stageRect = (0, relays_js_1.localToStage)(this, s[0] * kx, s[1] * ky, (s[0] + s[2]) * kx, (s[1] + s[3]) * ky);
         const { copy, missed } = this._copier.take(this, root, paintContext, stageRect);
         // Nothing to draw with yet; the next frame redraws the whole area.
         if (missed)

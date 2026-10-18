@@ -1,20 +1,28 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.decodePng = decodePng;
+exports.decodePngRgba = decodePngRgba;
+exports.encodePngRgba = encodePngRgba;
 // PNG in and out for pixels GJS cannot read or write otherwise: a Cairo
 // surface's pixels and a texture's are out of reach, so images go through PNG
 // files. Only what Cairo writes is read (8 bits a channel, not interlaced).
-import Gio from 'gi://Gio';
-import GLib from 'gi://GLib';
+const 5 = __importDefault(require("gi://Gio"));
+const 7 = __importDefault(require("gi://GLib"));
 
 function readU32(b, i) {
     return ((b[i] << 24) | (b[i + 1] << 16) | (b[i + 2] << 8) | b[i + 3]) >>> 0;
 }
 
 function convert(data, converter) {
-    const input = new Gio.ConverterInputStream({
-        base_stream: Gio.MemoryInputStream.new_from_bytes(new GLib.Bytes(data)),
+    const input = new 5.default.ConverterInputStream({
+        base_stream: 5.default.MemoryInputStream.new_from_bytes(new 7.default.Bytes(data)),
         converter,
     });
-    const output = Gio.MemoryOutputStream.new_resizable();
-    output.splice(input, Gio.OutputStreamSpliceFlags.CLOSE_SOURCE | Gio.OutputStreamSpliceFlags.CLOSE_TARGET, null);
+    const output = 5.default.MemoryOutputStream.new_resizable();
+    output.splice(input, 5.default.OutputStreamSpliceFlags.CLOSE_SOURCE | 5.default.OutputStreamSpliceFlags.CLOSE_TARGET, null);
     return output.steal_as_bytes().toArray();
 }
 
@@ -23,7 +31,8 @@ function paeth(a, b, c) {
     const pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c);
     return pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
 }
-export function decodePng(png) {
+
+function decodePng(png) {
     let pos = 8;
     let width = 0, height = 0, colorType = 0, depth = 0, interlace = 0;
     const chunks = [];
@@ -55,7 +64,7 @@ export function decodePng(png) {
         joined.set(c, offset);
         offset += c.length;
     }
-    const raw = convert(joined, new Gio.ZlibDecompressor({ format: Gio.ZlibCompressorFormat.ZLIB }));
+    const raw = convert(joined, new 5.default.ZlibDecompressor({ format: 5.default.ZlibCompressorFormat.ZLIB }));
     const stride = width * channels;
     const data = new Uint8Array(stride * height);
     for (let y = 0; y < height; y++) {
@@ -74,7 +83,8 @@ export function decodePng(png) {
     return { width, height, channels, data };
 }
 /** Unpremultiplied RGBA, 4 bytes a pixel, whatever the PNG holds. */
-export function decodePngRgba(png) {
+
+function decodePngRgba(png) {
     const { width, height, channels, data } = decodePng(png);
     if (channels === 4)
         return { width, height, data };
@@ -118,7 +128,8 @@ function chunk(type, body) {
     return out;
 }
 /** An 8-bit RGBA PNG of unpremultiplied pixels. */
-export function encodePngRgba(width, height, rgba) {
+
+function encodePngRgba(width, height, rgba) {
     const header = new Uint8Array(13);
     const view = new DataView(header.buffer);
     view.setUint32(0, width);
@@ -128,7 +139,7 @@ export function encodePngRgba(width, height, rgba) {
     const raw = new Uint8Array((stride + 1) * height);
     for (let y = 0; y < height; y++)
         raw.set(rgba.subarray(y * stride, (y + 1) * stride), y * (stride + 1) + 1);
-    const compressed = convert(raw, new Gio.ZlibCompressor({ format: Gio.ZlibCompressorFormat.ZLIB }));
+    const compressed = convert(raw, new 5.default.ZlibCompressor({ format: 5.default.ZlibCompressorFormat.ZLIB }));
     const parts = [new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', header), chunk('IDAT', compressed),
         chunk('IEND', new Uint8Array(0))];
     const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));

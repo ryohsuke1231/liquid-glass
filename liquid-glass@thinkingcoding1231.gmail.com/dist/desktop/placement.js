@@ -1,23 +1,37 @@
+"use strict";
 // Where an item on the desktop goes: a corner or the center of the primary
 // monitor's work area, or where the user moved it, kept as the fraction of
 // the work area its center is at so it survives a resolution change.
-export const ANCHORS = ['top-left', 'top-right', 'bottom-left', 'bottom-right', 'center'];
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.ITEM_GAP = exports.EDGE_MARGIN = exports.ANCHORS = void 0;
+exports.sanitizeAnchor = sanitizeAnchor;
+exports.stackAt = stackAt;
+exports.placeAtFraction = placeAtFraction;
+exports.fractionOf = fractionOf;
+exports.resizeRect = resizeRect;
+exports.parsePositions = parsePositions;
+exports.parseAnchors = parseAnchors;
+exports.placeBeside = placeBeside;
+exports.stackColumns = stackColumns;
+exports.ANCHORS = ['top-left', 'top-right', 'bottom-left', 'bottom-right', 'center'];
 // Room between an item and the edge of the work area, and between items.
-export const EDGE_MARGIN = 32;
-export const ITEM_GAP = 16;
-export function sanitizeAnchor(value, fallback = 'top-right') {
-    return ANCHORS.includes(value) ? value : fallback;
+exports.EDGE_MARGIN = 32;
+exports.ITEM_GAP = 16;
+
+function sanitizeAnchor(value, fallback = 'top-right') {
+    return exports.ANCHORS.includes(value) ? value : fallback;
 }
 /**
  * Stacks items of the given sizes at `anchor` of `area`, the first nearest
  * the edge (or on top, at the center). Returns each item's top left corner.
  */
-export function stackAt(anchor, area, sizes) {
-    const total = sizes.reduce((sum, [, h]) => sum + h, 0) + ITEM_GAP * Math.max(sizes.length - 1, 0);
+
+function stackAt(anchor, area, sizes) {
+    const total = sizes.reduce((sum, [, h]) => sum + h, 0) + exports.ITEM_GAP * Math.max(sizes.length - 1, 0);
     const bottom = anchor === 'bottom-left' || anchor === 'bottom-right';
     let y = anchor === 'center'
         ? area.y + (area.height - total) / 2
-        : bottom ? area.y + area.height - EDGE_MARGIN - total : area.y + EDGE_MARGIN;
+        : bottom ? area.y + area.height - exports.EDGE_MARGIN - total : area.y + exports.EDGE_MARGIN;
     // Bottom stacks keep their first item nearest the edge.
     const order = bottom ? [...sizes.keys()].reverse() : [...sizes.keys()];
     const out = Array.from({ length: sizes.length }, () => [0, 0]);
@@ -25,14 +39,15 @@ export function stackAt(anchor, area, sizes) {
         const [w, h] = sizes[i];
         const x = anchor === 'center'
             ? area.x + (area.width - w) / 2
-            : anchor.endsWith('left') ? area.x + EDGE_MARGIN : area.x + area.width - EDGE_MARGIN - w;
+            : anchor.endsWith('left') ? area.x + exports.EDGE_MARGIN : area.x + area.width - exports.EDGE_MARGIN - w;
         out[i] = [Math.round(x), Math.round(y)];
-        y += h + ITEM_GAP;
+        y += h + exports.ITEM_GAP;
     }
     return out;
 }
 /** The top left corner of an item of `size` whose center is at `fraction` of `area`, kept inside it. */
-export function placeAtFraction(fraction, area, size) {
+
+function placeAtFraction(fraction, area, size) {
     const [w, h] = size;
     const x = area.x + fraction[0] * area.width - w / 2;
     const y = area.y + fraction[1] * area.height - h / 2;
@@ -42,13 +57,15 @@ export function placeAtFraction(fraction, area, size) {
     ];
 }
 /** The fraction of `area` the center of an item at `pos` of `size` is at. */
-export function fractionOf(pos, area, size) {
+
+function fractionOf(pos, area, size) {
     const fx = (pos[0] + size[0] / 2 - area.x) / Math.max(area.width, 1);
     const fy = (pos[1] + size[1] / 2 - area.y) / Math.max(area.height, 1);
     return [Math.min(Math.max(fx, 0), 1), Math.min(Math.max(fy, 0), 1)];
 }
 /** `rect` with the edges a handle holds moved by (dx, dy), at least `min` px each way. */
-export function resizeRect(rect, hx, hy, dx, dy, min) {
+
+function resizeRect(rect, hx, hy, dx, dy, min) {
     const out = { ...rect };
     if (hx > 0)
         out.width = Math.max(rect.width + dx, min);
@@ -66,7 +83,8 @@ export function resizeRect(rect, hx, hy, dx, dy, min) {
 }
 // The positions the user moved items to, by item id, as stored in the
 // `desktop-item-positions` setting. Anything unreadable counts as none.
-export function parsePositions(json) {
+
+function parsePositions(json) {
     let parsed;
     try {
         parsed = JSON.parse(json || '{}');
@@ -85,7 +103,8 @@ export function parsePositions(json) {
     return out;
 }
 /** The JSON of desktop-widget-anchors as id → anchor, skipping anything that is not one. */
-export function parseAnchors(json) {
+
+function parseAnchors(json) {
     let parsed;
     try {
         parsed = JSON.parse(json || '{}');
@@ -97,7 +116,7 @@ export function parseAnchors(json) {
     if (!parsed || typeof parsed !== 'object')
         return out;
     for (const [id, value] of Object.entries(parsed)) {
-        if (typeof value === 'string' && ANCHORS.includes(value))
+        if (typeof value === 'string' && exports.ANCHORS.includes(value))
             out[id] = value;
     }
     return out;
@@ -111,7 +130,8 @@ function overlaps(a, b) {
  * below, above, right or left of it, whichever comes first that is inside
  * `area` and clear of `obstacles`. Kept inside `area` when none is.
  */
-export function placeBeside(frame, size, gap, area, obstacles) {
+
+function placeBeside(frame, size, gap, area, obstacles) {
     const [w, h] = size;
     const clamp = (v, lo, span) => Math.min(Math.max(v, lo), lo + Math.max(span, 0));
     const cx = clamp(frame.x + (frame.width - w) / 2, area.x, area.width - w);
@@ -132,7 +152,7 @@ export function placeBeside(frame, size, gap, area, obstacles) {
 }
 // Items put one above the other stay a stack: the farthest apart two are
 // still taken as neighbours.
-const COLUMN_GAP = ITEM_GAP * 4;
+const COLUMN_GAP = exports.ITEM_GAP * 4;
 
 function shareColumn(a, b) {
     const overlap = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x);
@@ -146,7 +166,8 @@ function shareColumn(a, b) {
  * or leaving a hole. Returns each item's top left corner, in the order given;
  * a hidden item's is not used.
  */
-export function stackColumns(items, area) {
+
+function stackColumns(items, area) {
     const order = items.map((_, i) => i).sort((a, b) => items[a].saved.y - items[b].saved.y);
     const columns = [];
     for (const i of order) {
@@ -171,11 +192,11 @@ export function stackColumns(items, area) {
             out[i] = [Math.round(items[i].saved.x), Math.round(items[i].saved.y)];
         if (shown.length === 0)
             continue;
-        const total = shown.reduce((sum, i) => sum + items[i].size[1], 0) + ITEM_GAP * (shown.length - 1);
+        const total = shown.reduce((sum, i) => sum + items[i].size[1], 0) + exports.ITEM_GAP * (shown.length - 1);
         let y = Math.max(Math.min(items[shown[0]].saved.y, area.y + area.height - total), area.y);
         for (const i of shown) {
             out[i][1] = Math.round(y);
-            y += items[i].size[1] + ITEM_GAP;
+            y += items[i].size[1] + exports.ITEM_GAP;
         }
     }
     return out;

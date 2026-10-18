@@ -1,17 +1,25 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.IconStyleEffect = void 0;
+exports.iconStylePipeline = iconStylePipeline;
+exports.iconStyleTexture = iconStyleTexture;
 // Redraws an St.Icon from its style map with shaders/icon-style.frag: glass
 // plates under a symbol, or, while a clone draws it (the launch
 // animation), the icon's own picture in the style's color. In the clear look
 // the plates are glass that refracts what is behind the icon (iconBackdrop.ts).
-import Clutter from 'gi://Clutter';
-import Cogl from 'gi://Cogl';
-import GObject from 'gi://GObject';
-import St from 'gi://St';
-import { rectInOffscreen } from '../rendering/contentLens.js';
-import { configureSamplerLayer } from '../rendering/pipelines.js';
-import { splitShader } from '../rendering/shaderSource.js';
-import { coglContext } from '../shellVersion.js';
-import { iconStyleUniforms } from './styleColors.js';
-import { MAP_SIZE } from './styleMap.js';
+const 4 = __importDefault(require("gi://Clutter"));
+const 5 = __importDefault(require("gi://Cogl"));
+const 6 = __importDefault(require("gi://GObject"));
+const 7 = __importDefault(require("gi://St"));
+const contentLens_js_1 = require("../rendering/contentLens.js");
+const pipelines_js_1 = require("../rendering/pipelines.js");
+const shaderSource_js_1 = require("../rendering/shaderSource.js");
+const shellVersion_js_1 = require("../shellVersion.js");
+const styleColors_js_1 = require("./styleColors.js");
+const styleMap_js_1 = require("./styleMap.js");
 // The glass settings the clear look's plates are drawn with, by glass.frag's uniform names; icon-style.frag has
 // each as glass_<name>.
 const MATERIAL = ['max_z', 'displacement_scale', 'edge_smoothing', 'profile_shape_n', 'ior', 'chroma_strength',
@@ -22,29 +30,31 @@ const MATERIAL = ['max_z', 'displacement_scale', 'edge_smoothing', 'profile_shap
  * The pipeline every icon's is copied from, so that they share one program; with `glass`, the clear look's, which
  * also reads the lens map (layer 3) and what is behind the icon (layer 4).
  */
-export function iconStylePipeline(source, glass = false) {
-    const pipeline = Cogl.Pipeline.new(coglContext());
-    configureSamplerLayer(pipeline, 0);
-    pipeline.set_layer_wrap_mode(1, Cogl.PipelineWrapMode.CLAMP_TO_EDGE);
+
+function iconStylePipeline(source, glass = false) {
+    const pipeline = 5.default.Pipeline.new((0, shellVersion_js_1.coglContext)());
+    (0, pipelines_js_1.configureSamplerLayer)(pipeline, 0);
+    pipeline.set_layer_wrap_mode(1, 5.default.PipelineWrapMode.CLAMP_TO_EDGE);
     // The map is drawn much smaller than it is; its mipmaps keep the symbol's edges smooth.
-    pipeline.set_layer_filters(1, Cogl.PipelineFilter.LINEAR_MIPMAP_LINEAR, Cogl.PipelineFilter.LINEAR);
+    pipeline.set_layer_filters(1, 5.default.PipelineFilter.LINEAR_MIPMAP_LINEAR, 5.default.PipelineFilter.LINEAR);
     const layers = glass ? [2, 3, 4] : [2];
     for (const layer of layers) {
-        pipeline.set_layer_wrap_mode(layer, Cogl.PipelineWrapMode.CLAMP_TO_EDGE);
-        pipeline.set_layer_filters(layer, Cogl.PipelineFilter.LINEAR, Cogl.PipelineFilter.LINEAR);
+        pipeline.set_layer_wrap_mode(layer, 5.default.PipelineWrapMode.CLAMP_TO_EDGE);
+        pipeline.set_layer_filters(layer, 5.default.PipelineFilter.LINEAR, 5.default.PipelineFilter.LINEAR);
     }
-    const split = splitShader(source);
+    const split = (0, shaderSource_js_1.splitShader)(source);
     const decl = glass ? `#define LG_ICON_GLASS 1\n${split.decl}` : split.decl;
     const body = split.body;
-    const snippet = Cogl.Snippet.new(Cogl.SnippetHook.FRAGMENT, decl.replace(/uniform\s+sampler2D\s+cogl_sampler\d\s*;[^\n]*/g, ''), null);
+    const snippet = 5.default.Snippet.new(5.default.SnippetHook.FRAGMENT, decl.replace(/uniform\s+sampler2D\s+cogl_sampler\d\s*;[^\n]*/g, ''), null);
     snippet.set_replace(body);
     pipeline.add_snippet(snippet);
     return pipeline;
 }
 /** A style map's, its tones' or its lens map's pixels (RGBA) as a texture. */
-export function iconStyleTexture(data, width = MAP_SIZE, height = MAP_SIZE) {
+
+function iconStyleTexture(data, width = styleMap_js_1.MAP_SIZE, height = styleMap_js_1.MAP_SIZE) {
     // Declared premultiplied so that Cogl keeps the channels as they are: they are distances, not a color.
-    return Cogl.Texture2D.new_from_data(coglContext(), width, height, Cogl.PixelFormat.RGBA_8888_PRE, width * 4, data);
+    return 5.default.Texture2D.new_from_data((0, shellVersion_js_1.coglContext)(), width, height, 5.default.PixelFormat.RGBA_8888_PRE, width * 4, data);
 }
 // Where an St.Icon draws its image: in a child, centerd in its content box. While the image is still
 // loading the child has no size, and the square in the middle of the content box stands for it.
@@ -53,12 +63,12 @@ function imageRect(actor) {
     const image = actor.get_first_child()?.get_allocation_box();
     if (image && image.get_width() >= 1 && image.get_height() >= 1)
         return [image.x1, image.y1, image.get_width(), image.get_height()];
-    const box = actor instanceof St.Widget ? actor.get_theme_node().get_content_box(actor.get_allocation_box())
-        : new Clutter.ActorBox({ x1: 0, y1: 0, x2: actor.width, y2: actor.height });
+    const box = actor instanceof 7.default.Widget ? actor.get_theme_node().get_content_box(actor.get_allocation_box())
+        : new 4.default.ActorBox({ x1: 0, y1: 0, x2: actor.width, y2: actor.height });
     const side = Math.min(box.get_width(), box.get_height());
     return [box.x1 + (box.get_width() - side) / 2, box.y1 + (box.get_height() - side) / 2, side, side];
 }
-export const IconStyleEffect = GObject.registerClass(class IconStyleEffect extends Clutter.OffscreenEffect {
+exports.IconStyleEffect = 6.default.registerClass(class IconStyleEffect extends 4.default.OffscreenEffect {
     _init() {
         super._init();
         this._pipeline = null;
@@ -90,7 +100,7 @@ export const IconStyleEffect = GObject.registerClass(class IconStyleEffect exten
         this.setColors(colors);
     }
     setColors(colors) {
-        for (const [name, value] of iconStyleUniforms(colors))
+        for (const [name, value] of (0, styleColors_js_1.iconStyleUniforms)(colors))
             this._set(name, value);
         this.queue_repaint();
     }
@@ -119,7 +129,7 @@ export const IconStyleEffect = GObject.registerClass(class IconStyleEffect exten
             return;
         const actor = this.get_actor();
         const image = imageRect(actor);
-        const at = rectInOffscreen(actor, image);
+        const at = (0, contentLens_js_1.rectInOffscreen)(actor, image);
         if (!at)
             return;
         const [x0, y0, x1, y1] = at.box;
@@ -128,15 +138,15 @@ export const IconStyleEffect = GObject.registerClass(class IconStyleEffect exten
         this._set('box_x1', x1);
         this._set('box_y1', y1);
         // The offscreen is in the actor's px, which its scale enlarges on screen.
-        this._set('map_px', MAP_SIZE / Math.max((x1 - x0) * texture.get_width() * actor.scale_x, 1));
+        this._set('map_px', styleMap_js_1.MAP_SIZE / Math.max((x1 - x0) * texture.get_width() * actor.scale_x, 1));
         this._set('clone', actor.is_in_clone_paint() ? 1 : 0);
         this._set('opacity', actor.get_paint_opacity() / 255);
         if (this._backdrop)
             this._bindBackdrop(this._backdrop, actor, image);
         pipeline.set_layer_texture(0, texture);
-        const drawNode = Clutter.PipelineNode.new(pipeline);
+        const drawNode = 4.default.PipelineNode.new(pipeline);
         node.add_child(drawNode);
-        drawNode.add_rectangle(new Clutter.ActorBox({ x1: 0, y1: 0, x2: texture.get_width(), y2: texture.get_height() }));
+        drawNode.add_rectangle(new 4.default.ActorBox({ x1: 0, y1: 0, x2: texture.get_width(), y2: texture.get_height() }));
     }
     // Where the icon's square is in what is behind it, or the look without glass while that is not known there:
     // before it is first copied, and while the icon is drawn away from it (being dragged). An icon partly off the

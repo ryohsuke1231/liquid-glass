@@ -1,24 +1,63 @@
-import { ToggleStyles } from './quickSettings/toggleStyles.js';
-import { stepMenuSpring, applyMenuFrame, showMenuAtRest } from './animation/menuSpring.js';
-import { addFrameTicker, removeFrameTicker, normalizeAnimationIntervalMs } from './animation/frameTicker.js';
-import { Spring } from './animation/spring.js';
-import * as Main from 'resource:///org/gnome/shell/ui/main.js';
-import Clutter from 'gi://Clutter';
-import St from 'gi://St';
-import GLib from 'gi://GLib';
-import Meta from 'gi://Meta';
-import { BackdropGlass } from './rendering/backdropGlass.js';
-import { ToggleBackdropGlass } from './rendering/toggleGlass.js';
-import { StageContrastSampler, AdaptiveContrastConfig, sanitizeColorPreference } from './contrastSampler.js';
-import { LayoutOpaqueActor } from './actors/unpickable.js';
-import { ensureGlassAllocated } from './actors/allocation.js';
-import { isActorValid } from './actors/lifecycle.js';
-import { resolveMonitorGeometry, getAllocatedSize, getTransformedRect } from './actors/geometry.js';
-import { startSyncLoop, stopStageLoop } from './animation/frameLoops.js';
-import { placeScreenGlass, resolveGlassOrigin, applyGlassScale, GLASS_SHADOW_MAX_RADIUS } from './actors/glassBounds.js';
-import { setPositionIfChanged, setScaleIfChanged } from './actors/writes.js';
-import { resolveCrossFade, adaptiveColorTweener, hexToColorArray, hexToRgb } from './animation/colors.js';
-import { MENU_NO_ANIMATION } from './shellVersion.js';
+"use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.QuickSettingsManager = void 0;
+const toggleStyles_js_1 = require("./quickSettings/toggleStyles.js");
+const menuSpring_js_1 = require("./animation/menuSpring.js");
+const frameTicker_js_1 = require("./animation/frameTicker.js");
+const spring_js_1 = require("./animation/spring.js");
+const Main = __importStar(require("resource:///org/gnome/shell/ui/main.js"));
+const 3 = __importDefault(require("gi://Clutter"));
+const 4 = __importDefault(require("gi://St"));
+const 5 = __importDefault(require("gi://GLib"));
+const 6 = __importDefault(require("gi://Meta"));
+const backdropGlass_js_1 = require("./rendering/backdropGlass.js");
+const toggleGlass_js_1 = require("./rendering/toggleGlass.js");
+const contrastSampler_js_1 = require("./contrastSampler.js");
+const unpickable_js_1 = require("./actors/unpickable.js");
+const allocation_js_1 = require("./actors/allocation.js");
+const lifecycle_js_1 = require("./actors/lifecycle.js");
+const geometry_js_1 = require("./actors/geometry.js");
+const frameLoops_js_1 = require("./animation/frameLoops.js");
+const glassBounds_js_1 = require("./actors/glassBounds.js");
+const writes_js_1 = require("./actors/writes.js");
+const colors_js_1 = require("./animation/colors.js");
+const shellVersion_js_1 = require("./shellVersion.js");
 // Room around the glass rect for the shader's edge effects.
 const SHADER_PADDING = 20;
 const SAMPLE_PER_ELEMENT = false;
@@ -28,7 +67,7 @@ const BUTTON_ALPHA = 0.8;
 function _collectSubmenus(actor, into) {
     if (!actor)
         return;
-    if (actor instanceof St.Widget && actor.has_style_class_name('quick-toggle-menu'))
+    if (actor instanceof 4.default.Widget && actor.has_style_class_name('quick-toggle-menu'))
         into.push(actor);
     for (let child of actor.get_children())
         _collectSubmenus(child, into);
@@ -49,7 +88,7 @@ function _layoutOrigin(actor, ancestor) {
 
 function _recordSubmenuNeighbour(n, root, gap) {
     const origin = _layoutOrigin(n, root);
-    let [nodeW, nodeH] = getAllocatedSize(n);
+    let [nodeW, nodeH] = (0, geometry_js_1.getAllocatedSize)(n);
     if (!origin || Number.isNaN(nodeW) || Number.isNaN(nodeH) || nodeH <= 5 || nodeW <= 5)
         return false;
     const nodeY = origin[1];
@@ -72,7 +111,8 @@ function _findSubmenuGap(n, submenu, root, gap) {
     for (let child of n.get_children())
         _findSubmenuGap(child, submenu, root, gap);
 }
-export class QuickSettingsManager {
+
+class QuickSettingsManager {
     // How many frames toggle mode may reuse its last region set while the grid
     // relays out (see _resolveToggleRegions()).
     static REGION_GRACE_FRAMES = 2;
@@ -171,7 +211,7 @@ export class QuickSettingsManager {
         this._logger = logger;
         this.targetActor = Main.panel.statusArea.quickSettings.menu.actor;
         this.menu = Main.panel.statusArea.quickSettings.menu;
-        this._toggleStyles = new ToggleStyles(logger, () => !!this.menu?.isOpen);
+        this._toggleStyles = new toggleStyles_js_1.ToggleStyles(logger, () => !!this.menu?.isOpen);
         // The menu's content box, which the animations and offsets move.
         this.animActor = Main.panel.statusArea.quickSettings.menu.box;
         this.glass = null;
@@ -181,13 +221,13 @@ export class QuickSettingsManager {
         this._glassExpand = 0;
         this._menuXoffset = 0;
         this._menuYoffset = 0;
-        this._springScale = new Spring(120, 8, 1.0);
+        this._springScale = new spring_js_1.Spring(120, 8, 1.0);
         this._springStiffness = 120;
         this._springDamping = 8;
         this._springMass = 1.0;
         this._enableAnimation = true;
         this._tickId = 0;
-        this._contrastSampler = new StageContrastSampler();
+        this._contrastSampler = new contrastSampler_js_1.StageContrastSampler();
         this._adaptiveTimerId = 0;
         this._adaptiveInFlight = false;
         this._styledActors = new Map();
@@ -213,7 +253,7 @@ export class QuickSettingsManager {
         }
     }
     _getMenuMonitorGeometry() {
-        return resolveMonitorGeometry([this.menu?.sourceActor, this.targetActor]);
+        return (0, geometry_js_1.resolveMonitorGeometry)([this.menu?.sourceActor, this.targetActor]);
     }
     _applyMenuOffsets() {
         if (!this.targetActor)
@@ -255,7 +295,7 @@ export class QuickSettingsManager {
             this._animationInterval = this._settings.get_int('quick-settings-animation-interval-ms');
         });
         connectSetting('quick-settings-tint-color', () => {
-            this._tintColorArray = hexToColorArray(this._settings.get_string('quick-settings-tint-color'));
+            this._tintColorArray = (0, colors_js_1.hexToColorArray)(this._settings.get_string('quick-settings-tint-color'));
             if (this.glass) {
                 this.glass.setTintColor(...this._tintColorArray);
             }
@@ -316,7 +356,7 @@ export class QuickSettingsManager {
             this._adaptiveConfig.enabled = this._settings.get_boolean('quick-settings-enable-adaptive-text-color');
         });
         connectSetting('quick-settings-adaptive-text-preference', () => {
-            this._adaptiveConfig.preference = sanitizeColorPreference(this._settings.get_string('quick-settings-adaptive-text-preference'));
+            this._adaptiveConfig.preference = (0, contrastSampler_js_1.sanitizeColorPreference)(this._settings.get_string('quick-settings-adaptive-text-preference'));
         });
         connectSetting('quick-settings-sample-interval-ms', () => {
             this._adaptiveConfig.sampleIntervalMs = this._settings.get_int('quick-settings-sample-interval-ms');
@@ -352,7 +392,7 @@ export class QuickSettingsManager {
         if (!this.targetActor)
             return;
         this._activeMode = this._applyTo;
-        this._tintColorArray = hexToColorArray(this._settings.get_string('quick-settings-tint-color'));
+        this._tintColorArray = (0, colors_js_1.hexToColorArray)(this._settings.get_string('quick-settings-tint-color'));
         if (this._activeMode === 'toggles') {
             this._applyToggleEffect();
         }
@@ -367,11 +407,11 @@ export class QuickSettingsManager {
         this._glassExpand = this._settings.get_int('quick-settings-glass-expand');
         this._animationInterval = this._settings.get_int('quick-settings-animation-interval-ms');
         this._adaptiveConfig = {
-            ...AdaptiveContrastConfig,
+            ...contrastSampler_js_1.AdaptiveContrastConfig,
             enabled: this._settings.get_boolean('quick-settings-enable-adaptive-text-color'),
             samplePerElement: SAMPLE_PER_ELEMENT,
             sampleIntervalMs: this._settings.get_int('quick-settings-sample-interval-ms'),
-            preference: sanitizeColorPreference(this._settings.get_string('quick-settings-adaptive-text-preference')),
+            preference: (0, contrastSampler_js_1.sanitizeColorPreference)(this._settings.get_string('quick-settings-adaptive-text-preference')),
         };
         const glass = this._createGlass(false);
         // The menu scales from its top center; the glass follows it by geometry.
@@ -396,7 +436,7 @@ export class QuickSettingsManager {
         let saturation = this._settings.get_double('quick-settings-saturation');
         let contrast = this._settings.get_double('quick-settings-contrast');
         glass.setPadding(SHADER_PADDING);
-        glass.setTintColor(...hexToColorArray(tintColorStr));
+        glass.setTintColor(...(0, colors_js_1.hexToColorArray)(tintColorStr));
         glass.setTintStrength(tintStrength);
         glass.setCornerRadius(this._cornerRadius);
         glass.setIsDock(false);
@@ -456,7 +496,7 @@ export class QuickSettingsManager {
             extensionPath: this.extensionPath, settings: this._settings, logger: this._logger,
             owner: toggles ? 'quick-settings-toggles' : 'quick-settings',
         };
-        const glass = toggles ? new ToggleBackdropGlass(params) : new BackdropGlass(params);
+        const glass = toggles ? new toggleGlass_js_1.ToggleBackdropGlass(params) : new backdropGlass_js_1.BackdropGlass(params);
         this.glass = glass;
         glass.set_size(1.0, 1.0);
         glass.set_pivot_point(0.0, 0.0);
@@ -475,11 +515,11 @@ export class QuickSettingsManager {
         this._toggleBaseStrength = this._settings.get_double('quick-settings-toggle-tint-strength');
         this._toggleCornerRadius = this._settings.get_double('quick-settings-toggle-corner-radius');
         this._adaptiveConfig = {
-            ...AdaptiveContrastConfig,
+            ...contrastSampler_js_1.AdaptiveContrastConfig,
             enabled: this._settings.get_boolean('quick-settings-enable-adaptive-text-color'),
             samplePerElement: SAMPLE_PER_ELEMENT,
             sampleIntervalMs: this._settings.get_int('quick-settings-sample-interval-ms'),
-            preference: sanitizeColorPreference(this._settings.get_string('quick-settings-adaptive-text-preference')),
+            preference: (0, contrastSampler_js_1.sanitizeColorPreference)(this._settings.get_string('quick-settings-adaptive-text-preference')),
         };
         const glass = this._createGlass(true);
         let menuRoot = this.menu.actor;
@@ -496,7 +536,7 @@ export class QuickSettingsManager {
         // _placeToggleHost() counters the box's transform every frame so the
         // glass stays in monitor coordinates.
         if (!this._toggleGlassHost) {
-            this._toggleGlassHost = new LayoutOpaqueActor();
+            this._toggleGlassHost = new unpickable_js_1.LayoutOpaqueActor();
             this._toggleGlassHost.set_name('liquid-glass-toggle-host');
         }
         this._toggleGlassHost.add_child(glass);
@@ -513,7 +553,7 @@ export class QuickSettingsManager {
         let saturation = this._settings.get_double('quick-settings-saturation');
         let contrast = this._settings.get_double('quick-settings-contrast');
         glass.setPadding(SHADER_PADDING);
-        this._tintColorArray = hexToColorArray(this._settings.get_string('quick-settings-tint-color'));
+        this._tintColorArray = (0, colors_js_1.hexToColorArray)(this._settings.get_string('quick-settings-tint-color'));
         glass.setTintColor(...this._tintColorArray);
         glass.setTintStrength(tintStrength);
         glass.setCornerRadius(this._toggleCornerRadius);
@@ -562,19 +602,19 @@ export class QuickSettingsManager {
     _startFrameSync(sync, errorTag, honourFreeze) {
         if (this._frameSignalId !== 0)
             return;
-        startSyncLoop(this._frameSignalSlot, this._frameSlot, {
+        (0, frameLoops_js_1.startSyncLoop)(this._frameSignalSlot, this._frameSlot, {
             alive: () => !!this.glass && this.targetActor.mapped,
             honourFreeze,
             errorTag,
             step: () => {
                 // Checked before this frame's sync dirties anything.
-                ensureGlassAllocated(this.glass);
+                (0, allocation_js_1.ensureGlassAllocated)(this.glass);
                 sync();
             },
         });
     }
     _stopFrameSync() {
-        stopStageLoop(this._frameSignalSlot, this._frameSlot);
+        (0, frameLoops_js_1.stopStageLoop)(this._frameSignalSlot, this._frameSlot);
     }
     // The product of the scales of `actor` and all its ancestors;
     // get_scale() reports only an actor's own. BoxPointer.open() scales an
@@ -624,7 +664,7 @@ export class QuickSettingsManager {
         let screenW = Math.max(1, monitor?.width ?? 1);
         let screenH = Math.max(1, monitor?.height ?? 1);
         const [bgPosX, bgPosY] = this._placeToggleHost(this.glass, monitorX, monitorY);
-        setPositionIfChanged(this.glass, bgPosX, bgPosY);
+        (0, writes_js_1.setPositionIfChanged)(this.glass, bgPosX, bgPosY);
         const toggles = this._toggleStyles.sync(this.menu?.actor);
         if (toggles.length === 0 && !this._canReuseLastRegions()) {
             this.glass.hide();
@@ -661,7 +701,7 @@ export class QuickSettingsManager {
         if (!Number.isFinite(hostAbsX) || !Number.isFinite(hostAbsY))
             return [monitorX, monitorY];
         // The pivot is (0, 0), so the scale does not move the origin.
-        setScaleIfChanged(glass, 1.0 / accScaleX, 1.0 / accScaleY);
+        (0, writes_js_1.setScaleIfChanged)(glass, 1.0 / accScaleX, 1.0 / accScaleY);
         return [(monitorX - hostAbsX) / accScaleX, (monitorY - hostAbsY) / accScaleY];
     }
     _collectToggleRegions(toggles, monitorX, monitorY) {
@@ -671,7 +711,7 @@ export class QuickSettingsManager {
                 continue;
             // The toggle's real on-screen rect, including the scale an ancestor
             // animates while the menu opens.
-            let [absX, absY, w, h] = getTransformedRect(toggle);
+            let [absX, absY, w, h] = (0, geometry_js_1.getTransformedRect)(toggle);
             if (Number.isNaN(absX) || Number.isNaN(absY) || Number.isNaN(w) || Number.isNaN(h) || w <= 0 || h <= 0)
                 continue;
             let regionX = (absX - monitorX) - this._glassExpand - SHADER_PADDING;
@@ -718,7 +758,7 @@ export class QuickSettingsManager {
             this._lastHostX === bgPosX && this._lastHostY === bgPosY &&
             this._lastScreenW === screenW && this._lastScreenH === screenH)
             return;
-        placeScreenGlass(glass, bgPosX, bgPosY, screenW, screenH, { x: localBgX, y: localBgY, w: bgW, h: bgH });
+        (0, glassBounds_js_1.placeScreenGlass)(glass, bgPosX, bgPosY, screenW, screenH, { x: localBgX, y: localBgY, w: bgW, h: bgH });
         glass.setResolution(screenW, screenH);
         this._lastBoundsSpace = 'toggles';
         this._lastHostX = bgPosX;
@@ -778,8 +818,8 @@ export class QuickSettingsManager {
     }
     _themeMarginSize() {
         let themeNode = this.animActor.get_theme_node();
-        return [themeNode.get_margin(St.Side.LEFT) + themeNode.get_margin(St.Side.RIGHT),
-            themeNode.get_margin(St.Side.TOP) + themeNode.get_margin(St.Side.BOTTOM)];
+        return [themeNode.get_margin(4.default.Side.LEFT) + themeNode.get_margin(4.default.Side.RIGHT),
+            themeNode.get_margin(4.default.Side.TOP) + themeNode.get_margin(4.default.Side.BOTTOM)];
     }
     _measurePanel() {
         let [inW, inH] = this.animActor.get_size();
@@ -807,7 +847,7 @@ export class QuickSettingsManager {
         };
     }
     _resolvePanelOrigin(w) {
-        return resolveGlassOrigin(this.animActor, this, () => {
+        return (0, glassBounds_js_1.resolveGlassOrigin)(this.animActor, this, () => {
             // Top center of the primary monitor.
             const monitor = Main.layoutManager.primaryMonitor;
             if (!monitor)
@@ -823,8 +863,8 @@ export class QuickSettingsManager {
         // Monitor-local, as the shader uses them.
         let localBgX = bgX - monitorX;
         let localBgY = bgY - monitorY;
-        placeScreenGlass(glass, monitorX, monitorY, screenW, screenH, { x: localBgX, y: localBgY, w: bgW, h: bgH });
-        glass.setShadowMaxRadius(GLASS_SHADOW_MAX_RADIUS);
+        (0, glassBounds_js_1.placeScreenGlass)(glass, monitorX, monitorY, screenW, screenH, { x: localBgX, y: localBgY, w: bgW, h: bgH });
+        glass.setShadowMaxRadius(glassBounds_js_1.GLASS_SHADOW_MAX_RADIUS);
         glass.setResolution(screenW, screenH);
         glass.setGlassGeometry(localBgX, localBgY, bgW, bgH);
         this._lastBoundsSpace = 'panel';
@@ -836,7 +876,7 @@ export class QuickSettingsManager {
         this._lastScreenH = screenH;
     }
     _applyGlassScale(scaleX, scaleY) {
-        applyGlassScale(this.glass, this._cornerRadius, scaleX, scaleY);
+        (0, glassBounds_js_1.applyGlassScale)(this.glass, this._cornerRadius, scaleX, scaleY);
     }
     _updateResolution() {
         if (!this.glass)
@@ -847,7 +887,7 @@ export class QuickSettingsManager {
         }
     }
     _hasStyleClass(actor, className) {
-        return actor instanceof St.Widget && actor.has_style_class_name(className);
+        return actor instanceof 4.default.Widget && actor.has_style_class_name(className);
     }
     _collectAdaptiveTextTargets(actor = this.menu?.actor, targets = []) {
         if (!actor)
@@ -857,8 +897,8 @@ export class QuickSettingsManager {
     _findAllTextActors(actor, foundActors = []) {
         if (!actor)
             return foundActors;
-        if (actor instanceof St.Label || actor instanceof Clutter.Text ||
-            actor instanceof St.Button || actor instanceof St.Icon) {
+        if (actor instanceof 4.default.Label || actor instanceof 3.default.Text ||
+            actor instanceof 4.default.Button || actor instanceof 4.default.Icon) {
             if (actor.visible)
                 foundActors.push(actor);
         }
@@ -868,17 +908,17 @@ export class QuickSettingsManager {
     }
     _setActorColor(actor, color, skipAnimations = false, batchStart) {
         // Clutter.Text targets have no St style.
-        if (!(actor instanceof St.Widget))
+        if (!(actor instanceof 4.default.Widget))
             return;
         if (!this._styledActors.has(actor)) {
             this._styledActors.set(actor, actor.get_style() || '');
             actor.connect('destroy', () => {
-                adaptiveColorTweener.cancel(actor);
+                colors_js_1.adaptiveColorTweener.cancel(actor);
                 this._styledActors.delete(actor);
             });
         }
         let isInsensitive = false;
-        if (actor instanceof St.Button) {
+        if (actor instanceof 4.default.Button) {
             isInsensitive = !actor.reactive || actor.has_style_pseudo_class('insensitive');
         }
         if (actor._currentTargetColor === color && actor._currentInsensitiveState === isInsensitive)
@@ -890,7 +930,7 @@ export class QuickSettingsManager {
     _clearAdaptiveStyles() {
         this._clearBackdropTracking();
         for (const [actor, originalStyle] of this._styledActors.entries()) {
-            adaptiveColorTweener.cancel(actor);
+            colors_js_1.adaptiveColorTweener.cancel(actor);
             actor._currentTargetColor = undefined;
             actor._currentInsensitiveState = undefined;
             actor.set_style(originalStyle || null);
@@ -905,7 +945,7 @@ export class QuickSettingsManager {
             return;
         this._sampleColors = colorMap;
         // One timestamp for the whole map, so the toggles flip together.
-        const batchStart = GLib.get_monotonic_time();
+        const batchStart = 5.default.get_monotonic_time();
         for (const [actor, color] of colorMap.entries()) {
             if (!this._backdropColors.has(actor)) {
                 this._watchBackdrop(actor);
@@ -919,7 +959,7 @@ export class QuickSettingsManager {
     _watchBackdrop(actor) {
         for (let node = actor; node; node = node.get_parent()) {
             const holder = node;
-            if (holder instanceof St.Widget && !this._backdropSignals.has(holder)) {
+            if (holder instanceof 4.default.Widget && !this._backdropSignals.has(holder)) {
                 this._backdropSignals.set(holder, [
                     holder.connect('style-changed', () => {
                         if (!this._applyingForeground)
@@ -947,12 +987,12 @@ export class QuickSettingsManager {
         this._dirtyBackdropRoots.add(root);
         if (this._backdropRefreshId)
             return;
-        this._backdropRefreshId = global.compositor.get_laters().add(Meta.LaterType.BEFORE_REDRAW, () => {
+        this._backdropRefreshId = global.compositor.get_laters().add(6.default.LaterType.BEFORE_REDRAW, () => {
             this._backdropRefreshId = 0;
             const dirty = new Set(this._dirtyBackdropRoots);
             this._dirtyBackdropRoots.clear();
             if (!this.menu?.isOpen || !this._adaptiveConfig.enabled)
-                return GLib.SOURCE_REMOVE;
+                return 5.default.SOURCE_REMOVE;
             for (const [actor, fallback] of this._sampleColors) {
                 for (let node = actor; node; node = node.get_parent()) {
                     if (dirty.has(node)) {
@@ -965,7 +1005,7 @@ export class QuickSettingsManager {
                         break;
                 }
             }
-            return GLib.SOURCE_REMOVE;
+            return 5.default.SOURCE_REMOVE;
         });
     }
     _clearBackdropTracking() {
@@ -997,10 +1037,10 @@ export class QuickSettingsManager {
             // From GNOME 51 on, open-state-changed comes before the panel is shown
             // and placed; this runs once open() has returned, still ahead of the frame.
             if (this._openSampleId === 0) {
-                this._openSampleId = GLib.idle_add(GLib.PRIORITY_HIGH, () => {
+                this._openSampleId = 5.default.idle_add(5.default.PRIORITY_HIGH, () => {
                     this._openSampleId = 0;
                     this._updateAdaptiveTextColors(true);
-                    return GLib.SOURCE_REMOVE;
+                    return 5.default.SOURCE_REMOVE;
                 });
             }
         }
@@ -1009,25 +1049,25 @@ export class QuickSettingsManager {
         }
         if (this._adaptiveTimerId !== 0)
             return;
-        this._adaptiveTimerId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, this._adaptiveConfig.sampleIntervalMs, () => {
+        this._adaptiveTimerId = 5.default.timeout_add(5.default.PRIORITY_DEFAULT, this._adaptiveConfig.sampleIntervalMs, () => {
             if (!this.menu?.isOpen) {
                 this._adaptiveTimerId = 0;
-                return GLib.SOURCE_REMOVE;
+                return 5.default.SOURCE_REMOVE;
             }
             const opening = this._tickId !== 0;
             if (!opening || this._awaitingOpenColors)
                 this._updateAdaptiveTextColors(this._awaitingOpenColors);
-            return GLib.SOURCE_CONTINUE;
+            return 5.default.SOURCE_CONTINUE;
         });
     }
     _stopAdaptiveColorSampling() {
         this._clearBackdropTracking();
         if (this._adaptiveTimerId !== 0) {
-            GLib.source_remove(this._adaptiveTimerId);
+            5.default.source_remove(this._adaptiveTimerId);
             this._adaptiveTimerId = 0;
         }
         if (this._openSampleId !== 0) {
-            GLib.source_remove(this._openSampleId);
+            5.default.source_remove(this._openSampleId);
             this._openSampleId = 0;
         }
     }
@@ -1045,7 +1085,7 @@ export class QuickSettingsManager {
         // paint count says nothing about the sampled pixels.
         () => this._activeMode === 'background' ? this.glass?.paintCount ?? NaN : NaN,
         // Only the whole-panel glass copies what is behind it.
-        () => this._activeMode === 'background' && this.glass instanceof BackdropGlass ? [this.glass] : [])
+        () => this._activeMode === 'background' && this.glass instanceof backdropGlass_js_1.BackdropGlass ? [this.glass] : [])
             .then(colorMap => {
             if (generation !== this._adaptiveGeneration || !this._adaptiveConfig.enabled)
                 return;
@@ -1063,7 +1103,7 @@ export class QuickSettingsManager {
     _animateActorColor(actor, targetHexColor, isInsensitive, durationMs = 380, skipAnimations = false, batchStart) {
         let themeNode = actor.get_theme_node();
         let startColor = themeNode.get_foreground_color();
-        let targetRgb = hexToRgb(targetHexColor);
+        let targetRgb = (0, colors_js_1.hexToRgb)(targetHexColor);
         // Insensitive items keep their dimmed look.
         let targetAlpha = isInsensitive ? 0.5 : 1.0;
         let startAlpha = startColor.alpha / 255.0;
@@ -1081,15 +1121,15 @@ export class QuickSettingsManager {
         // An existing tween is not cancelled: add() restarts from the color it
         // last applied.
         if (skipAnimations) {
-            adaptiveColorTweener.cancel(actor);
+            colors_js_1.adaptiveColorTweener.cancel(actor);
             apply(targetRgb.r, targetRgb.g, targetRgb.b, targetAlpha);
             return;
         }
         const startRgb = { r: startColor.red, g: startColor.green, b: startColor.blue };
-        adaptiveColorTweener.add(actor, {
+        colors_js_1.adaptiveColorTweener.add(actor, {
             startRgb, startAlpha,
             targetRgb, targetAlpha,
-            crossFade: resolveCrossFade(startRgb, targetRgb),
+            crossFade: (0, colors_js_1.resolveCrossFade)(startRgb, targetRgb),
             durationMs,
             apply,
         }, batchStart);
@@ -1101,8 +1141,8 @@ export class QuickSettingsManager {
             return foundButtons;
         let isQuickSlider = false;
         let isToggleContainer = false;
-        let isButton = actor instanceof St.Button;
-        if (actor instanceof St.Widget) {
+        let isButton = actor instanceof 4.default.Button;
+        if (actor instanceof 4.default.Widget) {
             isQuickSlider = actor.has_style_class_name('quick-slider');
             isToggleContainer = actor.has_style_class_name('quick-toggle');
         }
@@ -1115,10 +1155,10 @@ export class QuickSettingsManager {
         return foundButtons;
     }
     _hasColoredToggleChild(button) {
-        if (!(button instanceof St.Widget) || !button.has_style_class_name('quick-toggle'))
+        if (!(button instanceof 4.default.Widget) || !button.has_style_class_name('quick-toggle'))
             return false;
         for (const child of button.get_children()) {
-            if (!(child instanceof St.Widget))
+            if (!(child instanceof 4.default.Widget))
                 continue;
             if (child.get_theme_node().get_background_color().alpha > 0)
                 return true;
@@ -1145,7 +1185,7 @@ export class QuickSettingsManager {
         button.set_style(origStyle ? `${origStyle} background-color: ${rgbaStr};` : `background-color: ${rgbaStr};`);
         // The parent toggle depends on this button's state.
         const parent = button.get_parent();
-        if (parent instanceof St.Widget && parent.has_style_class_name('quick-toggle'))
+        if (parent instanceof 4.default.Widget && parent.has_style_class_name('quick-toggle'))
             this._updateSingleButtonAlpha(parent, targetAlpha);
     }
     // Keeps the adaptive text color rules while the background is re-applied.
@@ -1172,7 +1212,7 @@ export class QuickSettingsManager {
         const targetAlpha = BUTTON_ALPHA;
         for (let button of buttons) {
             if (!this._styledButtons.has(button)) {
-                if (button instanceof St.Widget) {
+                if (button instanceof 4.default.Widget) {
                     let origStyle = this._styledActors.get(button) ?? button.get_style();
                     this._styledButtons.set(button, origStyle || '');
                 }
@@ -1180,10 +1220,10 @@ export class QuickSettingsManager {
                 const updateHandler = () => {
                     if (!this.menu?.isOpen)
                         return;
-                    const id = GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+                    const id = 5.default.idle_add(5.default.PRIORITY_DEFAULT, () => {
                         this._buttonIdleIds.delete(id);
                         this._updateSingleButtonAlpha(button, targetAlpha);
-                        return GLib.SOURCE_REMOVE;
+                        return 5.default.SOURCE_REMOVE;
                     });
                     this._buttonIdleIds.add(id);
                 };
@@ -1204,29 +1244,29 @@ export class QuickSettingsManager {
         this._updateButtonAlpha();
         if (this._buttonTimerId !== 0)
             return;
-        this._buttonTimerId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 400, () => {
+        this._buttonTimerId = 5.default.timeout_add(5.default.PRIORITY_DEFAULT, 400, () => {
             if (!this.menu?.isOpen) {
                 this._buttonTimerId = 0;
-                return GLib.SOURCE_REMOVE;
+                return 5.default.SOURCE_REMOVE;
             }
             this._updateButtonAlpha();
-            return GLib.SOURCE_CONTINUE;
+            return 5.default.SOURCE_CONTINUE;
         });
     }
     _stopButtonAlphaSampling() {
         if (this._buttonTimerId !== 0) {
-            GLib.source_remove(this._buttonTimerId);
+            5.default.source_remove(this._buttonTimerId);
             this._buttonTimerId = 0;
         }
         for (const id of this._buttonIdleIds)
-            GLib.Source.remove(id);
+            5.default.Source.remove(id);
         this._buttonIdleIds.clear();
     }
     _clearButtonStyles() {
         this._stopButtonAlphaSampling();
         this._disconnectButtonSignals();
         for (const [button, originalStyle] of this._styledButtons.entries()) {
-            if (button instanceof St.Widget)
+            if (button instanceof 4.default.Widget)
                 button.set_style(originalStyle || null);
         }
         this._styledButtons.clear();
@@ -1241,11 +1281,11 @@ export class QuickSettingsManager {
     // The spring open/close animation.
     _startAnimation(targetValue) {
         if (this._tickId !== 0) {
-            removeFrameTicker(this._tickId);
+            (0, frameTicker_js_1.removeFrameTicker)(this._tickId);
             this._tickId = 0;
         }
         if (!this._enableAnimation) {
-            showMenuAtRest(this.glass, this.animActor);
+            (0, menuSpring_js_1.showMenuAtRest)(this.glass, this.animActor);
             return;
         }
         if (this.animActor)
@@ -1254,21 +1294,21 @@ export class QuickSettingsManager {
             this.glass.remove_all_transitions();
         this._springScale.target = targetValue;
         if (this._tickId === 0) {
-            let lastTime = GLib.get_monotonic_time();
-            this._tickId = addFrameTicker(() => {
+            let lastTime = 5.default.get_monotonic_time();
+            this._tickId = (0, frameTicker_js_1.addFrameTicker)(() => {
                 if (!this.glass || !this.targetActor) {
                     this._tickId = 0;
-                    return GLib.SOURCE_REMOVE;
+                    return 5.default.SOURCE_REMOVE;
                 }
-                let currentTime = GLib.get_monotonic_time();
+                let currentTime = 5.default.get_monotonic_time();
                 let elapsedMs = (currentTime - lastTime) / 1000;
                 lastTime = currentTime;
-                const frame = stepMenuSpring(this._springScale, elapsedMs);
+                const frame = (0, menuSpring_js_1.stepMenuSpring)(this._springScale, elapsedMs);
                 if (frame.stopped)
                     this._tickId = 0;
-                applyMenuFrame(frame, this.animActor, this.glass, this.menu.actor, () => this._syncGeometry());
-                return frame.stopped ? GLib.SOURCE_REMOVE : GLib.SOURCE_CONTINUE;
-            }, normalizeAnimationIntervalMs(this._animationInterval));
+                (0, menuSpring_js_1.applyMenuFrame)(frame, this.animActor, this.glass, this.menu.actor, () => this._syncGeometry());
+                return frame.stopped ? 5.default.SOURCE_REMOVE : 5.default.SOURCE_CONTINUE;
+            }, (0, frameTicker_js_1.normalizeAnimationIntervalMs)(this._animationInterval));
         }
     }
     // Centers an open submenu horizontally in the menu and vertically in the
@@ -1291,7 +1331,7 @@ export class QuickSettingsManager {
         }
         const root = this.targetActor;
         const parent = _layoutOrigin(this.animActor, root);
-        let [parentW, parentH] = getAllocatedSize(this.animActor);
+        let [parentW, parentH] = (0, geometry_js_1.getAllocatedSize)(this.animActor);
         if (!parent || Number.isNaN(parentW) || Number.isNaN(parentH) || parentW <= 0 || parentH <= 0)
             return;
         for (let submenu of this._cachedSubmenus)
@@ -1301,7 +1341,7 @@ export class QuickSettingsManager {
         if (!submenu.mapped || !submenu.visible)
             return;
         const origin = _layoutOrigin(submenu, root);
-        let [subW, subH] = getAllocatedSize(submenu);
+        let [subW, subH] = (0, geometry_js_1.getAllocatedSize)(submenu);
         if (!origin || Number.isNaN(subW) || Number.isNaN(subH) || subW <= 0 || subH <= 0)
             return;
         const [subX, subY] = origin;
@@ -1346,12 +1386,12 @@ export class QuickSettingsManager {
         if (glass) {
             glass.cleanup();
             // At shell shutdown the stage may have destroyed it already.
-            if (isActorValid(glass))
+            if ((0, lifecycle_js_1.isActorValid)(glass))
                 glass.destroy();
         }
         // The toggle-mode host is the glass's parent, not destroyed with it.
         if (this._toggleGlassHost) {
-            if (isActorValid(this._toggleGlassHost))
+            if ((0, lifecycle_js_1.isActorValid)(this._toggleGlassHost))
                 this._toggleGlassHost.destroy();
             this._toggleGlassHost = null;
         }
@@ -1375,7 +1415,7 @@ export class QuickSettingsManager {
             this._animSignalId = 0;
         }
         if (this._tickId !== 0) {
-            removeFrameTicker(this._tickId);
+            (0, frameTicker_js_1.removeFrameTicker)(this._tickId);
             this._tickId = 0;
         }
         this._stopFrameSync();
@@ -1398,7 +1438,7 @@ export class QuickSettingsManager {
             this.menu.actor.translation_x = 0;
             this.menu.actor.translation_y = 0;
             if (this.menu.isOpen)
-                this.menu.close(MENU_NO_ANIMATION);
+                this.menu.close(shellVersion_js_1.MENU_NO_ANIMATION);
         }
     }
     cleanup() {
@@ -1409,3 +1449,4 @@ export class QuickSettingsManager {
         this._removeEffect();
     }
 }
+exports.QuickSettingsManager = QuickSettingsManager;

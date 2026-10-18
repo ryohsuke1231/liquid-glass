@@ -1,8 +1,24 @@
-import GLib from 'gi://GLib';
-import Meta from 'gi://Meta';
-import { isActorValid } from '../actors/lifecycle.js';
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.adaptiveColorTweener = void 0;
+exports.hexToColorArray = hexToColorArray;
+exports.hexToRgb = hexToRgb;
+exports.rgbToHex = rgbToHex;
+exports.crossFadeColorAt = crossFadeColorAt;
+exports.shouldCrossFadeColors = shouldCrossFadeColors;
+exports.lerpColorAt = lerpColorAt;
+exports.setAdaptiveColorMode = setAdaptiveColorMode;
+exports.getAdaptiveColorMode = getAdaptiveColorMode;
+exports.resolveCrossFade = resolveCrossFade;
+const 1 = __importDefault(require("gi://GLib"));
+const 2 = __importDefault(require("gi://Meta"));
+const lifecycle_js_1 = require("../actors/lifecycle.js");
 // '#rrggbb' as normalized [r, g, b]; anything else gives white.
-export function hexToColorArray(hex) {
+
+function hexToColorArray(hex) {
     if (!hex || !hex.startsWith('#') || hex.length !== 7)
         return [1.0, 1.0, 1.0];
     return [
@@ -11,14 +27,17 @@ export function hexToColorArray(hex) {
         parseInt(hex.slice(5, 7), 16) / 255.0,
     ];
 }
-export function hexToRgb(hex) {
+
+function hexToRgb(hex) {
     const value = parseInt(hex.replace('#', ''), 16);
     return { r: (value >> 16) & 255, g: (value >> 8) & 255, b: value & 255 };
 }
-export function rgbToHex(r, g, b) {
+
+function rgbToHex(r, g, b) {
     return '#' + (1 << 24 | r << 16 | g << 8 | b).toString(16).slice(1);
 }
-export function crossFadeColorAt(start, startAlpha, target, targetAlpha, progress) {
+
+function crossFadeColorAt(start, startAlpha, target, targetAlpha, progress) {
     const p = Math.max(0, Math.min(1, progress));
     if (p < 0.5) {
         const local = p / 0.5;
@@ -33,12 +52,14 @@ export function crossFadeColorAt(start, startAlpha, target, targetAlpha, progres
 // A small change (off-white to white) has no grey to pass through, and a
 // dissolve would only add a flicker. Rec. 709 luma difference, 0..1.
 const CROSS_FADE_LUMA_DELTA = 0.4;
-export function shouldCrossFadeColors(start, target) {
+
+function shouldCrossFadeColors(start, target) {
     const luma = (c) => (0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b) / 255;
     return Math.abs(luma(target) - luma(start)) > CROSS_FADE_LUMA_DELTA;
 }
 // Plain per-channel interpolation (easeInOutQuad), used for small changes.
-export function lerpColorAt(start, startAlpha, target, targetAlpha, progress) {
+
+function lerpColorAt(start, startAlpha, target, targetAlpha, progress) {
     const p = Math.max(0, Math.min(1, progress));
     const e = p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
     return {
@@ -49,14 +70,17 @@ export function lerpColorAt(start, startAlpha, target, targetAlpha, progress) {
     };
 }
 let _adaptiveColorMode = 'cross-fade';
-export function setAdaptiveColorMode(mode) {
+
+function setAdaptiveColorMode(mode) {
     _adaptiveColorMode = mode === 'rgb-lerp' ? 'rgb-lerp' : 'cross-fade';
 }
-export function getAdaptiveColorMode() {
+
+function getAdaptiveColorMode() {
     return _adaptiveColorMode;
 }
 // Whether this change should dissolve rather than interpolate.
-export function resolveCrossFade(start, target) {
+
+function resolveCrossFade(start, target) {
     return _adaptiveColorMode === 'cross-fade' && shouldCrossFadeColors(start, target);
 }
 
@@ -83,7 +107,7 @@ class AdaptiveColorTweener {
             startRgb,
             startAlpha,
             crossFade: entry.crossFade && shouldCrossFadeColors(startRgb, entry.targetRgb),
-            startTime: batchStart ?? GLib.get_monotonic_time(),
+            startTime: batchStart ?? 1.default.get_monotonic_time(),
         });
         this._schedule();
     }
@@ -100,7 +124,7 @@ class AdaptiveColorTweener {
     _schedule() {
         if (this._laterId !== 0)
             return;
-        this._laterId = global.compositor.get_laters().add(Meta.LaterType.BEFORE_REDRAW, () => { this._tick(); return false; });
+        this._laterId = global.compositor.get_laters().add(2.default.LaterType.BEFORE_REDRAW, () => { this._tick(); return false; });
     }
     _unschedule() {
         if (this._laterId === 0)
@@ -128,9 +152,9 @@ class AdaptiveColorTweener {
     }
     _tick() {
         this._laterId = 0;
-        const now = GLib.get_monotonic_time();
+        const now = 1.default.get_monotonic_time();
         for (const [actor, e] of this._entries) {
-            if (!isActorValid(actor)) {
+            if (!(0, lifecycle_js_1.isActorValid)(actor)) {
                 this._entries.delete(actor);
                 continue;
             }
@@ -142,4 +166,4 @@ class AdaptiveColorTweener {
             this._schedule();
     }
 }
-export const adaptiveColorTweener = new AdaptiveColorTweener();
+exports.adaptiveColorTweener = new AdaptiveColorTweener();

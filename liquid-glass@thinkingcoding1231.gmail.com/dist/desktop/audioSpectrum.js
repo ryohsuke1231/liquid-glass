@@ -1,12 +1,19 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.AudioSpectrum = exports.BAR_COUNT = void 0;
 // What the speakers are playing, as the loudness of a few bands of
 // frequencies, for the Now Playing card's bars. GStreamer reads the monitor of
 // the default output and runs an FFT on it; the extension only reads the
 // result.
-import GLib from 'gi://GLib';
+const 1 = __importDefault(require("gi://GLib"));
 // Imported dynamically, so that the extension still loads where GStreamer's
 // introspection data is not installed.
 let Gst = null;
 try {
+    // @ts-ignore: CommonJS module with GJS runtime supports top-level await
     Gst = (await import('gi://Gst?version=1.0')).default;
 }
 catch {
@@ -18,7 +25,7 @@ const INTERVAL_MS = 25;
 const THRESHOLD_DB = -90;
 // The bars' bands (Hz), low to high.
 const RANGES = [[40, 150], [150, 400], [400, 1000], [1000, 2500], [2500, 7000]];
-export const BAR_COUNT = RANGES.length;
+exports.BAR_COUNT = RANGES.length;
 // Music has less energy the higher it goes, about this much less per octave;
 // it is given back so the high bars move as much as the low ones.
 const TILT_DB_PER_OCTAVE = 4.5;
@@ -35,7 +42,8 @@ const WATCHDOG_S = 3;
  * Listens while started, and calls `onLevels` with one level from 0 to 1 per
  * bar, low to high, every INTERVAL_MS.
  */
-export class AudioSpectrum {
+
+class AudioSpectrum {
     _logger;
     _onLevels;
     _pipeline = null;
@@ -101,34 +109,34 @@ export class AudioSpectrum {
         this._bus.add_signal_watch();
         this._busId = this._bus.connect('message', (_bus, message) => this._message(message));
         this._lastUs = 0;
-        this._lastMessageUs = GLib.get_monotonic_time();
+        this._lastMessageUs = 1.default.get_monotonic_time();
         pipeline.set_state(Gst.State.PLAYING);
         if (this._watchdogId)
-            GLib.Source.remove(this._watchdogId);
-        this._watchdogId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, WATCHDOG_S, () => {
-            if (GLib.get_monotonic_time() - this._lastMessageUs > WATCHDOG_S * 1e6)
+            1.default.Source.remove(this._watchdogId);
+        this._watchdogId = 1.default.timeout_add_seconds(1.default.PRIORITY_DEFAULT, WATCHDOG_S, () => {
+            if (1.default.get_monotonic_time() - this._lastMessageUs > WATCHDOG_S * 1e6)
                 this._restart();
-            return GLib.SOURCE_CONTINUE;
+            return 1.default.SOURCE_CONTINUE;
         });
     }
     // Stops the pipeline, and starts it again shortly if it is still wanted.
     _restart() {
         this._end();
         if (this._retryId)
-            GLib.Source.remove(this._retryId);
-        this._retryId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, RETRY_S, () => {
+            1.default.Source.remove(this._retryId);
+        this._retryId = 1.default.timeout_add_seconds(1.default.PRIORITY_DEFAULT, RETRY_S, () => {
             this._retryId = 0;
             if (this._wanted)
                 this._begin();
-            return GLib.SOURCE_REMOVE;
+            return 1.default.SOURCE_REMOVE;
         });
     }
     _end() {
         if (this._watchdogId)
-            GLib.Source.remove(this._watchdogId);
+            1.default.Source.remove(this._watchdogId);
         this._watchdogId = 0;
         if (this._retryId)
-            GLib.Source.remove(this._retryId);
+            1.default.Source.remove(this._retryId);
         this._retryId = 0;
         if (!this._pipeline)
             return;
@@ -148,7 +156,7 @@ export class AudioSpectrum {
         }
         if (message.type !== Gst.MessageType.ELEMENT)
             return;
-        this._lastMessageUs = GLib.get_monotonic_time();
+        this._lastMessageUs = 1.default.get_monotonic_time();
         const structure = message.get_structure();
         if (structure?.get_name() !== 'spectrum')
             return;
@@ -161,10 +169,11 @@ export class AudioSpectrum {
                 power += 10 ** (magnitudes.get_nth(b) / 10);
             return 10 * Math.log10(power / (end - first)) + this._tilt[i];
         });
-        const now = GLib.get_monotonic_time();
+        const now = 1.default.get_monotonic_time();
         const dt = this._lastUs ? (now - this._lastUs) / 1e6 : 0;
         this._lastUs = now;
         this._ceiling = Math.max(this._ceiling - CEILING_FALL_DB * dt, ...db, MIN_CEILING_DB);
         this._onLevels(db.map(v => Math.min(Math.max((v - this._ceiling + RANGE_DB) / RANGE_DB, 0), 1) ** 1.5));
     }
 }
+exports.AudioSpectrum = AudioSpectrum;

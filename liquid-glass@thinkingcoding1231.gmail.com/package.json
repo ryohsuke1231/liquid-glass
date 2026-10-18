@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc && node build/space-output.cjs dist",
+    "build": "tsc",
     "watch": "tsc -w",
     "lint": "oxlint",
     "pack": "rm -rf dist && npm run build && gnome-extensions pack --force --extra-source=dist --extra-source=preferences --extra-source=shaders --extra-source=fonts --extra-source=media --out-dir=. ."

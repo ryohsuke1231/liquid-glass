@@ -1,10 +1,16 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.IconMaps = void 0;
 // The style maps of icon files, made by the icon worker (iconWorker.ts) and
 // kept in the user's cache directory, so that an icon is taken apart once.
-import Gio from 'gi://Gio';
-import GLib from 'gi://GLib';
-import { WorkerProcess } from '../workers/workerProcess.js';
-import { iconStyleTexture } from './iconEffect.js';
-import { LENS_SIZE, MAP_SIZE } from './styleMap.js';
+const 2 = __importDefault(require("gi://Gio"));
+const 3 = __importDefault(require("gi://GLib"));
+const workerProcess_js_1 = require("../workers/workerProcess.js");
+const iconEffect_js_1 = require("./iconEffect.js");
+const styleMap_js_1 = require("./styleMap.js");
 // Changes whenever the maps would come out differently, so that older ones are made again.
 const MAP_VERSION = 10;
 // Workers that take icons apart side by side; one more starts only while the others are all busy.
@@ -27,7 +33,7 @@ function loadFile(file, cancellable) {
 
 function modified(file, cancellable) {
     return new Promise((resolve, reject) => {
-        file.query_info_async('time::modified', Gio.FileQueryInfoFlags.NONE, GLib.PRIORITY_DEFAULT, cancellable, (_f, res) => {
+        file.query_info_async('time::modified', 2.default.FileQueryInfoFlags.NONE, 3.default.PRIORITY_DEFAULT, cancellable, (_f, res) => {
             try {
                 resolve(file.query_info_finish(res).get_attribute_uint64('time::modified'));
             }
@@ -40,13 +46,13 @@ function modified(file, cancellable) {
 
 function exists(file, cancellable) {
     return new Promise((resolve, reject) => {
-        file.query_info_async('standard::type', Gio.FileQueryInfoFlags.NONE, GLib.PRIORITY_DEFAULT, cancellable, (_f, res) => {
+        file.query_info_async('standard::type', 2.default.FileQueryInfoFlags.NONE, 3.default.PRIORITY_DEFAULT, cancellable, (_f, res) => {
             try {
                 file.query_info_finish(res);
                 resolve(true);
             }
             catch (e) {
-                if (e instanceof GLib.Error && e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.NOT_FOUND))
+                if (e instanceof 3.default.Error && e.matches(2.default.IOErrorEnum, 2.default.IOErrorEnum.NOT_FOUND))
                     resolve(false);
                 else
                     reject(e);
@@ -56,9 +62,10 @@ function exists(file, cancellable) {
 }
 
 function isCancelled(e) {
-    return e instanceof GLib.Error && e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED);
+    return e instanceof 3.default.Error && e.matches(2.default.IOErrorEnum, 2.default.IOErrorEnum.CANCELLED);
 }
-export class IconMaps {
+
+class IconMaps {
     _logger;
     _onBusy;
     _workers;
@@ -70,16 +77,16 @@ export class IconMaps {
     _busy = false;
     _idleId = 0;
     _prepareSerial = 0;
-    _cancellable = new Gio.Cancellable();
-    _dir = `${GLib.get_user_cache_dir()}/liquid-glass/icon-maps`;
+    _cancellable = new 2.default.Cancellable();
+    _dir = `${3.default.get_user_cache_dir()}/liquid-glass/icon-maps`;
     // Tracks whether we're in a prepare() batch (multiple icons) vs individual get() calls.
     _inPrepareBatch = false;
     /** @param _onBusy Called when maps start being made, and once they all are. */
     constructor(extensionPath, _logger, _onBusy) {
         this._logger = _logger;
         this._onBusy = _onBusy;
-        const count = Math.max(1, Math.min(MAX_WORKERS, GLib.get_num_processors() - 1));
-        this._workers = Array.from({ length: count }, () => new WorkerProcess(`${extensionPath}/dist/iconStyle/iconWorker.js`, 'icon worker', _logger));
+        const count = Math.max(1, Math.min(MAX_WORKERS, 3.default.get_num_processors() - 1));
+        this._workers = Array.from({ length: count }, () => new workerProcess_js_1.WorkerProcess(`${extensionPath}/dist/iconStyle/iconWorker.js`, 'icon worker', _logger));
     }
     /** The map of the icon in `path`. Rejects when it cannot be made. */
     get(path) {
@@ -122,9 +129,9 @@ export class IconMaps {
     }
     // The cache file of the icon in `path`, made first if it is not there.
     async _cached(path) {
-        const time = await modified(Gio.File.new_for_path(path), this._cancellable);
-        const key = GLib.compute_checksum_for_string(GLib.ChecksumType.SHA1, `${MAP_VERSION}|${MAP_SIZE}|${path}|${time}`, -1);
-        const cache = Gio.File.new_for_path(`${this._dir}/${key}`);
+        const time = await modified(2.default.File.new_for_path(path), this._cancellable);
+        const key = 3.default.compute_checksum_for_string(3.default.ChecksumType.SHA1, `${MAP_VERSION}|${styleMap_js_1.MAP_SIZE}|${path}|${time}`, -1);
+        const cache = 2.default.File.new_for_path(`${this._dir}/${key}`);
         if (await exists(cache, this._cancellable))
             return cache;
         let making = this._making.get(key);
@@ -137,7 +144,7 @@ export class IconMaps {
     }
     async _make(path, cache) {
         if (this._idleId)
-            GLib.Source.remove(this._idleId);
+            3.default.Source.remove(this._idleId);
         this._idleId = 0;
         const wasBusy = this._busy;
         this._jobs++;
@@ -155,14 +162,14 @@ export class IconMaps {
         finally {
             if (--this._jobs === 0) {
                 if (this._idleId)
-                    GLib.Source.remove(this._idleId);
+                    3.default.Source.remove(this._idleId);
                 // Only notify end-of-batch if we were in a prepare batch.
                 if (this._inPrepareBatch) {
-                    this._idleId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, IDLE_DELAY_MS, () => {
+                    this._idleId = 3.default.timeout_add(3.default.PRIORITY_DEFAULT, IDLE_DELAY_MS, () => {
                         this._idleId = 0;
                         this._busy = false;
                         this._onBusy(false);
-                        return GLib.SOURCE_REMOVE;
+                        return 3.default.SOURCE_REMOVE;
                     });
                 }
                 else {
@@ -174,16 +181,16 @@ export class IconMaps {
     async _load(path) {
         const cache = await this._cached(path);
         const bytes = await loadFile(cache, this._cancellable);
-        const length = MAP_SIZE * MAP_SIZE * 4;
-        if (bytes.length !== length * 2 + LENS_SIZE * LENS_SIZE * 2 * 4)
+        const length = styleMap_js_1.MAP_SIZE * styleMap_js_1.MAP_SIZE * 4;
+        if (bytes.length !== length * 2 + styleMap_js_1.LENS_SIZE * styleMap_js_1.LENS_SIZE * 2 * 4)
             throw new Error(`${cache.get_path()} is not a style map`);
-        return { map: iconStyleTexture(bytes.subarray(0, length)), tone: iconStyleTexture(bytes.subarray(length, length * 2)),
-            lens: iconStyleTexture(bytes.subarray(length * 2), LENS_SIZE, LENS_SIZE * 2) };
+        return { map: (0, iconEffect_js_1.iconStyleTexture)(bytes.subarray(0, length)), tone: (0, iconEffect_js_1.iconStyleTexture)(bytes.subarray(length, length * 2)),
+            lens: (0, iconEffect_js_1.iconStyleTexture)(bytes.subarray(length * 2), styleMap_js_1.LENS_SIZE, styleMap_js_1.LENS_SIZE * 2) };
     }
     destroy() {
         this._cancellable.cancel();
         if (this._idleId)
-            GLib.Source.remove(this._idleId);
+            3.default.Source.remove(this._idleId);
         this._idleId = 0;
         for (const worker of this._workers)
             worker.destroy();
@@ -191,3 +198,4 @@ export class IconMaps {
         this._making.clear();
     }
 }
+exports.IconMaps = IconMaps;

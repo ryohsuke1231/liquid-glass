@@ -1,12 +1,51 @@
-import * as Main from 'resource:///org/gnome/shell/ui/main.js';
-import { formatTime } from 'resource:///org/gnome/shell/misc/dateUtils.js';
-import Clutter from 'gi://Clutter';
-import GLib from 'gi://GLib';
-import Pango from 'gi://Pango';
-import Shell from 'gi://Shell';
-import St from 'gi://St';
-import { GlassCard } from './desktopItem.js';
-import { verticalBoxParams } from '../shellVersion.js';
+"use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.EventsWidget = void 0;
+const Main = __importStar(require("resource:///org/gnome/shell/ui/main.js"));
+const dateUtils_js_1 = require("resource:///org/gnome/shell/misc/dateUtils.js");
+const 1 = __importDefault(require("gi://Clutter"));
+const 2 = __importDefault(require("gi://GLib"));
+const 3 = __importDefault(require("gi://Pango"));
+const 4 = __importDefault(require("gi://Shell"));
+const 5 = __importDefault(require("gi://St"));
+const desktopItem_js_1 = require("./desktopItem.js");
+const shellVersion_js_1 = require("../shellVersion.js");
 const CARD_WIDTH = 300;
 const MAX_EVENTS = 4;
 const CALENDAR_APP = 'org.gnome.Calendar.desktop';
@@ -20,7 +59,8 @@ function startOfDay(date, days = 0) {
  * rather than asking for its own range, which would change what the menu
  * shows.
  */
-export class EventsWidget extends GlassCard {
+
+class EventsWidget extends desktopItem_js_1.GlassCard {
     _title;
     _list;
     _source = null;
@@ -28,19 +68,19 @@ export class EventsWidget extends GlassCard {
     _timerId = 0;
     constructor(env) {
         super('events', env, CARD_WIDTH);
-        this._title = new St.Label({ style_class: 'lg-title', text: 'Up Next' });
-        this._list = new St.BoxLayout({ style_class: 'lg-list', ...verticalBoxParams() });
+        this._title = new 5.default.Label({ style_class: 'lg-title', text: 'Up Next' });
+        this._list = new 5.default.BoxLayout({ style_class: 'lg-list', ...(0, shellVersion_js_1.verticalBoxParams)() });
         this.box.add_child(this._title);
         this.box.add_child(this._list);
         // The times move on even when the events do not.
-        this._timerId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 60, () => {
+        this._timerId = 2.default.timeout_add_seconds(2.default.PRIORITY_DEFAULT, 60, () => {
             this._update();
-            return GLib.SOURCE_CONTINUE;
+            return 2.default.SOURCE_CONTINUE;
         });
         this._update();
     }
     activate() {
-        Shell.AppSystem.get_default().lookup_app(CALENDAR_APP)?.activate();
+        4.default.AppSystem.get_default().lookup_app(CALENDAR_APP)?.activate();
     }
     // The menu's event source, which the shell replaces when the session mode changes.
     _eventSource() {
@@ -54,10 +94,10 @@ export class EventsWidget extends GlassCard {
         return source;
     }
     _row(time, summary) {
-        const row = new St.BoxLayout({ style_class: 'lg-event' });
-        row.add_child(new St.Label({ text: time, style_class: 'lg-event-time', y_align: Clutter.ActorAlign.START }));
-        const label = new St.Label({ text: summary, style_class: 'lg-event-summary', x_expand: true });
-        label.clutter_text.ellipsize = Pango.EllipsizeMode.END;
+        const row = new 5.default.BoxLayout({ style_class: 'lg-event' });
+        row.add_child(new 5.default.Label({ text: time, style_class: 'lg-event-time', y_align: 1.default.ActorAlign.START }));
+        const label = new 5.default.Label({ text: summary, style_class: 'lg-event-summary', x_expand: true });
+        label.clutter_text.ellipsize = 3.default.EllipsizeMode.END;
         row.add_child(label);
         return row;
     }
@@ -65,7 +105,7 @@ export class EventsWidget extends GlassCard {
         const source = this._eventSource();
         this._list.destroy_all_children();
         if (!source?.hasCalendars) {
-            this._list.add_child(new St.Label({ text: 'No calendars', style_class: 'lg-dim' }));
+            this._list.add_child(new 5.default.Label({ text: 'No calendars', style_class: 'lg-dim' }));
             this.contentChanged();
             return;
         }
@@ -80,21 +120,21 @@ export class EventsWidget extends GlassCard {
             const ends = event.end;
             const heading = starts < tomorrow ? today : tomorrow;
             if (heading !== day && heading === tomorrow) {
-                this._list.add_child(new St.Label({ text: 'Tomorrow', style_class: 'lg-small lg-heading' }));
+                this._list.add_child(new 5.default.Label({ text: 'Tomorrow', style_class: 'lg-small lg-heading' }));
             }
             day = heading;
             const dayStart = heading;
             const dayEnd = startOfDay(heading, 1);
             const allDay = starts <= dayStart && ends >= dayEnd;
-            this._list.add_child(this._row(allDay ? 'All day' : formatTime(starts, { timeOnly: true }), event.summary));
+            this._list.add_child(this._row(allDay ? 'All day' : (0, dateUtils_js_1.formatTime)(starts, { timeOnly: true }), event.summary));
         }
         if (events.length === 0)
-            this._list.add_child(new St.Label({ text: 'Nothing else today or tomorrow', style_class: 'lg-dim' }));
+            this._list.add_child(new 5.default.Label({ text: 'Nothing else today or tomorrow', style_class: 'lg-dim' }));
         this.contentChanged();
     }
     destroy() {
         if (this._timerId)
-            GLib.Source.remove(this._timerId);
+            2.default.Source.remove(this._timerId);
         this._timerId = 0;
         if (this._source && this._sourceId)
             this._source.disconnect(this._sourceId);
@@ -102,3 +142,4 @@ export class EventsWidget extends GlassCard {
         super.destroy();
     }
 }
+exports.EventsWidget = EventsWidget;

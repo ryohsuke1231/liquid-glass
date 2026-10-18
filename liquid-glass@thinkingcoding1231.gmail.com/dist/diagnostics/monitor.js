@@ -1,3 +1,45 @@
+"use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.startGlassMonitor = startGlassMonitor;
+exports.stopGlassMonitor = stopGlassMonitor;
+exports.setGlassMonitorLabel = setGlassMonitorLabel;
+exports.isGlassMonitorRunning = isGlassMonitorRunning;
 // A once-a-second journal line comparing the glass's work with the GPU's and
 // the shell's in a real session: global._lgGlass.monitor(). It has amdgpu's
 // busy percentage, shader clock and power (busy alone depends on the clock the
@@ -5,17 +47,17 @@
 // frames painted and how many redrew a whole monitor, a scene worked out from
 // what is on screen, and each glass's copies and paints. A benchmark can label
 // the lines. tools/perf/glass-monitor.sh averages them per scene or label.
-import GObject from 'gi://GObject';
-import Clutter from 'gi://Clutter';
-import Gio from 'gi://Gio';
-import GLib from 'gi://GLib';
-import Meta from 'gi://Meta';
-import Mtk from 'gi://Mtk';
-import Shell from 'gi://Shell';
-import * as Main from 'resource:///org/gnome/shell/ui/main.js';
-import { diagnosticLog } from './logging.js';
-import { isActorValid } from '../actors/lifecycle.js';
-import { paintNodeWithContext } from '../shellVersion.js';
+const 4 = __importDefault(require("gi://GObject"));
+const 5 = __importDefault(require("gi://Clutter"));
+const 6 = __importDefault(require("gi://Gio"));
+const 7 = __importDefault(require("gi://GLib"));
+const 8 = __importDefault(require("gi://Meta"));
+const 9 = __importDefault(require("gi://Mtk"));
+const 10 = __importDefault(require("gi://Shell"));
+const Main = __importStar(require("resource:///org/gnome/shell/ui/main.js"));
+const logging_js_1 = require("./logging.js");
+const lifecycle_js_1 = require("../actors/lifecycle.js");
+const shellVersion_js_1 = require("../shellVersion.js");
 const SAMPLE_MS = 100;
 const REPORT_MS = 1000;
 const BUSY_DAMAGE = 10;
@@ -28,10 +70,10 @@ const USER_HZ = 100;
 let _probeClass = null;
 
 function createProbe(rect) {
-    _probeClass ??= GObject.registerClass(paintNodeWithContext(class FullRedrawProbe extends Clutter.Actor {
+    _probeClass ??= 4.default.registerClass((0, shellVersion_js_1.paintNodeWithContext)(class FullRedrawProbe extends 5.default.Actor {
         _init(r) {
             super._init({ name: 'liquid-glass-monitor-probe', reactive: false, x: r[0], y: r[1], width: r[2], height: r[3] });
-            Shell.util_set_hidden_from_pick(this, true);
+            10.default.util_set_hidden_from_pick(this, true);
             this.rect = r;
             this.full = 0;
         }
@@ -40,7 +82,7 @@ function createProbe(rect) {
         vfunc_paint_node(_root, paintContext) {
             const clip = paintContext.get_redraw_clip();
             const [x, y, width, height] = this.rect;
-            if (clip && clip.contains_rectangle(new Mtk.Rectangle({ x, y, width, height })) === Mtk.RegionOverlap.IN)
+            if (clip && clip.contains_rectangle(new 9.default.Rectangle({ x, y, width, height })) === 9.default.RegionOverlap.IN)
                 this.full++;
         }
     }));
@@ -58,7 +100,7 @@ function displayName(owner) {
 
 function isCountedWindow(window) {
     const type = window.get_window_type();
-    return type === Meta.WindowType.NORMAL || type === Meta.WindowType.DIALOG || type === Meta.WindowType.MODAL_DIALOG;
+    return type === 8.default.WindowType.NORMAL || type === 8.default.WindowType.DIALOG || type === 8.default.WindowType.MODAL_DIALOG;
 }
 
 function windowName(window) {
@@ -109,7 +151,7 @@ class GlassMonitor {
     _latestTicks = null;
     _latestTicksAt = 0;
     // Cancels the file reads still in flight when the record stops.
-    _cancellable = new Gio.Cancellable();
+    _cancellable = new 6.default.Cancellable();
     _label = null;
     _labelChanged = false;
     _probes = [];
@@ -140,19 +182,19 @@ class GlassMonitor {
         });
         this._snapshotCounters();
         this._sample();
-        this._sampleId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, SAMPLE_MS, () => {
+        this._sampleId = 7.default.timeout_add(7.default.PRIORITY_DEFAULT, SAMPLE_MS, () => {
             this._sample();
-            return GLib.SOURCE_CONTINUE;
+            return 7.default.SOURCE_CONTINUE;
         });
-        this._reportId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, REPORT_MS, () => {
+        this._reportId = 7.default.timeout_add(7.default.PRIORITY_DEFAULT, REPORT_MS, () => {
             this._report();
             if (this._duration > 0 && this._seconds >= this._duration) {
                 stopGlassMonitor();
-                return GLib.SOURCE_REMOVE;
+                return 7.default.SOURCE_REMOVE;
             }
-            return GLib.SOURCE_CONTINUE;
+            return 7.default.SOURCE_CONTINUE;
         });
-        diagnosticLog(`[Liquid Glass][monitor] started ${this._duration > 0 ? `for ${this._duration}s` : 'until monitorStop()'}; ` +
+        (0, logging_js_1.diagnosticLog)(`[Liquid Glass][monitor] started ${this._duration > 0 ? `for ${this._duration}s` : 'until monitorStop()'}; ` +
             `gpu sensors: ${[...this._sensors.busy, ...this._sensors.clock, ...this._sensors.power].join(', ') || 'none'}`);
     }
     // Lines from the next whole second on carry the label.
@@ -166,10 +208,10 @@ class GlassMonitor {
     stop() {
         this._cancellable.cancel();
         if (this._sampleId)
-            GLib.Source.remove(this._sampleId);
+            7.default.Source.remove(this._sampleId);
         this._sampleId = 0;
         if (this._reportId)
-            GLib.Source.remove(this._reportId);
+            7.default.Source.remove(this._reportId);
         this._reportId = 0;
         if (this._paintId)
             global.stage.disconnect(this._paintId);
@@ -178,19 +220,19 @@ class GlassMonitor {
             global.workspace_manager.disconnect(this._workspaceId);
         this._workspaceId = 0;
         for (const probe of this._probes) {
-            if (isActorValid(probe))
+            if ((0, lifecycle_js_1.isActorValid)(probe))
                 probe.destroy();
         }
         this._probes = [];
         for (const [actor, track] of this._windows) {
-            if (isActorValid(actor))
+            if ((0, lifecycle_js_1.isActorValid)(actor))
                 actor.disconnect(track.damagedId);
         }
         this._windows.clear();
         this._glass.clear();
         const t = this._totals;
         if (t.seconds > 0) {
-            diagnosticLog(`[Liquid Glass][monitor] stopped after ${t.seconds}s: ` +
+            (0, logging_js_1.diagnosticLog)(`[Liquid Glass][monitor] stopped after ${t.seconds}s: ` +
                 `${this._sensors.busy.length ? `gpu avg ${(t.gpu / t.seconds).toFixed(1)}%, ` : ''}` +
                 `${this._sensors.power.length ? `power avg ${(t.power / t.seconds).toFixed(1)}W, ` : ''}` +
                 `cpu avg ${(t.cpu / t.seconds).toFixed(1)}%, ` +
@@ -223,7 +265,7 @@ class GlassMonitor {
         this._power.add(microwatts === null ? null : microwatts / 1e6);
         if (ticks !== null) {
             this._latestTicks = ticks;
-            this._latestTicksAt = GLib.get_monotonic_time();
+            this._latestTicksAt = 7.default.get_monotonic_time();
         }
     }
     _sampleWindows() {
@@ -394,7 +436,7 @@ class GlassMonitor {
             parts.push(`${displayName(glass._owner)} copies=${d('copies')} reuses=${d('reuses')} paints=${d('paints')} ` +
                 `blurs=${d('blurs')} relays=${relays}${glass.mapped ? '' : ' (hidden)'}`);
         }
-        diagnosticLog(`[Liquid Glass][monitor] ${parts.join(' | ')}`);
+        (0, logging_js_1.diagnosticLog)(`[Liquid Glass][monitor] ${parts.join(' | ')}`);
         this._frames = 0;
         for (const probe of this._probes)
             probe.full = 0;
@@ -455,7 +497,7 @@ function listDir(path) {
     const names = [];
     let dir = null;
     try {
-        dir = GLib.Dir.open(path, 0);
+        dir = 7.default.Dir.open(path, 0);
     }
     catch {
         return names;
@@ -469,7 +511,7 @@ function listDir(path) {
 
 function findGpuSensors() {
     const sensors = { busy: [], clock: [], power: [] };
-    const exists = (file) => GLib.file_test(file, GLib.FileTest.EXISTS);
+    const exists = (file) => 7.default.file_test(file, 7.default.FileTest.EXISTS);
     for (const card of listDir('/sys/class/drm')) {
         if (!/^card\d+$/.test(card))
             continue;
@@ -509,7 +551,7 @@ async function readSum(files, cancellable) {
 
 function readText(path, cancellable) {
     return new Promise(resolve => {
-        const file = Gio.File.new_for_path(path);
+        const file = 6.default.File.new_for_path(path);
         file.load_contents_async(cancellable, (_source, result) => {
             try {
                 const [, bytes] = file.load_contents_finish(result);
@@ -540,19 +582,23 @@ async function readNumber(file, cancellable) {
 }
 let _monitor = null;
 /** Starts the record for `seconds` (0: until stopped), replacing a running one. */
-export function startGlassMonitor(sources, seconds) {
+
+function startGlassMonitor(sources, seconds) {
     stopGlassMonitor();
     _monitor = new GlassMonitor(sources, Math.max(0, Math.floor(seconds)));
     _monitor.start();
 }
-export function stopGlassMonitor() {
+
+function stopGlassMonitor() {
     _monitor?.stop();
     _monitor = null;
 }
 /** Labels the running record's lines (a benchmark's scenario); null clears it. */
-export function setGlassMonitorLabel(label) {
+
+function setGlassMonitorLabel(label) {
     _monitor?.setLabel(label);
 }
-export function isGlassMonitorRunning() {
+
+function isGlassMonitorRunning() {
     return _monitor !== null;
 }

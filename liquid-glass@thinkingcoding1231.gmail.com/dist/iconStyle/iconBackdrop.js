@@ -1,32 +1,71 @@
+"use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.IconBackdrop = void 0;
 // What is behind the icons of one dock, app grid, folder or launcher, for the
 // glass of clear icons (iconEffect.ts). It is copied from the stage once for
 // all of them, just before the actor that holds them is painted, so it holds
 // that surface's own glass, and blurred once. Relays (relays.ts) redraw the
 // whole copied area whenever anything behind it changes, so the copy follows
 // a backdrop that moves or plays.
-import Clutter from 'gi://Clutter';
-import Gio from 'gi://Gio';
-import GLib from 'gi://GLib';
-import GObject from 'gi://GObject';
-import * as Main from 'resource:///org/gnome/shell/ui/main.js';
-import { startSyncLoop, stopStageLoop } from '../animation/frameLoops.js';
-import { GlassRenderer } from '../rendering/glassRenderer.js';
-import { RelaySet, SAMPLE_MARGIN, relayHolder } from '../rendering/relays.js';
-import { StageCopier } from '../rendering/stageCopy.js';
-import { coglContext } from '../shellVersion.js';
+const 4 = __importDefault(require("gi://Clutter"));
+const 5 = __importDefault(require("gi://Gio"));
+const 6 = __importDefault(require("gi://GLib"));
+const 7 = __importDefault(require("gi://GObject"));
+const Main = __importStar(require("resource:///org/gnome/shell/ui/main.js"));
+const frameLoops_js_1 = require("../animation/frameLoops.js");
+const glassRenderer_js_1 = require("../rendering/glassRenderer.js");
+const relays_js_1 = require("../rendering/relays.js");
+const stageCopy_js_1 = require("../rendering/stageCopy.js");
+const shellVersion_js_1 = require("../shellVersion.js");
 const EFFECT_NAME = 'liquid-glass-icon-backdrop';
 // Room (px) around the icons for the samples spread around each pixel.
 const MARGIN = 8;
 // The copy's size is rounded up to this (px), so that icons coming and going do not make new textures every frame.
 const QUANTUM = 32;
-export const IconBackdrop = GObject.registerClass(class IconBackdrop extends Clutter.Effect {
+exports.IconBackdrop = 7.default.registerClass(class IconBackdrop extends 4.default.Effect {
     _init(params) {
         super._init();
         this._params = params;
         this._host = null;
         this._relays = null;
         this._loaded = false;
-        this._shaderLoad = new Gio.Cancellable();
+        this._shaderLoad = new 5.default.Cancellable();
         this._mapId = 0;
         this._signalId = 0;
         this._firstId = 0;
@@ -36,11 +75,11 @@ export const IconBackdrop = GObject.registerClass(class IconBackdrop extends Clu
         this._paintedRect = null;
         this._serialAtMap = 0;
         this.materialSerial = 0;
-        this._copier = new StageCopier(params.logger);
-        this._renderer = new GlassRenderer({
+        this._copier = new stageCopy_js_1.StageCopier(params.logger);
+        this._renderer = new glassRenderer_js_1.GlassRenderer({
             settings: params.settings, logger: params.logger, repaint: () => this._materialChanged(), setDiagnostics: () => { },
         });
-        this._holder = relayHolder();
+        this._holder = (0, relays_js_1.relayHolder)();
         this._holder.hide();
         Main.layoutManager.uiGroup.add_child(this._holder);
         const prefix = params.prefix;
@@ -61,7 +100,7 @@ export const IconBackdrop = GObject.registerClass(class IconBackdrop extends Clu
             await this._renderer.pipelines.load(this._params.extensionPath, this._shaderLoad);
         }
         catch (e) {
-            if (!(e instanceof GLib.Error && e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED)))
+            if (!(e instanceof 6.default.Error && e.matches(5.default.IOErrorEnum, 5.default.IOErrorEnum.CANCELLED)))
                 this._params.logger.error(`[Liquid Glass] Failed to load the icon glass's shaders: ${e}`);
             return;
         }
@@ -73,20 +112,20 @@ export const IconBackdrop = GObject.registerClass(class IconBackdrop extends Clu
     attach(host) {
         this._host = host;
         host.add_effect_with_name(EFFECT_NAME, this);
-        this._relays = new RelaySet(host, () => false, this._holder);
+        this._relays = new relays_js_1.RelaySet(host, () => false, this._holder);
         this._mapId = host.connect('notify::mapped', () => this._syncMapped());
         this._syncMapped();
     }
     _syncMapped() {
         if (!this._host?.mapped) {
-            stopStageLoop(this._signalSlot, this._firstSlot);
+            (0, frameLoops_js_1.stopStageLoop)(this._signalSlot, this._firstSlot);
             this._holder.hide();
             this._area = null;
             this._paintedRect = null;
             return;
         }
         this._serialAtMap = this._copier.lastCopy?.serial ?? 0;
-        startSyncLoop(this._signalSlot, this._firstSlot, {
+        (0, frameLoops_js_1.startSyncLoop)(this._signalSlot, this._firstSlot, {
             alive: () => !!this._host?.mapped,
             honourFreeze: true,
             errorTag: 'IconBackdrop',
@@ -120,7 +159,7 @@ export const IconBackdrop = GObject.registerClass(class IconBackdrop extends Clu
         }
         if (!this._holder.visible)
             this._holder.show();
-        const m = SAMPLE_MARGIN;
+        const m = relays_js_1.SAMPLE_MARGIN;
         const area = [rect[0] - m, rect[1] - m, rect[2] - rect[0] + 2 * m, rect[3] - rect[1] + 2 * m];
         const moved = !this._area || area.some((v, i) => v !== this._area[i]);
         this._area = area;
@@ -134,7 +173,7 @@ export const IconBackdrop = GObject.registerClass(class IconBackdrop extends Clu
         this._paintedRect = rect;
         if (!host || !rect)
             return true;
-        const ctx = coglContext();
+        const ctx = (0, shellVersion_js_1.coglContext)();
         this._renderer.prepare(ctx);
         const serial = this._copier.lastCopy?.serial;
         const { copy, missed } = this._copier.take(host, node, paintContext, rect);
@@ -174,7 +213,7 @@ export const IconBackdrop = GObject.registerClass(class IconBackdrop extends Clu
         this._host?.queue_redraw();
     }
     cleanup() {
-        stopStageLoop(this._signalSlot, this._firstSlot);
+        (0, frameLoops_js_1.stopStageLoop)(this._signalSlot, this._firstSlot);
         this._shaderLoad.cancel();
         for (const id of this._settingsIds)
             this._params.settings.disconnect(id);

@@ -1,19 +1,59 @@
-import * as Main from 'resource:///org/gnome/shell/ui/main.js';
-import Clutter from 'gi://Clutter';
-import St from 'gi://St';
-import GLib from 'gi://GLib';
-import { BackdropGlass } from './rendering/backdropGlass.js';
-import { isActorValid } from './actors/lifecycle.js';
-import { StageContrastSampler, AdaptiveContrastConfig, sanitizeColorPreference } from './contrastSampler.js';
-import { reportFrameLoopError } from './diagnostics/logging.js';
-import { ensureGlassAllocated } from './actors/allocation.js';
-import { isFrameSyncFrozen, SAME_FRAME_WINDOW_US } from './animation/frameSync.js';
-import { startStageLoop, stopStageLoop } from './animation/frameLoops.js';
-import { setClipIfChanged } from './actors/writes.js';
-import { resolveCrossFade, adaptiveColorTweener, hexToColorArray, hexToRgb, rgbToHex } from './animation/colors.js';
+"use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.OsdManager = void 0;
+const Main = __importStar(require("resource:///org/gnome/shell/ui/main.js"));
+const 1 = __importDefault(require("gi://Clutter"));
+const 2 = __importDefault(require("gi://St"));
+const 3 = __importDefault(require("gi://GLib"));
+const backdropGlass_js_1 = require("./rendering/backdropGlass.js");
+const lifecycle_js_1 = require("./actors/lifecycle.js");
+const contrastSampler_js_1 = require("./contrastSampler.js");
+const logging_js_1 = require("./diagnostics/logging.js");
+const allocation_js_1 = require("./actors/allocation.js");
+const frameSync_js_1 = require("./animation/frameSync.js");
+const frameLoops_js_1 = require("./animation/frameLoops.js");
+const writes_js_1 = require("./actors/writes.js");
+const colors_js_1 = require("./animation/colors.js");
 // Room around the glass rect for the shader's edge effects.
 const SHADER_PADDING = 20;
-export class OsdManager {
+
+class OsdManager {
     extensionPath;
     _settings;
     _logger;
@@ -42,9 +82,9 @@ export class OsdManager {
         this._frameSyncId = 0;
         this._monitorsChangedId = 0;
         this._isEffectActive = false;
-        this._contrastSampler = new StageContrastSampler();
+        this._contrastSampler = new contrastSampler_js_1.StageContrastSampler();
         this._adaptiveConfig = {
-            ...AdaptiveContrastConfig,
+            ...contrastSampler_js_1.AdaptiveContrastConfig,
             enabled: true,
             samplePerElement: false,
             sampleIntervalMs: 400,
@@ -79,7 +119,7 @@ export class OsdManager {
         });
         connectSetting('osd-tint-color', () => {
             if (this._isEffectActive) {
-                let colorArray = hexToColorArray(this._settings.get_string('osd-tint-color'));
+                let colorArray = (0, colors_js_1.hexToColorArray)(this._settings.get_string('osd-tint-color'));
                 for (let state of this._osdStates) {
                     state.glass?.setTintColor(...colorArray);
                 }
@@ -151,7 +191,7 @@ export class OsdManager {
             }
         });
         connectSetting('osd-adaptive-text-preference', () => {
-            this._adaptiveConfig.preference = sanitizeColorPreference(this._settings.get_string('osd-adaptive-text-preference'));
+            this._adaptiveConfig.preference = (0, contrastSampler_js_1.sanitizeColorPreference)(this._settings.get_string('osd-adaptive-text-preference'));
         });
         connectSetting('osd-sample-interval-ms', () => {
             this._adaptiveConfig.sampleIntervalMs = this._settings.get_int('osd-sample-interval-ms');
@@ -184,23 +224,23 @@ export class OsdManager {
         const frameTick = () => {
             if (!this._isEffectActive)
                 return;
-            if (isFrameSyncFrozen())
+            if ((0, frameSync_js_1.isFrameSyncFrozen)())
                 return;
-            const nowUs = GLib.get_monotonic_time();
-            if (nowUs - this._lastTickUs < SAME_FRAME_WINDOW_US)
+            const nowUs = 3.default.get_monotonic_time();
+            if (nowUs - this._lastTickUs < frameSync_js_1.SAME_FRAME_WINDOW_US)
                 return;
             this._lastTickUs = nowUs;
             for (let state of this._osdStates) {
-                ensureGlassAllocated(state.glass);
+                (0, allocation_js_1.ensureGlassAllocated)(state.glass);
                 try {
                     this._syncGeometry(state);
                 }
                 catch (e) {
-                    reportFrameLoopError('OSDManager', e);
+                    (0, logging_js_1.reportFrameLoopError)('OSDManager', e);
                 }
             }
         };
-        startStageLoop(this._frameSignalSlot, this._frameSlot, frameTick);
+        (0, frameLoops_js_1.startStageLoop)(this._frameSignalSlot, this._frameSlot, frameTick);
         this._startAdaptiveColorSampling();
         this._monitorsChangedId = Main.layoutManager.connect('monitors-changed', () => {
             this._removeEffect();
@@ -218,7 +258,7 @@ export class OsdManager {
         }
         targetBox.add_style_class_name('liquid-glass-transparent');
         targetBox.translation_y = -this._osdYOffset;
-        const glass = new BackdropGlass({
+        const glass = new backdropGlass_js_1.BackdropGlass({
             extensionPath: this.extensionPath, settings: this._settings, logger: this._logger, owner: 'osd',
         });
         glass.set_size(1.0, 1.0);
@@ -245,7 +285,7 @@ export class OsdManager {
         let saturation = this._settings.get_double('osd-saturation');
         let contrast = this._settings.get_double('osd-contrast');
         glass.setPadding(SHADER_PADDING);
-        glass.setTintColor(...hexToColorArray(tintColorStr));
+        glass.setTintColor(...(0, colors_js_1.hexToColorArray)(tintColorStr));
         glass.setTintStrength(this._baseTint);
         glass.setCornerRadius(cornerRadius);
         glass.setIsDock(false);
@@ -340,7 +380,7 @@ export class OsdManager {
             glass.remove_transition('position');
             // Limit drawing to the glass plus room for its shadow.
             const CLIP_PADDING = 200;
-            setClipIfChanged(glass, localBgX - CLIP_PADDING, localBgY - CLIP_PADDING, bgW + CLIP_PADDING * 2, bgH + CLIP_PADDING * 2);
+            (0, writes_js_1.setClipIfChanged)(glass, localBgX - CLIP_PADDING, localBgY - CLIP_PADDING, bgW + CLIP_PADDING * 2, bgH + CLIP_PADDING * 2);
             const SHADOW_MAX_RADIUS = CLIP_PADDING - 20;
             glass.setShadowMaxRadius(SHADOW_MAX_RADIUS);
             glass.setResolution(screenW, screenH);
@@ -358,7 +398,7 @@ export class OsdManager {
     _osdVisualHeight(state, h) {
         // When the icon changes, the box's height briefly includes its bottom
         // margin; that jump is ignored.
-        let mB = state.targetBox.get_theme_node().get_margin(St.Side.BOTTOM);
+        let mB = state.targetBox.get_theme_node().get_margin(2.default.Side.BOTTOM);
         if (state._stableBaseH === undefined) {
             let [, naturalH] = state.targetBox.get_preferred_height(-1);
             state._stableBaseH = naturalH > 0 ? naturalH : h;
@@ -396,7 +436,7 @@ export class OsdManager {
         state.glass = null;
         glass.cleanup();
         // At shell shutdown the stage may have destroyed it already.
-        if (isActorValid(glass))
+        if ((0, lifecycle_js_1.isActorValid)(glass))
             glass.destroy();
     }
     _restoreOsdTarget(state) {
@@ -428,9 +468,9 @@ export class OsdManager {
     _findAllTextActors(actor, foundActors = []) {
         if (!actor)
             return foundActors;
-        let isProgressBar = actor instanceof St.Widget && actor.has_style_class_name('level');
-        if (actor instanceof St.Label || actor instanceof Clutter.Text ||
-            actor instanceof St.Button || actor instanceof St.Icon || isProgressBar) {
+        let isProgressBar = actor instanceof 2.default.Widget && actor.has_style_class_name('level');
+        if (actor instanceof 2.default.Label || actor instanceof 1.default.Text ||
+            actor instanceof 2.default.Button || actor instanceof 2.default.Icon || isProgressBar) {
             if (actor.visible)
                 foundActors.push(actor);
         }
@@ -442,12 +482,12 @@ export class OsdManager {
     }
     _setActorColor(actor, color, skipAnimations = false, batchStart) {
         // Clutter.Text targets have no St style.
-        if (!(actor instanceof St.Widget))
+        if (!(actor instanceof 2.default.Widget))
             return;
         if (!this._styledActors.has(actor)) {
             this._styledActors.set(actor, actor.get_style() || '');
             actor.connect('destroy', () => {
-                adaptiveColorTweener.cancel(actor);
+                colors_js_1.adaptiveColorTweener.cancel(actor);
                 this._styledActors.delete(actor);
             });
         }
@@ -458,7 +498,7 @@ export class OsdManager {
     }
     _clearAdaptiveStyles() {
         for (const [actor, style] of this._styledActors.entries()) {
-            adaptiveColorTweener.cancel(actor);
+            colors_js_1.adaptiveColorTweener.cancel(actor);
             actor._currentTargetColor = undefined;
             actor.set_style(style);
         }
@@ -468,7 +508,7 @@ export class OsdManager {
         if (!colorMap || colorMap.size === 0)
             return;
         // One timestamp for the whole map, so label, icon and level bar move as one.
-        const batchStart = GLib.get_monotonic_time();
+        const batchStart = 3.default.get_monotonic_time();
         for (const [actor, color] of colorMap.entries()) {
             this._setActorColor(actor, color, skipAnimations, batchStart);
         }
@@ -479,16 +519,16 @@ export class OsdManager {
         this._updateAdaptiveTextColors();
         if (this._adaptiveTimerId !== 0)
             return;
-        this._adaptiveTimerId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, this._adaptiveConfig.sampleIntervalMs, () => {
+        this._adaptiveTimerId = 3.default.timeout_add(3.default.PRIORITY_DEFAULT, this._adaptiveConfig.sampleIntervalMs, () => {
             let isActive = this._osdStates.some(s => s.osdWindow && s.osdWindow.visible);
             if (isActive)
                 this._updateAdaptiveTextColors();
-            return GLib.SOURCE_CONTINUE;
+            return 3.default.SOURCE_CONTINUE;
         });
     }
     _stopAdaptiveColorSampling() {
         if (this._adaptiveTimerId !== 0) {
-            GLib.source_remove(this._adaptiveTimerId);
+            3.default.source_remove(this._adaptiveTimerId);
             this._adaptiveTimerId = 0;
         }
     }
@@ -521,7 +561,7 @@ export class OsdManager {
         let themeNode = actor.get_theme_node();
         let startColor = themeNode.get_foreground_color();
         let startBgColor = themeNode.get_background_color();
-        let targetRgb = hexToRgb(targetHexColor);
+        let targetRgb = (0, colors_js_1.hexToRgb)(targetHexColor);
         // The level bar's fill takes the text color and its track a color 70%
         // of the way to the other one.
         let isProgressBar = actor.has_style_class_name('level');
@@ -530,7 +570,7 @@ export class OsdManager {
             let lightHex = this._adaptiveConfig?.lightTextColor || '#ffffff';
             let darkHex = this._adaptiveConfig?.darkTextColor || '#000000';
             let isTargetLight = targetHexColor.toLowerCase() === lightHex.toLowerCase();
-            let otherRgb = hexToRgb(isTargetLight ? darkHex : lightHex);
+            let otherRgb = (0, colors_js_1.hexToRgb)(isTargetLight ? darkHex : lightHex);
             let lerpRatio = 0.7;
             trackTargetRgb = {
                 r: Math.round(targetRgb.r + (otherRgb.r - targetRgb.r) * lerpRatio),
@@ -550,24 +590,24 @@ export class OsdManager {
                 const bgR = Math.round(startBgColor.red + (trackTargetRgb.r - startBgColor.red) * e);
                 const bgG = Math.round(startBgColor.green + (trackTargetRgb.g - startBgColor.green) * e);
                 const bgB = Math.round(startBgColor.blue + (trackTargetRgb.b - startBgColor.blue) * e);
-                actor.set_style(`${stylePrefix}-barlevel-active-background-color: ${rgbToHex(r, g, b)}; ` +
-                    `-barlevel-background-color: ${rgbToHex(bgR, bgG, bgB)};`);
+                actor.set_style(`${stylePrefix}-barlevel-active-background-color: ${(0, colors_js_1.rgbToHex)(r, g, b)}; ` +
+                    `-barlevel-background-color: ${(0, colors_js_1.rgbToHex)(bgR, bgG, bgB)};`);
                 return;
             }
             const rgba = `rgba(${r}, ${g}, ${b}, ${a.toFixed(3)})`;
             actor.set_style(`${stylePrefix}color: ${rgba}; -st-icon-foreground-color: ${rgba};`);
         };
         if (skipAnimations) {
-            adaptiveColorTweener.cancel(actor);
+            colors_js_1.adaptiveColorTweener.cancel(actor);
             apply(targetRgb.r, targetRgb.g, targetRgb.b, 1.0, 1.0);
             return;
         }
         const startRgb = { r: startColor.red, g: startColor.green, b: startColor.blue };
         const startAlpha = startColor.alpha / 255.0;
-        adaptiveColorTweener.add(actor, {
+        colors_js_1.adaptiveColorTweener.add(actor, {
             startRgb, startAlpha,
             targetRgb, targetAlpha: 1.0,
-            crossFade: !isProgressBar && resolveCrossFade(startRgb, targetRgb),
+            crossFade: !isProgressBar && (0, colors_js_1.resolveCrossFade)(startRgb, targetRgb),
             durationMs,
             apply,
             // The bar writes a second color the tuple does not describe.
@@ -581,6 +621,7 @@ export class OsdManager {
         return { get: () => this._frameSignalId, set: (id) => { this._frameSignalId = id; } };
     }
     _stopFrameSync() {
-        stopStageLoop(this._frameSignalSlot, this._frameSlot);
+        (0, frameLoops_js_1.stopStageLoop)(this._frameSignalSlot, this._frameSlot);
     }
 }
+exports.OsdManager = OsdManager;

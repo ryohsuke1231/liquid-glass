@@ -1,24 +1,63 @@
-import { stepMenuSpring, applyMenuFrame, showMenuAtRest } from './animation/menuSpring.js';
-import { addFrameTicker, removeFrameTicker, normalizeAnimationIntervalMs } from './animation/frameTicker.js';
-import { Spring, SwiftSpring } from './animation/spring.js';
-import { MenuMorphMotion } from './animation/menuMorph.js';
-import * as Main from 'resource:///org/gnome/shell/ui/main.js';
-import Clutter from 'gi://Clutter';
-import St from 'gi://St';
-import GLib from 'gi://GLib';
-import Meta from 'gi://Meta';
-import Gio from 'gi://Gio';
-import { BackdropGlass } from './rendering/backdropGlass.js';
-import { ContentLens } from './rendering/contentLens.js';
-import { StageContrastSampler, AdaptiveContrastConfig, sanitizeColorPreference } from './contrastSampler.js';
-import { UnpickableWidget } from './actors/unpickable.js';
-import { ensureGlassAllocated } from './actors/allocation.js';
-import { resolveMonitorGeometry, getAllocatedSize } from './actors/geometry.js';
-import { isActorValid } from './actors/lifecycle.js';
-import { startSyncLoop, stopStageLoop } from './animation/frameLoops.js';
-import { placeScreenGlass, resolveGlassOrigin, applyGlassScale, GLASS_SHADOW_MAX_RADIUS } from './actors/glassBounds.js';
-import { resolveCrossFade, adaptiveColorTweener, hexToColorArray, hexToRgb, rgbToHex } from './animation/colors.js';
-import { MENU_NO_ANIMATION, accentColors } from './shellVersion.js';
+"use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.UIManager = void 0;
+const menuSpring_js_1 = require("./animation/menuSpring.js");
+const frameTicker_js_1 = require("./animation/frameTicker.js");
+const spring_js_1 = require("./animation/spring.js");
+const menuMorph_js_1 = require("./animation/menuMorph.js");
+const Main = __importStar(require("resource:///org/gnome/shell/ui/main.js"));
+const 4 = __importDefault(require("gi://Clutter"));
+const 5 = __importDefault(require("gi://St"));
+const 6 = __importDefault(require("gi://GLib"));
+const 7 = __importDefault(require("gi://Meta"));
+const 8 = __importDefault(require("gi://Gio"));
+const backdropGlass_js_1 = require("./rendering/backdropGlass.js");
+const contentLens_js_1 = require("./rendering/contentLens.js");
+const contrastSampler_js_1 = require("./contrastSampler.js");
+const unpickable_js_1 = require("./actors/unpickable.js");
+const allocation_js_1 = require("./actors/allocation.js");
+const geometry_js_1 = require("./actors/geometry.js");
+const lifecycle_js_1 = require("./actors/lifecycle.js");
+const frameLoops_js_1 = require("./animation/frameLoops.js");
+const glassBounds_js_1 = require("./actors/glassBounds.js");
+const colors_js_1 = require("./animation/colors.js");
+const shellVersion_js_1 = require("./shellVersion.js");
 // Room around the glass rect for the shader's edge effects.
 const SHADER_PADDING = 20;
 const SAMPLE_PER_ELEMENT = false;
@@ -42,7 +81,8 @@ const MENU_MEASURE_STABLE_FRAMES = 3;
 // and the callbacks waiting for a measurement in progress.
 let _quickSettingsHeight = 0;
 let _quickSettingsWaiting = null;
-export class UIManager {
+
+class UIManager {
     _enableKey;
     _keyPrefix;
     _label;
@@ -156,14 +196,14 @@ export class UIManager {
         this._glassExpand = 0;
         this._menuXoffset = 0;
         this._menuYoffset = 0;
-        this._springScale = new Spring(120, 22, 1.0);
+        this._springScale = new spring_js_1.Spring(120, 22, 1.0);
         this._springStiffness = 120;
         this._springDamping = 22;
         this._springMass = 1.0;
-        this._swiftSpringScale = new SwiftSpring(this._swiftResponse, this._swiftDampingFraction);
+        this._swiftSpringScale = new spring_js_1.SwiftSpring(this._swiftResponse, this._swiftDampingFraction);
         this._enableAnimation = false;
         this._tickId = 0;
-        this._contrastSampler = new StageContrastSampler();
+        this._contrastSampler = new contrastSampler_js_1.StageContrastSampler();
         this._adaptiveTimerId = 0;
         this._adaptiveInFlight = false;
         this._styledActors = new Map();
@@ -202,15 +242,15 @@ export class UIManager {
         this._springDamping = this._settings.get_double(this._key('spring-damping'));
         this._springMass = this._settings.get_double(this._key('spring-mass'));
         this._springScale.updateParams(this._springStiffness, this._springDamping, this._springMass);
-        this._interfaceSettings = new Gio.Settings({ schema_id: 'org.gnome.desktop.interface' });
+        this._interfaceSettings = new 8.default.Settings({ schema_id: 'org.gnome.desktop.interface' });
         // The theme context picks up the new accent color a moment later.
         this._accentColorSignalId = this._interfaceSettings.connect('changed::accent-color', () => {
             if (this._accentColorTimeoutId)
-                GLib.Source.remove(this._accentColorTimeoutId);
-            this._accentColorTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 200, () => {
+                6.default.Source.remove(this._accentColorTimeoutId);
+            this._accentColorTimeoutId = 6.default.timeout_add(6.default.PRIORITY_DEFAULT, 200, () => {
                 this._accentColorTimeoutId = 0;
                 this._applySystemAccentColor();
-                return GLib.SOURCE_REMOVE;
+                return 6.default.SOURCE_REMOVE;
             });
         });
         this._applySystemAccentColor();
@@ -226,13 +266,13 @@ export class UIManager {
      * (GNOME 46).
      */
     _resolveAccentColors() {
-        const accent = accentColors();
+        const accent = (0, shellVersion_js_1.accentColors)();
         if (accent)
-            return [rgbToHex(accent[0].red, accent[0].green, accent[0].blue),
-                rgbToHex(accent[1].red, accent[1].green, accent[1].blue)];
+            return [(0, colors_js_1.rgbToHex)(accent[0].red, accent[0].green, accent[0].blue),
+                (0, colors_js_1.rgbToHex)(accent[1].red, accent[1].green, accent[1].blue)];
         // The theme's selectors need the calendar ancestry.
-        const parent = new UnpickableWidget({ style_class: 'calendar' });
-        const child = new UnpickableWidget({ style_class: 'calendar-day calendar-today' });
+        const parent = new unpickable_js_1.UnpickableWidget({ style_class: 'calendar' });
+        const child = new unpickable_js_1.UnpickableWidget({ style_class: 'calendar-day calendar-today' });
         child.add_style_pseudo_class('selected');
         parent.add_child(child);
         Main.layoutManager.uiGroup.add_child(parent);
@@ -240,7 +280,7 @@ export class UIManager {
         const bgColor = child.get_theme_node().get_background_color();
         Main.layoutManager.uiGroup.remove_child(parent);
         parent.destroy();
-        return [rgbToHex(bgColor.red, bgColor.green, bgColor.blue), '#ffffff'];
+        return [(0, colors_js_1.rgbToHex)(bgColor.red, bgColor.green, bgColor.blue), '#ffffff'];
     }
     _applySystemAccentColor() {
         if (!this._ownsAccentCss || !this.targetActor)
@@ -261,15 +301,15 @@ export class UIManager {
     `;
         // Writing the file and parsing the stylesheet both throw a GError on failure.
         try {
-            const cacheDir = GLib.get_user_cache_dir();
-            const filePath = GLib.build_filenamev([cacheDir, 'liquid-glass-accent.css']);
-            GLib.file_set_contents(filePath, cssContent);
-            const themeContext = St.ThemeContext.get_for_stage(global.stage);
+            const cacheDir = 6.default.get_user_cache_dir();
+            const filePath = 6.default.build_filenamev([cacheDir, 'liquid-glass-accent.css']);
+            6.default.file_set_contents(filePath, cssContent);
+            const themeContext = 5.default.ThemeContext.get_for_stage(global.stage);
             const theme = themeContext.get_theme();
             if (this._dynamicCssFile) {
                 theme.unload_stylesheet(this._dynamicCssFile);
             }
-            this._dynamicCssFile = Gio.File.new_for_path(filePath);
+            this._dynamicCssFile = 8.default.File.new_for_path(filePath);
             theme.load_stylesheet(this._dynamicCssFile);
             this._logger.log(`[Liquid Glass] [UIManager] System accent color applied: ${colorStr}`);
         }
@@ -278,9 +318,9 @@ export class UIManager {
         }
     }
     _allocatedHeightOf(actor) {
-        if (!actor || !isActorValid(actor) || !actor.has_allocation())
+        if (!actor || !(0, lifecycle_js_1.isActorValid)(actor) || !actor.has_allocation())
             return 0;
-        const [, allocated] = getAllocatedSize(actor);
+        const [, allocated] = (0, geometry_js_1.getAllocatedSize)(actor);
         return allocated > 1 ? allocated : 0;
     }
     _firstHeight(actors, measure) {
@@ -295,7 +335,7 @@ export class UIManager {
     // (it grows while its content lays out), within MENU_MEASURE_FRAMES.
     _settleHeight(menu, done) {
         const actor = menu?.actor;
-        if (!actor || !isActorValid(actor)) {
+        if (!actor || !(0, lifecycle_js_1.isActorValid)(actor)) {
             done(0);
             return;
         }
@@ -315,10 +355,10 @@ export class UIManager {
         this._addMeasureLater(tick);
     }
     _addMeasureLater(callback) {
-        const id = global.compositor.get_laters().add(Meta.LaterType.BEFORE_REDRAW, () => {
+        const id = global.compositor.get_laters().add(7.default.LaterType.BEFORE_REDRAW, () => {
             this._measureLaterIds.delete(id);
             callback();
-            return GLib.SOURCE_REMOVE;
+            return 6.default.SOURCE_REMOVE;
         });
         this._measureLaterIds.add(id);
     }
@@ -346,7 +386,7 @@ export class UIManager {
         }
         const menu = Main.panel.statusArea.quickSettings?.menu;
         const actor = menu?.actor;
-        if (!menu || !actor || !isActorValid(actor)) {
+        if (!menu || !actor || !(0, lifecycle_js_1.isActorValid)(actor)) {
             done(0);
             return;
         }
@@ -369,10 +409,10 @@ export class UIManager {
             if (restored)
                 return;
             restored = true;
-            menu.close(MENU_NO_ANIMATION);
+            menu.close(shellVersion_js_1.MENU_NO_ANIMATION);
             actor.opacity = opacity;
         };
-        menu.open(MENU_NO_ANIMATION);
+        menu.open(shellVersion_js_1.MENU_NO_ANIMATION);
         actor.opacity = 0;
         this._restoreQuickSettings = restore;
         this._settleHeight(menu, height => {
@@ -434,7 +474,7 @@ export class UIManager {
         this._settings.set_double(this._key('settled-height-scale'), ratio);
     }
     _applyMenuScale() {
-        if (!this.targetActor || !isActorValid(this.targetActor))
+        if (!this.targetActor || !(0, lifecycle_js_1.isActorValid)(this.targetActor))
             return;
         let requested = this._menuScale;
         if (this._matchQuickSettingsHeight) {
@@ -449,7 +489,7 @@ export class UIManager {
         this.targetActor.set_scale(scale, scale);
     }
     _getMenuMonitorGeometry() {
-        return resolveMonitorGeometry([this.menu?.sourceActor, this.targetActor]);
+        return (0, geometry_js_1.resolveMonitorGeometry)([this.menu?.sourceActor, this.targetActor]);
     }
     /**
      * Keeps the glass directly beneath the menu it backs, as the other surfaces
@@ -462,7 +502,7 @@ export class UIManager {
         const root = this._menuRoot;
         if (!this.glass || !root)
             return;
-        if (!isActorValid(root) || root.get_parent() !== uiGroup)
+        if (!(0, lifecycle_js_1.isActorValid)(root) || root.get_parent() !== uiGroup)
             return;
         if (this.glass.get_parent() !== uiGroup)
             return;
@@ -520,7 +560,7 @@ export class UIManager {
         });
         connectSetting(this._key('tint-color'), () => {
             if (this.glass) {
-                let colorArray = hexToColorArray(this._settings.get_string(this._key('tint-color')));
+                let colorArray = (0, colors_js_1.hexToColorArray)(this._settings.get_string(this._key('tint-color')));
                 this.glass.setTintColor(...colorArray);
             }
         });
@@ -589,7 +629,7 @@ export class UIManager {
             this._adaptiveConfig.sampleIntervalMs = this._settings.get_int(this._key('sample-interval-ms'));
         });
         connectSetting(this._key('adaptive-text-preference'), () => {
-            this._adaptiveConfig.preference = sanitizeColorPreference(this._settings.get_string(this._key('adaptive-text-preference')));
+            this._adaptiveConfig.preference = (0, contrastSampler_js_1.sanitizeColorPreference)(this._settings.get_string(this._key('adaptive-text-preference')));
         });
     }
     _applyEffect() {
@@ -603,7 +643,7 @@ export class UIManager {
         this.animActor.add_style_class_name('liquid-glass-transparent');
         this.animActor.add_style_class_name('liquid-glass-menu-root');
         this._syncStyleVariant();
-        const settings = St.Settings.get();
+        const settings = 5.default.Settings.get();
         this._signals.push({ target: settings, id: settings.connect('notify::color-scheme', () => this._syncStyleVariant()) });
         this._menuXoffset = this._settings.get_int(this._key('x-offset'));
         this._menuYoffset = this._settings.get_int(this._key('y-offset'));
@@ -612,14 +652,14 @@ export class UIManager {
         this._glassExpand = this._settings.get_int(this._key('glass-expand'));
         this._animationInterval = this._settings.get_int(this._key('animation-interval-ms'));
         this._adaptiveConfig = {
-            ...AdaptiveContrastConfig,
+            ...contrastSampler_js_1.AdaptiveContrastConfig,
             enabled: this._settings.get_boolean(this._key('enable-adaptive-text-color')),
             samplePerElement: SAMPLE_PER_ELEMENT,
             sampleIntervalMs: this._settings.get_int(this._key('sample-interval-ms')),
-            preference: sanitizeColorPreference(this._settings.get_string(this._key('adaptive-text-preference'))),
+            preference: (0, contrastSampler_js_1.sanitizeColorPreference)(this._settings.get_string(this._key('adaptive-text-preference'))),
         };
         // Sized to the monitor by _syncGeometry().
-        const glass = new BackdropGlass({
+        const glass = new backdropGlass_js_1.BackdropGlass({
             extensionPath: this.extensionPath, settings: this._settings, logger: this._logger, owner: this._label,
         });
         this.glass = glass;
@@ -652,7 +692,7 @@ export class UIManager {
         let saturation = this._settings.get_double(this._key('saturation'));
         this._cornerRadius = this._settings.get_double(this._key('corner-radius'));
         glass.setPadding(SHADER_PADDING);
-        glass.setTintColor(...hexToColorArray(tintColorStr));
+        glass.setTintColor(...(0, colors_js_1.hexToColorArray)(tintColorStr));
         glass.setTintStrength(tintStrength);
         glass.setCornerRadius(this._cornerRadius);
         glass.setIsDock(false);
@@ -663,18 +703,18 @@ export class UIManager {
         glass.hide();
         // Follows the stage's frames while the menu is shown; an open menu that
         // does not change costs no frames.
-        const stopFrameSync = () => stopStageLoop(this._frameSignalSlot, this._frameSlot);
+        const stopFrameSync = () => (0, frameLoops_js_1.stopStageLoop)(this._frameSignalSlot, this._frameSlot);
         const startFrameSync = () => {
             if (this._frameSignalId !== 0)
                 return;
             this._restackGlass();
-            startSyncLoop(this._frameSignalSlot, this._frameSlot, {
+            (0, frameLoops_js_1.startSyncLoop)(this._frameSignalSlot, this._frameSlot, {
                 alive: () => !!this.glass && this.targetActor.mapped,
                 honourFreeze: true,
                 errorTag: 'UIManager',
                 step: () => {
                     // Checked before this frame's sync dirties anything.
-                    ensureGlassAllocated(this.glass);
+                    (0, allocation_js_1.ensureGlassAllocated)(this.glass);
                     this._syncGeometry();
                 },
             });
@@ -766,7 +806,7 @@ export class UIManager {
     _measureMenu() {
         // The allocation: a hover restyle leaves a relayout pending, during
         // which get_size() reports the preferred size including CSS margins.
-        let [inW, inH] = getAllocatedSize(this.animActor);
+        let [inW, inH] = (0, geometry_js_1.getAllocatedSize)(this.animActor);
         let [scaleX, scaleY] = this.animActor.get_scale();
         inW = Number.isNaN(inW) || inW <= 0 ? (this._stableBaseW || 1) : inW;
         inH = Number.isNaN(inH) || inH <= 0 ? (this._stableBaseH || 1) : inH;
@@ -784,7 +824,7 @@ export class UIManager {
         };
     }
     _resolveMenuOrigin(w) {
-        return resolveGlassOrigin(this.animActor, this, () => {
+        return (0, glassBounds_js_1.resolveGlassOrigin)(this.animActor, this, () => {
             const monitor = Main.layoutManager.primaryMonitor;
             if (!monitor)
                 return [0, 0];
@@ -799,8 +839,8 @@ export class UIManager {
         // Monitor-local, as the shader uses them.
         let localBgX = bgX - monitorX;
         let localBgY = bgY - monitorY;
-        placeScreenGlass(glass, monitorX, monitorY, screenW, screenH, { x: localBgX, y: localBgY, w: bgW, h: bgH });
-        glass.setShadowMaxRadius(GLASS_SHADOW_MAX_RADIUS);
+        (0, glassBounds_js_1.placeScreenGlass)(glass, monitorX, monitorY, screenW, screenH, { x: localBgX, y: localBgY, w: bgW, h: bgH });
+        glass.setShadowMaxRadius(glassBounds_js_1.GLASS_SHADOW_MAX_RADIUS);
         glass.setResolution(screenW, screenH);
         glass.setGlassGeometry(localBgX, localBgY, bgW, bgH);
         this._lastBgW = bgW;
@@ -811,7 +851,7 @@ export class UIManager {
         this._lastScreenH = screenH;
     }
     _applyGlassScale(scaleX, scaleY) {
-        applyGlassScale(this.glass, this._cornerRadius, scaleX, scaleY);
+        (0, glassBounds_js_1.applyGlassScale)(this.glass, this._cornerRadius, scaleX, scaleY);
     }
     _updateResolution() {
         if (!this.glass)
@@ -822,7 +862,7 @@ export class UIManager {
         }
     }
     _hasStyleClass(actor, className) {
-        return actor instanceof St.Widget &&
+        return actor instanceof 5.default.Widget &&
             actor.has_style_class_name(className);
     }
     _collectAdaptiveTextTargets(actor = this.menu?.actor, targets = []) {
@@ -840,7 +880,7 @@ export class UIManager {
             return foundActors;
         if (this._isCard(actor))
             return foundActors;
-        if (actor instanceof St.Label || actor instanceof Clutter.Text || actor instanceof St.Button || actor instanceof St.Icon) {
+        if (actor instanceof 5.default.Label || actor instanceof 4.default.Text || actor instanceof 5.default.Button || actor instanceof 5.default.Icon) {
             if (actor.visible) {
                 foundActors.push(actor);
             }
@@ -851,18 +891,18 @@ export class UIManager {
     }
     _setActorColor(actor, color, skipAnimations = false, batchStart) {
         // Clutter.Text targets have no St style.
-        if (!(actor instanceof St.Widget))
+        if (!(actor instanceof 5.default.Widget))
             return;
         if (!this._styledActors.has(actor)) {
             this._styledActors.set(actor, actor.get_style() || '');
             actor.connect('destroy', () => {
-                adaptiveColorTweener.cancel(actor);
+                colors_js_1.adaptiveColorTweener.cancel(actor);
                 this._styledActors.delete(actor);
                 this._sampleColors.delete(actor);
             });
         }
         let isInsensitive = false;
-        if (actor instanceof St.Button) {
+        if (actor instanceof 5.default.Button) {
             isInsensitive = !actor.reactive || actor.has_style_pseudo_class('insensitive');
         }
         if (actor._currentTargetColor === color && actor._currentInsensitiveState === isInsensitive)
@@ -873,7 +913,7 @@ export class UIManager {
     }
     _clearAdaptiveStyles() {
         for (const [actor, originalStyle] of this._styledActors.entries()) {
-            adaptiveColorTweener.cancel(actor);
+            colors_js_1.adaptiveColorTweener.cancel(actor);
             actor._currentTargetColor = undefined;
             actor._currentInsensitiveState = undefined;
             actor.set_style(originalStyle || null);
@@ -891,7 +931,7 @@ export class UIManager {
             this._backdropRefreshId = 0;
         }
         for (const [actor, id] of this._hoverSignals.entries()) {
-            if (isActorValid(actor))
+            if ((0, lifecycle_js_1.isActorValid)(actor))
                 actor.disconnect(id);
         }
         this._hoverSignals.clear();
@@ -905,7 +945,7 @@ export class UIManager {
             if (!holder || restyled.has(holder) || this._hoverSignals.has(holder))
                 continue;
             // Only St widgets emit style-changed.
-            if (!(holder instanceof St.Widget))
+            if (!(holder instanceof 5.default.Widget))
                 continue;
             this._hoverSignals.set(holder, holder.connect('style-changed', () => {
                 if (this._applyingColors)
@@ -915,7 +955,7 @@ export class UIManager {
         }
         // Forget holders that have been destroyed; their handlers went with them.
         for (const actor of this._hoverSignals.keys()) {
-            if (!isActorValid(actor))
+            if (!(0, lifecycle_js_1.isActorValid)(actor))
                 this._hoverSignals.delete(actor);
         }
     }
@@ -925,24 +965,24 @@ export class UIManager {
         this._pendingBackdropRoots.add(root);
         if (this._backdropRefreshId !== 0)
             return;
-        this._backdropRefreshId = global.compositor.get_laters().add(Meta.LaterType.BEFORE_REDRAW, () => {
+        this._backdropRefreshId = global.compositor.get_laters().add(7.default.LaterType.BEFORE_REDRAW, () => {
             this._backdropRefreshId = 0;
             const roots = [...this._pendingBackdropRoots];
             this._pendingBackdropRoots.clear();
             const targets = [];
             for (const actor of roots) {
-                if (isActorValid(actor))
+                if ((0, lifecycle_js_1.isActorValid)(actor))
                     this._findAllTextActors(actor, targets);
             }
             this._applyBackdropColorsTo(targets);
-            return GLib.SOURCE_REMOVE;
+            return 6.default.SOURCE_REMOVE;
         });
     }
     _applyBackdropColorsTo(targets) {
         if (!targets || targets.length === 0)
             return;
         const root = this.menu?.actor ?? null;
-        const batchStart = GLib.get_monotonic_time();
+        const batchStart = 6.default.get_monotonic_time();
         // Our own restyles emit style-changed too; see _watchHoverFor().
         this._applyingColors = true;
         for (const actor of new Set(targets)) {
@@ -965,7 +1005,7 @@ export class UIManager {
         if (!colorMap || colorMap.size === 0)
             return;
         // One timestamp for the whole map, so a row of labels flips together.
-        const batchStart = GLib.get_monotonic_time();
+        const batchStart = 6.default.get_monotonic_time();
         this._applyingColors = true;
         for (const [actor, color] of colorMap.entries()) {
             this._sampleColors.set(actor, color);
@@ -994,10 +1034,10 @@ export class UIManager {
             // and placed; an idle of high priority runs once open() has returned,
             // still ahead of the frame.
             if (this._openSampleId === 0) {
-                this._openSampleId = GLib.idle_add(GLib.PRIORITY_HIGH, () => {
+                this._openSampleId = 6.default.idle_add(6.default.PRIORITY_HIGH, () => {
                     this._openSampleId = 0;
                     this._updateAdaptiveTextColors(true);
-                    return GLib.SOURCE_REMOVE;
+                    return 6.default.SOURCE_REMOVE;
                 });
             }
         }
@@ -1006,24 +1046,24 @@ export class UIManager {
         }
         if (this._adaptiveTimerId !== 0)
             return;
-        this._adaptiveTimerId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, this._adaptiveConfig.sampleIntervalMs, () => {
+        this._adaptiveTimerId = 6.default.timeout_add(6.default.PRIORITY_DEFAULT, this._adaptiveConfig.sampleIntervalMs, () => {
             if (!this.menu?.isOpen) {
                 this._adaptiveTimerId = 0;
-                return GLib.SOURCE_REMOVE;
+                return 6.default.SOURCE_REMOVE;
             }
             const opening = this._tickId !== 0;
             if (!opening || this._awaitingOpenColors)
                 this._updateAdaptiveTextColors(this._awaitingOpenColors);
-            return GLib.SOURCE_CONTINUE;
+            return 6.default.SOURCE_CONTINUE;
         });
     }
     _stopAdaptiveColorSampling() {
         if (this._adaptiveTimerId !== 0) {
-            GLib.source_remove(this._adaptiveTimerId);
+            6.default.source_remove(this._adaptiveTimerId);
             this._adaptiveTimerId = 0;
         }
         if (this._openSampleId !== 0) {
-            GLib.source_remove(this._openSampleId);
+            6.default.source_remove(this._openSampleId);
             this._openSampleId = 0;
         }
         if (this._newTextId !== 0) {
@@ -1039,7 +1079,7 @@ export class UIManager {
     _queueNewTextColors() {
         if (!this._adaptiveConfig.enabled || !this.menu?.isOpen || this._newTextId !== 0)
             return;
-        this._newTextId = global.compositor.get_laters().add(Meta.LaterType.BEFORE_REDRAW, () => {
+        this._newTextId = global.compositor.get_laters().add(7.default.LaterType.BEFORE_REDRAW, () => {
             this._newTextId = 0;
             if (this._adaptiveInFlight)
                 this._newTextPending = true;
@@ -1047,7 +1087,7 @@ export class UIManager {
                 this._colorNewText();
             else if (this._awaitingOpenColors)
                 this._updateAdaptiveTextColors(true);
-            return GLib.SOURCE_REMOVE;
+            return 6.default.SOURCE_REMOVE;
         });
     }
     _colorNewText() {
@@ -1124,7 +1164,7 @@ export class UIManager {
         const stylePrefix = originalStyle ? `${originalStyle.replace(/;$/, '')}; ` : '';
         let themeNode = actor.get_theme_node();
         let startColor = themeNode.get_foreground_color();
-        let targetRgb = hexToRgb(targetHexColor);
+        let targetRgb = (0, colors_js_1.hexToRgb)(targetHexColor);
         // Insensitive items keep their dimmed look.
         let targetAlpha = isInsensitive ? 0.5 : 1.0;
         let startAlpha = startColor.alpha / 255.0;
@@ -1133,15 +1173,15 @@ export class UIManager {
             actor.set_style(`${stylePrefix}color: ${rgba}; -st-icon-foreground-color: ${rgba};`);
         };
         if (skipAnimations) {
-            adaptiveColorTweener.cancel(actor);
+            colors_js_1.adaptiveColorTweener.cancel(actor);
             apply(targetRgb.r, targetRgb.g, targetRgb.b, targetAlpha);
             return;
         }
         const startRgb = { r: startColor.red, g: startColor.green, b: startColor.blue };
-        adaptiveColorTweener.add(actor, {
+        colors_js_1.adaptiveColorTweener.add(actor, {
             startRgb, startAlpha,
             targetRgb, targetAlpha,
-            crossFade: resolveCrossFade(startRgb, targetRgb),
+            crossFade: (0, colors_js_1.resolveCrossFade)(startRgb, targetRgb),
             durationMs,
             apply,
         }, batchStart);
@@ -1149,15 +1189,15 @@ export class UIManager {
     // The spring open/close animation.
     _startAnimation(targetValue) {
         if (this._tickId !== 0) {
-            removeFrameTicker(this._tickId);
+            (0, frameTicker_js_1.removeFrameTicker)(this._tickId);
             this._tickId = 0;
         }
         if (!this._enableAnimation) {
             this._endMorph();
-            showMenuAtRest(this.glass, this.animActor);
+            (0, menuSpring_js_1.showMenuAtRest)(this.glass, this.animActor);
             return;
         }
-        if (this._growFromButton && St.Settings.get().enable_animations && this._startMorph(targetValue === 1))
+        if (this._growFromButton && 5.default.Settings.get().enable_animations && this._startMorph(targetValue === 1))
             return;
         this._endMorph();
         if (this.animActor)
@@ -1174,21 +1214,21 @@ export class UIManager {
             this._springScale.target = targetValue;
         }
         if (this._tickId === 0) {
-            let lastTime = GLib.get_monotonic_time();
-            this._tickId = addFrameTicker(() => {
+            let lastTime = 6.default.get_monotonic_time();
+            this._tickId = (0, frameTicker_js_1.addFrameTicker)(() => {
                 if (!this.glass || !this.targetActor) {
                     this._tickId = 0;
-                    return GLib.SOURCE_REMOVE;
+                    return 6.default.SOURCE_REMOVE;
                 }
-                let currentTime = GLib.get_monotonic_time();
+                let currentTime = 6.default.get_monotonic_time();
                 let elapsedMs = (currentTime - lastTime) / 1000;
                 lastTime = currentTime;
-                const frame = stepMenuSpring(this._swiftAnimation ? this._swiftSpringScale : this._springScale, elapsedMs);
+                const frame = (0, menuSpring_js_1.stepMenuSpring)(this._swiftAnimation ? this._swiftSpringScale : this._springScale, elapsedMs);
                 if (frame.stopped)
                     this._tickId = 0;
-                applyMenuFrame(frame, this.animActor, this.glass, this.menu.actor, () => this._syncGeometry());
-                return frame.stopped ? GLib.SOURCE_REMOVE : GLib.SOURCE_CONTINUE;
-            }, normalizeAnimationIntervalMs(this._animationInterval));
+                (0, menuSpring_js_1.applyMenuFrame)(frame, this.animActor, this.glass, this.menu.actor, () => this._syncGeometry());
+                return frame.stopped ? 6.default.SOURCE_REMOVE : 6.default.SOURCE_CONTINUE;
+            }, (0, frameTicker_js_1.normalizeAnimationIntervalMs)(this._animationInterval));
         }
     }
     // The button the menu belongs to, as the glass it grows out of: the capsule
@@ -1197,18 +1237,18 @@ export class UIManager {
     // border, and the clock on its label rather than on the whole button.
     _buttonRect() {
         const source = this.menu?.sourceActor;
-        if (!source || !isActorValid(source) || !source.mapped)
+        if (!source || !(0, lifecycle_js_1.isActorValid)(source) || !source.mapped)
             return null;
         const label = source._clockDisplay;
-        const actor = label instanceof St.Widget && label.mapped ? label : source;
+        const actor = label instanceof 5.default.Widget && label.mapped ? label : source;
         const [x, y] = actor.get_transformed_position();
         const [w, h] = actor.get_transformed_size();
         if (!Number.isFinite(x) || !Number.isFinite(y) || !(w >= 1) || !(h >= 1))
             return null;
         const node = actor.get_theme_node();
         const [sx, sy] = actor.get_transformed_size().map((v, i) => v / Math.max(i ? actor.height : actor.width, 1));
-        const left = node.get_border_width(St.Side.LEFT) * sx, right = node.get_border_width(St.Side.RIGHT) * sx;
-        const top = node.get_border_width(St.Side.TOP) * sy, bottom = node.get_border_width(St.Side.BOTTOM) * sy;
+        const left = node.get_border_width(5.default.Side.LEFT) * sx, right = node.get_border_width(5.default.Side.RIGHT) * sx;
+        const top = node.get_border_width(5.default.Side.TOP) * sy, bottom = node.get_border_width(5.default.Side.BOTTOM) * sy;
         if (w - left - right < 1 || h - top - bottom < 1)
             return [x, y, w, h];
         return [x + left, y + top, w - left - right, h - top - bottom];
@@ -1219,7 +1259,7 @@ export class UIManager {
         if (!this.targetActor.mapped)
             return null;
         const a = this.animActor;
-        const [w, h] = getAllocatedSize(a);
+        const [w, h] = (0, geometry_js_1.getAllocatedSize)(a);
         const [tx, ty] = a.get_transformed_position();
         const k = this.targetActor.get_scale()[0] || 1;
         const x = tx - a.translation_x * k;
@@ -1251,7 +1291,7 @@ export class UIManager {
         this._stopMorphTicker();
         let lens = prev?.lens;
         if (!lens) {
-            lens = new ContentLens();
+            lens = new contentLens_js_1.ContentLens();
             this.animActor.add_effect_with_name(CONTENT_LENS, lens);
         }
         const blurRadius = this._settings.get_int(this._key('blur-radius'));
@@ -1269,7 +1309,7 @@ export class UIManager {
         this.animActor.remove_all_transitions();
         this.glass.remove_all_transitions();
         this.animActor.set_pivot_point(0, 0);
-        this._morphTickId = addFrameTicker(() => this._stepMorph(), normalizeAnimationIntervalMs(this._animationInterval));
+        this._morphTickId = (0, frameTicker_js_1.addFrameTicker)(() => this._stepMorph(), (0, frameTicker_js_1.normalizeAnimationIntervalMs)(this._animationInterval));
         return true;
     }
     _stepMorph() {
@@ -1303,12 +1343,12 @@ export class UIManager {
                 this._endMorph();
                 return false;
             }
-            m.motion = new MenuMorphMotion(m.opening, m.button, menu, this._cornerRadius * this._menuScale);
+            m.motion = new menuMorph_js_1.MenuMorphMotion(m.opening, m.button, menu, this._cornerRadius * this._menuScale);
         }
         else {
             m.motion.retarget(m.button, menu, this._cornerRadius * this._menuScale);
         }
-        const now = GLib.get_monotonic_time();
+        const now = 6.default.get_monotonic_time();
         const frame = m.motion.step(m.lastUs ? (now - m.lastUs) / 1e6 : 1 / 60);
         m.lastUs = now;
         this._placeMorph(frame);
@@ -1381,7 +1421,7 @@ export class UIManager {
     _stopMorphTicker() {
         if (!this._morphTickId)
             return;
-        removeFrameTicker(this._morphTickId);
+        (0, frameTicker_js_1.removeFrameTicker)(this._morphTickId);
         this._morphTickId = 0;
     }
     // Leaves the glass and the menu as the rest of the manager expects them.
@@ -1422,16 +1462,16 @@ export class UIManager {
             sig.target.disconnect(sig.id);
         this._signals = [];
         if (this._tickId) {
-            removeFrameTicker(this._tickId);
+            (0, frameTicker_js_1.removeFrameTicker)(this._tickId);
             this._tickId = 0;
         }
         this._endMorph();
-        stopStageLoop(this._frameSignalSlot, this._frameSlot);
+        (0, frameLoops_js_1.stopStageLoop)(this._frameSignalSlot, this._frameSlot);
         this._disconnectAccentColor();
     }
     _disconnectAccentColor() {
         if (this._accentColorTimeoutId) {
-            GLib.Source.remove(this._accentColorTimeoutId);
+            6.default.Source.remove(this._accentColorTimeoutId);
             this._accentColorTimeoutId = 0;
         }
         if (this._interfaceSettings && this._accentColorSignalId) {
@@ -1442,7 +1482,7 @@ export class UIManager {
     }
     // The shell stays dark for the default scheme too, but that scheme asks for light apps, so the cards follow it.
     _syncStyleVariant() {
-        if (St.Settings.get().color_scheme !== St.SystemColorScheme.PREFER_DARK)
+        if (5.default.Settings.get().color_scheme !== 5.default.SystemColorScheme.PREFER_DARK)
             this.animActor.add_style_class_name('liquid-glass-light');
         else
             this.animActor.remove_style_class_name('liquid-glass-light');
@@ -1460,7 +1500,7 @@ export class UIManager {
             this.animActor.opacity = 255;
         }
         if (this._dynamicCssFile) {
-            const themeContext = St.ThemeContext.get_for_stage(global.stage);
+            const themeContext = 5.default.ThemeContext.get_for_stage(global.stage);
             const theme = themeContext.get_theme();
             theme.unload_stylesheet(this._dynamicCssFile);
             this._dynamicCssFile = null;
@@ -1473,7 +1513,7 @@ export class UIManager {
         if (!this._actorDestroyed && this.menu.actor) {
             this.menu.actor.opacity = 255;
             if (this.menu.isOpen) {
-                this.menu.close(MENU_NO_ANIMATION);
+                this.menu.close(shellVersion_js_1.MENU_NO_ANIMATION);
             }
         }
     }
@@ -1483,7 +1523,7 @@ export class UIManager {
         if (glass) {
             glass.cleanup();
             // At shell shutdown the stage may have destroyed it already.
-            if (isActorValid(glass))
+            if ((0, lifecycle_js_1.isActorValid)(glass))
                 glass.destroy();
         }
         this._menuRoot = null;
@@ -1492,7 +1532,7 @@ export class UIManager {
     }
     cleanup() {
         this._cancelHeightMeasurement();
-        stopStageLoop(this._frameSignalSlot, this._frameSlot);
+        (0, frameLoops_js_1.stopStageLoop)(this._frameSignalSlot, this._frameSlot);
         for (let sigId of this._settingsSignals)
             this._settings.disconnect(sigId);
         this._settingsSignals = [];
@@ -1509,3 +1549,4 @@ export class UIManager {
         this._removeEffect();
     }
 }
+exports.UIManager = UIManager;

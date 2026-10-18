@@ -1,6 +1,12 @@
-import St from 'gi://St';
-import GLib from 'gi://GLib';
-import { QS_MENU_TOGGLE_CLASS } from '../shellVersion.js';
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.ToggleStyles = void 0;
+const 1 = __importDefault(require("gi://St"));
+const 2 = __importDefault(require("gi://GLib"));
+const shellVersion_js_1 = require("../shellVersion.js");
 // Quick Settings' toggle-button mode: every toggle pod gets its own piece of
 // glass. This finds the pods, samples each pod's own color (it changes with
 // ON/OFF and hover) for the glass's base color, and makes the pod's own
@@ -15,11 +21,12 @@ function _releaseEntry(pod, entry) {
     if (entry.destroyId)
         pod.disconnect(entry.destroyId);
     for (const { actor, origStyle } of entry.styledSubs) {
-        if (actor instanceof St.Widget)
+        if (actor instanceof 1.default.Widget)
             actor.set_style(origStyle || null);
     }
 }
-export class ToggleStyles {
+
+class ToggleStyles {
     _logger;
     _isOpen;
     constructor(_logger, _isOpen) {
@@ -76,15 +83,15 @@ export class ToggleStyles {
             return found;
         }
         let entersSystemItem = inSystemItem ||
-            (actor instanceof St.Widget && actor.has_style_class_name('quick-settings-system-item'));
+            (actor instanceof 1.default.Widget && actor.has_style_class_name('quick-settings-system-item'));
         for (let child of actor.get_children())
             this._findAllToggleContainers(child, found, entersSystemItem);
         return found;
     }
     _toggleLeafKind(actor, inSystemItem) {
-        if (!(actor instanceof St.Widget))
+        if (!(actor instanceof 1.default.Widget))
             return null;
-        if (actor.has_style_class_name(QS_MENU_TOGGLE_CLASS))
+        if (actor.has_style_class_name(shellVersion_js_1.QS_MENU_TOGGLE_CLASS))
             return 'toggle';
         if (actor.has_style_class_name('quick-toggle'))
             return 'toggle';
@@ -111,7 +118,7 @@ export class ToggleStyles {
     _getStylableSubActors(pod) {
         const found = [];
         const walk = (actor) => {
-            if (actor instanceof St.Widget)
+            if (actor instanceof 1.default.Widget)
                 found.push(actor);
             for (let child of actor.get_children())
                 walk(child);
@@ -122,7 +129,7 @@ export class ToggleStyles {
     // The actor whose color represents the pod: for a has-menu pod, its main
     // `.quick-toggle` button, which may sit more than one level down.
     _getPrimaryToggleButton(pod) {
-        if (pod instanceof St.Widget && pod.has_style_class_name(QS_MENU_TOGGLE_CLASS)) {
+        if (pod instanceof 1.default.Widget && pod.has_style_class_name(shellVersion_js_1.QS_MENU_TOGGLE_CLASS)) {
             let found = null;
             const search = (actor) => {
                 if (found)
@@ -130,7 +137,7 @@ export class ToggleStyles {
                 for (let child of actor.get_children()) {
                     if (found)
                         return;
-                    if (child instanceof St.Widget && child.has_style_class_name('quick-toggle')) {
+                    if (child instanceof 1.default.Widget && child.has_style_class_name('quick-toggle')) {
                         found = child;
                         return;
                     }
@@ -147,7 +154,7 @@ export class ToggleStyles {
     _getToggleIconActors(root) {
         const found = [];
         const walk = (actor) => {
-            if (actor instanceof St.Widget && actor.has_style_class_name('quick-toggle-icon')) {
+            if (actor instanceof 1.default.Widget && actor.has_style_class_name('quick-toggle-icon')) {
                 found.push(actor);
             }
             for (let child of actor.get_children())
@@ -160,7 +167,7 @@ export class ToggleStyles {
     // The theme background as normalized {r, g, b, a}, falling back to the
     // average of a background gradient when the flat color is transparent.
     _readThemeBg(actor) {
-        if (!(actor instanceof St.Widget))
+        if (!(actor instanceof 1.default.Widget))
             return null;
         actor.ensure_style();
         let themeNode = actor.get_theme_node();
@@ -168,7 +175,7 @@ export class ToggleStyles {
         if (bg.alpha / 255 > 0.02)
             return { r: bg.red / 255, g: bg.green / 255, b: bg.blue / 255, a: bg.alpha / 255 };
         let [gradType, start, end] = themeNode.get_background_gradient();
-        if (gradType !== St.GradientType.NONE) {
+        if (gradType !== 1.default.GradientType.NONE) {
             let a = ((start.alpha + end.alpha) / 2) / 255;
             if (a > 0.02) {
                 return {
@@ -202,7 +209,7 @@ export class ToggleStyles {
         // Bounds the walk, which runs on every sampling pass.
         let guard = 32;
         while (node && outA < 0.995 && guard-- > 0) {
-            if (node instanceof St.Widget)
+            if (node instanceof 1.default.Widget)
                 add(this._readThemeBg(node));
             node = node.get_parent();
         }
@@ -217,7 +224,7 @@ export class ToggleStyles {
     // (ties go to the earlier one), and the result is composited over what is
     // behind it. `a` only tells the caller whether any real paint was found.
     _samplePodColor(pod, primary) {
-        let isHasMenu = pod instanceof St.Widget && pod.has_style_class_name(QS_MENU_TOGGLE_CLASS);
+        let isHasMenu = pod instanceof 1.default.Widget && pod.has_style_class_name(shellVersion_js_1.QS_MENU_TOGGLE_CLASS);
         let candidates = [primary];
         if (isHasMenu && pod !== primary)
             candidates.push(pod);
@@ -248,13 +255,13 @@ export class ToggleStyles {
     // inner actors of has-menu pods (on connection changes, for example).
     _ensureToggleStyles(toggles) {
         for (let pod of toggles) {
-            if (!(pod instanceof St.Widget))
+            if (!(pod instanceof 1.default.Widget))
                 continue;
             const entry = this._ensureEntry(pod);
             const primary = this._getPrimaryToggleButton(pod);
             // Once overridden the theme reports our transparency, so only a fresh
             // actor is sampled here.
-            if (primary instanceof St.Widget && !this._hasOverride(primary))
+            if (primary instanceof 1.default.Widget && !this._hasOverride(primary))
                 this._updateBaseColor(entry, pod, primary);
             this._overrideSubStyles(entry, pod);
         }
@@ -287,7 +294,7 @@ export class ToggleStyles {
     _overrideSubStyles(entry, pod) {
         const known = new Set(entry.styledSubs.map(s => s.actor));
         for (let sub of this._getStylableSubActors(pod)) {
-            if (!(sub instanceof St.Widget) || this._hasOverride(sub))
+            if (!(sub instanceof 1.default.Widget) || this._hasOverride(sub))
                 continue;
             const origStyle = sub.get_style() || '';
             sub.set_style(_withOverride(origStyle));
@@ -311,18 +318,18 @@ export class ToggleStyles {
             return;
         entry.stateKey = stateKey;
         for (const { actor, origStyle } of entry.styledSubs) {
-            if (actor instanceof St.Widget)
+            if (actor instanceof 1.default.Widget)
                 actor.set_style(origStyle || null);
         }
         if (this._releaseIfSliderLostPill(pod, entry))
             return;
-        if (primary instanceof St.Widget) {
+        if (primary instanceof 1.default.Widget) {
             const sampled = this._updateBaseColor(entry, pod, primary);
             if (this._debugToggleColorLogFrames > 0)
                 this._logPodColor(pod, primary, entry, sampled);
         }
         for (const { actor, origStyle } of entry.styledSubs) {
-            if (actor instanceof St.Widget)
+            if (actor instanceof 1.default.Widget)
                 actor.set_style(_withOverride(origStyle));
         }
     }
@@ -332,7 +339,7 @@ export class ToggleStyles {
     // theme is readable: if it no longer paints a pill, it is released (its
     // styles are already restored).
     _releaseIfSliderLostPill(pod, entry) {
-        if (!(pod instanceof St.Widget) || !pod.has_style_class_name('quick-slider'))
+        if (!(pod instanceof 1.default.Widget) || !pod.has_style_class_name('quick-slider'))
             return false;
         const pill = this._readThemeBg(pod);
         if (pill && pill.a > 0.02)
@@ -345,8 +352,8 @@ export class ToggleStyles {
         return true;
     }
     _logPodColor(pod, primary, entry, sampled) {
-        let isHasMenu = pod instanceof St.Widget && pod.has_style_class_name(QS_MENU_TOGGLE_CLASS);
-        let podCls = pod instanceof St.Widget ? (pod.get_style_class_name() || '') : '';
+        let isHasMenu = pod instanceof 1.default.Widget && pod.has_style_class_name(shellVersion_js_1.QS_MENU_TOGGLE_CLASS);
+        let podCls = pod instanceof 1.default.Widget ? (pod.get_style_class_name() || '') : '';
         let primaryCls = primary.get_style_class_name() || '';
         let checked = primary.has_style_pseudo_class('checked');
         // Every candidate, not only the winner (see _samplePodColor()).
@@ -365,13 +372,13 @@ export class ToggleStyles {
         this._resampleToggleColors();
         if (this._toggleColorTimerId !== 0)
             return;
-        this._toggleColorTimerId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, ToggleStyles.TOGGLE_COLOR_SAMPLE_MS, () => {
+        this._toggleColorTimerId = 2.default.timeout_add(2.default.PRIORITY_DEFAULT, ToggleStyles.TOGGLE_COLOR_SAMPLE_MS, () => {
             if (!this._isOpen()) {
                 this._toggleColorTimerId = 0;
-                return GLib.SOURCE_REMOVE;
+                return 2.default.SOURCE_REMOVE;
             }
             this._resampleToggleColors();
-            return GLib.SOURCE_CONTINUE;
+            return 2.default.SOURCE_CONTINUE;
         });
     }
     // The pseudo-classes of the actors _samplePodColor() can pick from.
@@ -384,7 +391,7 @@ export class ToggleStyles {
             actors.push(icon);
         let key = '';
         for (let actor of actors) {
-            if (!(actor instanceof St.Widget)) {
+            if (!(actor instanceof 1.default.Widget)) {
                 key += '?|';
                 continue;
             }
@@ -396,7 +403,7 @@ export class ToggleStyles {
     }
     stop() {
         if (this._toggleColorTimerId !== 0) {
-            GLib.source_remove(this._toggleColorTimerId);
+            2.default.source_remove(this._toggleColorTimerId);
             this._toggleColorTimerId = 0;
         }
     }
@@ -408,3 +415,4 @@ export class ToggleStyles {
         this._toggleRegions.clear();
     }
 }
+exports.ToggleStyles = ToggleStyles;
