@@ -26,7 +26,6 @@ function write(path, bytes) {
         });
     });
 }
-
 await serveRequests(async ({ file, cache }) => {
     const analysis = analyzeIcon(await drawIcon(file, ANALYSIS_SIZE));
     const map = buildStyleMap(analysis, await drawIcon(file, ANALYSIS_SIZE * 2));

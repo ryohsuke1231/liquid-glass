@@ -1,14 +1,11 @@
 import Clutter from 'gi://Clutter';
 import { setUniformVector } from '../shellVersion.js';
-
 export class RenderPasses {
     // Per-pass pipeline copies; see pipeline().
     _passPipelines = new Map();
-
     clear() {
         this._passPipelines.clear();
     }
-
     /**
      * A copy of `base` for one pass. Paint nodes run after the paint that
      * queued them returns, so passes sharing a pipeline would all draw with the
@@ -25,7 +22,6 @@ export class RenderPasses {
         this._passPipelines.set(key, { base, copy });
         return copy;
     }
-
     /**
      * Queues a render-to-texture pass as a paint node. An actor builds its
      * node tree first and runs it afterwards, so the backdrop copy queued in the
@@ -41,7 +37,6 @@ export class RenderPasses {
         layerNode.add_child(drawNode);
         drawNode.add_texture_rectangle(new Clutter.ActorBox({ x1: 0, y1: 0, x2: destW, y2: destH }), uv[0], uv[1], uv[2], uv[3]);
     }
-
     /**
      * Queues the final composite as a paint node, after the copy and the blur
      * passes. Every layer is drawn with the same UV range:
@@ -54,12 +49,10 @@ export class RenderPasses {
         drawNode.add_texture_rectangle(new Clutter.ActorBox({ x1: dest[0], y1: dest[1], x2: dest[2], y2: dest[3] }), uv[0], uv[1], uv[2], uv[3]);
     }
 }
-
 // Cogl caches uniform locations, so these are cheap to call every frame.
 export function setPipelineVec2(pipeline, name, x, y) {
     setUniformVector(pipeline, name, [x, y]);
 }
-
 export function setPipelineFloat(pipeline, name, value) {
     pipeline.set_uniform_1f(pipeline.get_uniform_location(name), value);
 }

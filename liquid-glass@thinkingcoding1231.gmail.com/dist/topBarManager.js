@@ -18,7 +18,6 @@ const SIDES = ['top', 'bottom', 'left', 'right'];
 function sanitizeStyle(value) {
     return value === 'pill' || value === 'islands' ? value : 'off';
 }
-
 /** Glass behind the top bar: one pill or separate islands for its three button groups. */
 export class TopBarManager {
     _path;
@@ -45,14 +44,12 @@ export class TopBarManager {
     _forwardedPresses = new Map();
     _stagePointerSignalId = 0;
     _applyingLayout = false;
-
     constructor(_path, _settings, _logger) {
         this._path = _path;
         this._settings = _settings;
         this._logger = _logger;
         this._text = new AdaptiveTextColor(() => this._textRoots(), () => (this._glass ? [this._glass] : []), _logger, 'top bar');
     }
-
     setup() {
         const watch = (key, fn) => this._settingsIds.push(this._settings.connect(`changed::${key}`, fn));
         watch('top-bar-style', () => this._apply());
@@ -66,11 +63,9 @@ export class TopBarManager {
         }
         this._apply();
     }
-
     _key(suffix) {
         return `top-bar-${suffix}`;
     }
-
     _apply() {
         const style = sanitizeStyle(this._settings.get_string('top-bar-style'));
         if (style === this._style)
@@ -80,7 +75,6 @@ export class TopBarManager {
         if (style !== 'off')
             this._create();
     }
-
     _create() {
         const panel = Main.panel;
         const panelBox = Main.layoutManager.panelBox;
@@ -121,7 +115,6 @@ export class TopBarManager {
         this._sync();
         this._syncText();
     }
-
     _connectBoxSignals() {
         const panel = Main.panel;
         for (const box of [panel._leftBox, panel._centerBox, panel._rightBox]) {
@@ -131,7 +124,6 @@ export class TopBarManager {
             this._boxSignalIds.push([box, addedId], [box, removedId]);
         }
     }
-
     _releaseChild(child) {
         const target = this._containerTargets.find(([container]) => container === child)?.[1];
         for (const [actor, style] of this._childrenStyles) {
@@ -152,7 +144,6 @@ export class TopBarManager {
         target.remove_style_pseudo_class('hover');
         target.remove_style_pseudo_class('active');
     }
-
     _disconnectBoxSignals() {
         for (const [box, id] of this._boxSignalIds) {
             if (isActorValid(box)) {
@@ -161,7 +152,6 @@ export class TopBarManager {
         }
         this._boxSignalIds = [];
     }
-
     _applyMaterial() {
         const glass = this._glass;
         if (!glass)
@@ -174,18 +164,15 @@ export class TopBarManager {
         glass.setContrast(this._settings.get_double(this._key('contrast')));
         glass.setSaturation(this._settings.get_double(this._key('saturation')));
     }
-
     _insets(kind) {
         return Object.fromEntries(SIDES.map(side => [side, this._settings.get_int(this._key(`${kind}-${side}`))]));
     }
-
     // Buttons made without a menu carry a dummy one and act on their own handlers.
     _targetMenu(target) {
         const anyTarget = target;
         const menu = anyTarget.menu ?? anyTarget._delegate?.menu;
         return menu instanceof PopupMenu.PopupMenuBase ? menu : null;
     }
-
     _eventComesFromTarget(target, event) {
         let source = event.get_source();
         while (source) {
@@ -195,7 +182,6 @@ export class TopBarManager {
         }
         return false;
     }
-
     // A bounds test rather than a pick: this runs every frame and a pick walks the whole stage.
     _pointerIsOverContainer(container) {
         if (!container.mapped)
@@ -205,7 +191,6 @@ export class TopBarManager {
         const [w, h] = container.get_transformed_size();
         return px >= x && px < x + w && py >= y && py < y + h;
     }
-
     _syncForwardedHover() {
         for (const [container, target] of this._containerTargets) {
             if (!isActorValid(container) || !isActorValid(target))
@@ -221,19 +206,16 @@ export class TopBarManager {
             }
         }
     }
-
     _isPress(event) {
         const type = event.type();
         if (type === Clutter.EventType.TOUCH_BEGIN)
             return true;
         return type === Clutter.EventType.BUTTON_PRESS && event.get_button() === Clutter.BUTTON_PRIMARY;
     }
-
     _toggleOverview() {
         if (Main.overview.shouldToggleByCornerOrButton())
             Main.overview.toggle();
     }
-
     // A press on the wrapper above or below the button. Menus open on press, as the panel's own
     // buttons do, so their release needs no handling; Activities and plain buttons act on release.
     _onWrapperPress(container, target, event) {
@@ -256,7 +238,6 @@ export class TopBarManager {
         this._forwardedPresses.set(container, { touch, native: false });
         return Clutter.EVENT_STOP;
     }
-
     // The stage sees every release first, also one that ends outside the wrapper.
     _onStageEvent(event) {
         const type = event.type();
@@ -296,7 +277,6 @@ export class TopBarManager {
         }
         return Clutter.EVENT_PROPAGATE;
     }
-
     _setupContainerForwarding(container, target) {
         if (this._containerTargets.some(([actor]) => actor === container))
             return;
@@ -322,7 +302,6 @@ export class TopBarManager {
         this._containerTargets.push([container, target]);
         this._containerSignalIds.push([container, enterId], [container, leaveId], [target, targetLeaveId], [container, pressId]);
     }
-
     _disconnectContainerSignals() {
         // The panel's wrappers are not reactive on their own.
         for (const [container] of this._containerTargets) {
@@ -340,7 +319,6 @@ export class TopBarManager {
             global.stage.disconnect(this._stagePointerSignalId);
         this._stagePointerSignalId = 0;
     }
-
     // The bar grows by the margin and padding while each button keeps the theme's height. The
     // wrappers around the buttons fill the whole bar, so a press at the screen edge still lands.
     _applyLayout() {
@@ -388,7 +366,6 @@ export class TopBarManager {
             this._applyingLayout = false;
         }
     }
-
     _findPanelButton(root) {
         const queue = [root];
         while (queue.length > 0) {
@@ -399,7 +376,6 @@ export class TopBarManager {
         }
         return null;
     }
-
     _setChildStyle(actor, extra) {
         let entry = this._childrenStyles.find(([a]) => a === actor);
         if (!entry) {
@@ -409,7 +385,6 @@ export class TopBarManager {
         const own = entry[1]?.trim().replace(/;$/, '');
         actor.set_style(own ? `${own}; ${extra}` : extra);
     }
-
     _syncText() {
         if (!this._glass || !this._settings.get_boolean(this._key('enable-adaptive-text-color'))) {
             this._text.clear();
@@ -417,12 +392,10 @@ export class TopBarManager {
         }
         this._text.start(this._settings.get_int(this._key('sample-interval-ms')), sanitizeColorPreference(this._settings.get_string(this._key('adaptive-text-preference'))));
     }
-
     _textRoots() {
         const panel = Main.panel;
         return [panel._leftBox, panel._centerBox, panel._rightBox].filter(box => box && box.mapped);
     }
-
     // Visible child extent in bar coordinates.
     _boxExtent(box) {
         let x0 = Infinity, x1 = -Infinity;
@@ -436,7 +409,6 @@ export class TopBarManager {
         }
         return x1 > x0 ? [x0, x1] : null;
     }
-
     // Sync the glass beneath the panel, hiding it with the bar.
     _sync() {
         // Modal overlays may suppress leave-event; reconcile hover each frame.
@@ -514,7 +486,6 @@ export class TopBarManager {
         }
         glass.syncSources();
     }
-
     _remove() {
         stopStageLoop(this._frameSignalSlot, this._frameSlot);
         this._text.clear();
@@ -543,18 +514,15 @@ export class TopBarManager {
         this._islandGeometryHoldFrames = 0;
         this._style = 'off';
     }
-
     cleanup() {
         for (const id of this._settingsIds)
             this._settings.disconnect(id);
         this._settingsIds = [];
         this._remove();
     }
-
     get _frameSlot() {
         return { get: () => this._frameSyncId, set: (id) => { this._frameSyncId = id; } };
     }
-
     get _frameSignalSlot() {
         return { get: () => this._frameSignalId, set: (id) => { this._frameSignalId = id; } };
     }

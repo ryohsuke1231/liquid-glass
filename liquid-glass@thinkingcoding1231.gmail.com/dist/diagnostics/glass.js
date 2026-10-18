@@ -66,12 +66,12 @@ function _ringSampleOnce() {
             _ring.shift();
     }
 }
-
 // Whether the shell's own animation is still attached to the window actor.
 // A stall at a fixed scale/opacity looks the same from outside whether the
 // timeline is not being ticked (playing, progress stuck; `clock=NULL` when no
 // stage view reaches the actor), was stopped early (present, not playing), or
 // has already been removed (absent).
+
 function _dumpTransitions(wa, live) {
     for (const prop of ['opacity', 'scale-x']) {
         const tr = wa.get_transition(prop);
@@ -83,10 +83,10 @@ function _dumpTransitions(wa, live) {
                 `,clock=${tr.get_frame_clock() ? 'set' : 'NULL'}`;
     }
 }
-
 // The window actor around a window's glass, next to the glass's own row: a
 // frozen paint counter alone cannot tell minimised, unallocated and stuck
 // apart.
+
 function _dumpWindowState(glass) {
     const wa = glass.get_parent();
     if (!wa)
@@ -113,7 +113,6 @@ function _dumpWindowState(glass) {
     live.glassViews = glass.peek_stage_views().length;
     return live;
 }
-
 export function dumpGlassState() {
     const rows = [..._liveGlasses].map(glass => JSON.stringify({
         ...glass.describe(),
@@ -123,13 +122,11 @@ export function dumpGlassState() {
     diagnosticLog(`[Liquid Glass][dump]\n${out}`);
     return out;
 }
-
 // While the recorder is armed, flush it automatically the first few times a
 // window actor becomes stranded. Capped, because each flush writes to the
 // journal.
 let _autoCaptures = 0;
 const AUTO_CAPTURE_LIMIT = 6;
-
 export function noteStrandEntry(label, detail) {
     if (!_ringArmed)
         return;
@@ -140,7 +137,6 @@ export function noteStrandEntry(label, detail) {
         `on strand entry for "${label}" — ${detail}`);
     flushGlassRing();
 }
-
 // The recorder is off unless armed through global._lgGlass.ring(true), and
 // its timer only exists while it is armed.
 let _ringArmed = false;
@@ -161,7 +157,6 @@ function syncGlassRingSampler() {
         });
     }
 }
-
 export function setGlassRingArmed(armed) {
     _ringArmed = !!armed;
     syncGlassRingSampler();
@@ -171,11 +166,9 @@ export function setGlassRingArmed(armed) {
         _autoCaptures = 0;
     }
 }
-
 export function isGlassRingArmed() {
     return _ringArmed;
 }
-
 /**
  * Lets the sampler run whenever the recorder is armed. Pair with
  * stopGlassRingSampler() in disable().
@@ -185,12 +178,10 @@ export function startGlassRingSampler(intervalMs = 50) {
     _ringSamplerEnabled = true;
     syncGlassRingSampler();
 }
-
 export function stopGlassRingSampler() {
     _ringSamplerEnabled = false;
     setGlassRingArmed(false);
 }
-
 /** Writes the ring buffer out and clears it. */
 export function flushGlassRing() {
     if (!_ring.length) {
@@ -227,8 +218,8 @@ function report(msg) {
 function onOff(enabled) {
     return enabled ? 'ENABLED' : 'DISABLED';
 }
-
 // Applies a setter to every live glass and returns how many it reached.
+
 function onEveryGlass(apply) {
     for (const glass of _liveGlasses)
         apply(glass);
@@ -315,24 +306,20 @@ function createDebugApi() {
         earlyExit: (enabled) => report(`early exits ${onOff(enabled)} on ${onEveryGlass(fx => fx.setEarlyExitEnabled(enabled))} instance(s)`),
     };
 }
-
 /** Called from enable(): publishes global._lgGlass and the ring sampler. */
 export function installGlassDiagnostics() {
     global._lgGlass = createDebugApi();
     startGlassRingSampler(50);
 }
-
 /** Called from disable(). */
 export function removeGlassDiagnostics() {
     stopGlassMonitor();
     stopGlassRingSampler();
     delete global._lgGlass;
 }
-
 export function registerGlass(glass) {
     _liveGlasses.add(glass);
 }
-
 export function unregisterGlass(glass) {
     _liveGlasses.delete(glass);
 }

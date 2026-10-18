@@ -18,13 +18,11 @@ const LENS_SOFTNESS = 0.35;
 function fontKey(r) {
     return `${r.font}|${r.size}|${r.stretch}|${r.height}|${r.style}`;
 }
-
 /** Makes digits, keeping the glyphs of the last font asked for. */
 export class DigitsMaker {
     _key = '';
     _fields = null;
     _cancellable = new Gio.Cancellable();
-
     /** Rejects with a GError when the font cannot be read or the request was given up. */
     async make(request) {
         const key = fontKey(request);
@@ -45,7 +43,6 @@ export class DigitsMaker {
         return { bytes: encodeFields(field, lens, FIELD_RANGE), width: field.width, height: field.height, band,
             digitHeight: fields.digitHeight };
     }
-
     // One of the fonts the extension ships with, or an installed one.
     async _face(request) {
         const file = bundledFontFile(request.extensionPath, request.font);
@@ -64,7 +61,6 @@ export class DigitsMaker {
         });
         return fileFace(new TrueTypeFont(bytes), request.size);
     }
-
     destroy() {
         this._cancellable.cancel();
         this._fields?.then(fields => fields.cancellable.cancel(), () => { });

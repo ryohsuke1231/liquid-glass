@@ -24,7 +24,6 @@ function save(bytes) {
         });
     });
 }
-
 await serveRequests(async (request) => {
     const digits = await maker.make(request);
     const path = await save(digits.bytes);

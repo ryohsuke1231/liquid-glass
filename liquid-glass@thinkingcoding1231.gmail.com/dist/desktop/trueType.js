@@ -13,7 +13,6 @@ export class TrueTypeFont {
     _hMetrics;
     _cmap = new Map();
     _glyphs = new Map();
-
     constructor(bytes) {
         this._view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
         const v = this._view;
@@ -37,11 +36,9 @@ export class TrueTypeFont {
         this._numGlyphs = v.getUint16(this._table('maxp') + 4);
         this._readCmap();
     }
-
     _table(tag) {
         return this._tables.get(tag);
     }
-
     // The Unicode subtable: format 4 (BMP) or 12 (full range).
     _readCmap() {
         const v = this._view;
@@ -93,24 +90,20 @@ export class TrueTypeFont {
             }
         }
     }
-
     _advance(id) {
         const index = Math.min(id, this._hMetrics - 1);
         return this._view.getUint16(this._table('hmtx') + index * 4);
     }
-
     _glyphRange(id) {
         const v = this._view;
         const loca = this._table('loca');
         const at = (i) => this._longLoca ? v.getUint32(loca + i * 4) : v.getUint16(loca + i * 2) * 2;
         return [at(id), at(id + 1)];
     }
-
     /** The glyph for code point `c`, or for the missing glyph. */
     glyph(c) {
         return this._glyphById(this._cmap.get(c) ?? 0, 0);
     }
-
     _glyphById(id, depth) {
         let glyph = this._glyphs.get(id);
         if (glyph)
@@ -130,7 +123,6 @@ export class TrueTypeFont {
         this._glyphs.set(id, glyph);
         return glyph;
     }
-
     _simple(offset, count) {
         const v = this._view;
         const ends = [];
@@ -177,7 +169,6 @@ export class TrueTypeFont {
         }
         return contours;
     }
-
     _composite(offset, depth) {
         const v = this._view;
         const contours = [];
@@ -226,7 +217,6 @@ export class TrueTypeFont {
         return contours;
     }
 }
-
 /**
  * Traces `glyph` on Cairo context `cr` with its origin at (x, y) and `scale`
  * px per font unit, y down.

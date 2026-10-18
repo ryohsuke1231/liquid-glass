@@ -12,7 +12,6 @@ import { StageCopier } from './stageCopy.js';
 import { coglContext, paintNodeWithContext } from '../shellVersion.js';
 import { RelaySet, SAMPLE_MARGIN, localToStage } from './relays.js';
 import { registerGlass, unregisterGlass } from '../diagnostics/glass.js';
-
 /**
  * What every stage-reading glass shares: the renderer and its setters, the
  * shaders, the paint-time geometry hook, the sample rect and the composite.
@@ -48,10 +47,8 @@ export const GlassActor = GObject.registerClass(class GlassActor extends Clutter
         registerGlass(this);
         this._loadShaders();
     }
-
     vfunc_pick(_pickContext) {
     }
-
     async _loadShaders() {
         const start = GLib.get_monotonic_time();
         try {
@@ -69,12 +66,10 @@ export const GlassActor = GObject.registerClass(class GlassActor extends Clutter
         this._logger?.log(`[Liquid Glass] shaders loaded in ${elapsedMs.toFixed(1)}ms`);
         this._onShadersLoaded();
     }
-
     // Nothing was copied while the shaders were missing.
     _onShadersLoaded() {
         this._queueRepaint();
     }
-
     // The sample rect in shader space: the blur rect, or the whole glass.
     _sampleShaderRect() {
         const [resW, resH] = this._renderer.getResolution();
@@ -82,7 +77,6 @@ export const GlassActor = GObject.registerClass(class GlassActor extends Clutter
             return null;
         return this._renderer.geometry.blurRect() ?? [0, 0, resW, resH];
     }
-
     // Shader space to actor space. The size requested this frame, which the
     // allocation only catches up with in the relayout.
     _shaderScale() {
@@ -92,7 +86,6 @@ export const GlassActor = GObject.registerClass(class GlassActor extends Clutter
             return null;
         return [w / resW, h / resH];
     }
-
     // The sample rect plus SAMPLE_MARGIN, [x, y, w, h] in actor space.
     _sampleAreaRect() {
         const s = this._sampleShaderRect();
@@ -105,7 +98,6 @@ export const GlassActor = GObject.registerClass(class GlassActor extends Clutter
         const y1 = Math.ceil((s[1] + s[3]) * k[1]) + SAMPLE_MARGIN;
         return [x0, y0, x1 - x0, y1 - y0];
     }
-
     // A stage rect [x0, y0, x1, y1] as [x, y, w, h] in shader space.
     _stageToShader(rect, kx, ky) {
         const [ok0, ax, ay] = this.transform_stage_point(rect[0], rect[1]);
@@ -120,7 +112,6 @@ export const GlassActor = GObject.registerClass(class GlassActor extends Clutter
             return null;
         return [x0, y0, x1 - x0, y1 - y0];
     }
-
     // Shader space to actor space for this paint, from the allocation; null
     // while there is nothing to draw.
     _paintScale() {
@@ -132,7 +123,6 @@ export const GlassActor = GObject.registerClass(class GlassActor extends Clutter
             return null;
         return { kx: allocW / resW, ky: allocH / resH, resW, resH };
     }
-
     _beginPaint() {
         this._paints++;
         this._runLiveGeometryHook();
@@ -142,7 +132,6 @@ export const GlassActor = GObject.registerClass(class GlassActor extends Clutter
         this._renderer.prepare(ctx);
         return ctx;
     }
-
     /**
      * Blurs `texture`, which holds `blurRect` (shader space) of the backdrop,
      * unless `key` says the last blur is still current. The pool works in
@@ -166,7 +155,6 @@ export const GlassActor = GObject.registerClass(class GlassActor extends Clutter
         blur.render(root, texture, [0, 0, 1, 1], key);
         this._blurRuns++;
     }
-
     // Draws glass.frag over the part of the glass that can be non-transparent.
     _composite(root, backdrop, blurRect, kx, ky, resW, resH) {
         this._renderer.bindBackdrop(backdrop, blurRect);
@@ -176,7 +164,6 @@ export const GlassActor = GObject.registerClass(class GlassActor extends Clutter
         this._renderer.addComposite(root, drawRect, drawUV, this.get_paint_opacity());
         return r;
     }
-
     _runLiveGeometryHook() {
         if (!this._liveGeometryHook)
             return;
@@ -188,7 +175,6 @@ export const GlassActor = GObject.registerClass(class GlassActor extends Clutter
             this._inLiveGeometry = false;
         }
     }
-
     _queueRepaint() {
         // Repainting from inside this paint would request a new frame every frame.
         if (this._inLiveGeometry)
@@ -199,7 +185,6 @@ export const GlassActor = GObject.registerClass(class GlassActor extends Clutter
         }
         this.queue_redraw();
     }
-
     // The state behind global._lgGlass.dump(): every paint with diagnostics
     // on, about once a second otherwise.
     _snapshot(fields) {
@@ -214,7 +199,6 @@ export const GlassActor = GObject.registerClass(class GlassActor extends Clutter
             paintOpacity: this.get_paint_opacity(),
         };
     }
-
     /** One row of global._lgGlass.dump(). */
     describe() {
         return {
@@ -227,15 +211,12 @@ export const GlassActor = GObject.registerClass(class GlassActor extends Clutter
             opacity: this.opacity,
         };
     }
-
     get paintCount() {
         return this._paints;
     }
-
     get uniformValues() {
         return this._renderer.uniforms.values;
     }
-
     /**
      * Runs `fn` at the start of every paint, when the allocation of whatever
      * the glass follows is current, so it can correct the geometry the frame
@@ -245,11 +226,9 @@ export const GlassActor = GObject.registerClass(class GlassActor extends Clutter
     setLiveGeometryHook(fn) {
         this._liveGeometryHook = fn;
     }
-
     beginBatch() {
         this._batchDepth++;
     }
-
     endBatch() {
         if (!this._batchDepth)
             return;
@@ -259,7 +238,6 @@ export const GlassActor = GObject.registerClass(class GlassActor extends Clutter
             this.queue_redraw();
         }
     }
-
     cleanup() {
         this._shaderLoad.cancel();
         // The hook's closure holds the manager and its actors.
@@ -267,65 +245,38 @@ export const GlassActor = GObject.registerClass(class GlassActor extends Clutter
         unregisterGlass(this);
         this._renderer.cleanup();
     }
-
     getResolution() {
         return this._renderer.getResolution();
     }
-
     setBlurRectEnabled(enabled) { this._renderer.setBlurRectEnabled(enabled); }
-
     setCompositeRectEnabled(enabled) { this._renderer.setCompositeRectEnabled(enabled); }
-
     setEdgeTapsEnabled(enabled) { this._renderer.setEdgeTapsEnabled(enabled); }
-
     setEarlyExitEnabled(enabled) { this._renderer.setEarlyExitEnabled(enabled); }
-
     setDebugView(mode) { this._renderer.setDebugView(mode); }
-
     setIsDock(isDock) { this._renderer.setIsDock(isDock); }
-
     setSurfaceLightEnabled(enabled) { this._renderer.setSurfaceLightEnabled(enabled); }
-
     setCornerSmoothingEnabled(enabled) { this._renderer.setCornerSmoothingEnabled(enabled); }
-
     setPadding(pad) { this._renderer.setPadding(pad); }
-
     setShadowMaxRadius(radius) { this._renderer.setShadowMaxRadius(radius); }
-
     setBlurMethod(method) { this._renderer.setBlurMethod(method); }
-
     setBlurRadius(radius) { this._renderer.setBlurRadius(radius); }
-
     reloadShaders() { this._renderer.reloadShaders(); }
-
     setTintColor(r, g, b) { this._renderer.setTintColor(r, g, b); }
-
     setTintStrength(strength) { this._renderer.setTintStrength(strength); }
-
     setCornerRadius(radius) { this._renderer.setCornerRadius(radius); }
-
     setAnimationScale(scale) { this._renderer.setAnimationScale(scale); }
-
     // The glass's size in shader space; normally its own size.
     setResolution(width, height) { this._renderer.setResolution(width, height); }
-
     setGlassGeometry(x, y, w, h) { this._renderer.setGlassGeometry(x, y, w, h); }
-
     setMultiRegionMode(enabled) { this._renderer.setMultiRegionMode(enabled); }
-
     setShapeTexture(texture, range, band) {
         this._renderer.setShapeTexture(texture, range, band);
     }
-
     setGlassRegions(regions) { this._renderer.setGlassRegions(regions); }
-
     setBrightness(brightness) { this._renderer.setBrightness(brightness); }
-
     setContrast(contrast) { this._renderer.setContrast(contrast); }
-
     setSaturation(saturation) { this._renderer.setSaturation(saturation); }
 });
-
 /**
  * A glass drawn straight onto the stage (dock, menus, notifications, OSDs,
  * Quick Settings' background mode): it copies its own backdrop from the
@@ -339,7 +290,6 @@ export const BackdropGlass = GObject.registerClass(paintNodeWithContext(class Ba
         this._wasPainted = false;
         this._serialAtMap = 0;
     }
-
     // The relays are unmapped with the glass, so nothing behind it was
     // tracked while it was hidden.
     vfunc_map() {
@@ -347,7 +297,6 @@ export const BackdropGlass = GObject.registerClass(paintNodeWithContext(class Ba
         this._serialAtMap = this._copier.lastCopy?.serial ?? 0;
         this._relays.redrawArea();
     }
-
     /**
      * What is behind the glass without the glass or anything above it: the
      * last stage copy and the stage rect [x0, y0, x1, y1] it holds. Null until
@@ -360,12 +309,10 @@ export const BackdropGlass = GObject.registerClass(paintNodeWithContext(class Ba
             return null;
         return { texture: copy.texture, rect: copy.rect };
     }
-
     _onShadersLoaded() {
         super._onShadersLoaded();
         this._relays.redrawArea();
     }
-
     /**
      * Places the sample area and the relays for this frame. Call it every frame
      * from before-update, after this frame's geometry setters: a redraw queued
@@ -386,7 +333,6 @@ export const BackdropGlass = GObject.registerClass(paintNodeWithContext(class Ba
         this._wasPainted = painted;
         this._copier.prune(this.peek_stage_views());
     }
-
     vfunc_paint_node(root, paintContext) {
         const ctx = this._beginPaint();
         if (!ctx)
@@ -419,13 +365,11 @@ export const BackdropGlass = GObject.registerClass(paintNodeWithContext(class Ba
             };
         });
     }
-
     /** Counters for the test driver and the dump. */
     get stats() {
         const c = this._copier;
         return { paints: this._paints, copies: c.copyCount, reuses: c.reuseCount, misses: c.missCount, offStage: c.offStageCount };
     }
-
     describe() {
         return {
             ...super.describe(),
@@ -435,7 +379,6 @@ export const BackdropGlass = GObject.registerClass(paintNodeWithContext(class Ba
             sampleArea: this._relays.areaRect(),
         };
     }
-
     // The relays go with the glass when the caller destroys it; at shell
     // shutdown they can already be gone by the time this runs.
     cleanup() {

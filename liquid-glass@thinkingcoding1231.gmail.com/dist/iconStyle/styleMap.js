@@ -75,8 +75,8 @@ function isSquare(shape, width) {
     return roundEnough && !shape.ripple && Math.abs(shape.rx - shape.ry) <= Math.max(shape.rx, shape.ry) * SQUARE_ASPECT &&
         Math.min(shape.rx, shape.ry) * 2 >= width * SQUARE_FILL;
 }
-
 // How much of what is drawn lies outside `shape`.
+
 function outsideShare(pixels, scale, shape) {
     let outside = 0, total = 0;
     for (let i = 0; i < pixels.width * pixels.height; i++) {
@@ -112,8 +112,8 @@ function dropSliver(symbol, pixels, scale, shape) {
     for (const i of drop)
         symbol[i] = 0;
 }
-
 // The center and the half size (largest distance along x or y) of what is drawn, in analysis px.
+
 function extent(pixels, scale) {
     let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity;
     for (let i = 0; i < pixels.width * pixels.height; i++) {
@@ -137,18 +137,17 @@ function depthOf(plates, k) {
 function encode(d) {
     return Math.round(Math.min(Math.max(0.5 - d / (2 * MAP_RANGE), 0), 1) * 255);
 }
-
 // A lens distance as its high and low byte.
+
 function encodeLens(d) {
     const v = Math.round(Math.min(Math.max((d + LENS_RANGE) / (2 * LENS_RANGE), 0), 1) * 65535);
     return [v >> 8, v & 255];
 }
-
 // The largest distance from a shape's outline inside it.
+
 function halfWidth(shape) {
     return Math.min(shape.rx, shape.ry);
 }
-
 /**
  * The style map of an icon, from its analysis and the icon drawn again at
  * `detail` (any size; twice the analysis's keeps the symbol's edges smooth).
@@ -281,10 +280,10 @@ export function buildStyleMap(analysis, detail, size = MAP_SIZE) {
     }
     return { size, data, tone, lens, ownPlate: own };
 }
-
 // Each plate's tone among the plates at its level in the map: their colors
 // along the direction they differ most in, lighter higher. A plate alone at its
 // level is 0.5.
+
 function plateTones(plates, level) {
     const tones = plates.map(() => 0.5);
     for (const slot of [1, 2]) {

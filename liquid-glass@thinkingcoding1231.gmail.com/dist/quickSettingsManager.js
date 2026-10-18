@@ -33,9 +33,9 @@ function _collectSubmenus(actor, into) {
     for (let child of actor.get_children())
         _collectSubmenus(child, into);
 }
-
 // Where `actor` is in `ancestor` as laid out, without the transforms of the
 // open and close animations, or null when it is not inside it.
+
 function _layoutOrigin(actor, ancestor) {
     let x = 0, y = 0;
     let node = actor;
@@ -72,7 +72,6 @@ function _findSubmenuGap(n, submenu, root, gap) {
     for (let child of n.get_children())
         _findSubmenuGap(child, submenu, root, gap);
 }
-
 export class QuickSettingsManager {
     // How many frames toggle mode may reuse its last region set while the grid
     // relays out (see _resolveToggleRegions()).
@@ -103,17 +102,13 @@ export class QuickSettingsManager {
     _signals;
     _animSignalId = 0;
     _frameSyncId;
-
     get _frameSlot() {
         return { get: () => this._frameSyncId, set: (id) => { this._frameSyncId = id; } };
     }
-
     _frameSignalId = 0;
-
     get _frameSignalSlot() {
         return { get: () => this._frameSignalId, set: (id) => { this._frameSignalId = id; } };
     }
-
     _glassExpand;
     _menuXoffset;
     _menuYoffset;
@@ -170,7 +165,6 @@ export class QuickSettingsManager {
     // see _resolveToggleRegions().
     _lastGoodRegions = null;
     _regionGraceFrames = 0;
-
     constructor(extensionPath, settings, logger) {
         this.extensionPath = extensionPath;
         this._settings = settings;
@@ -202,7 +196,6 @@ export class QuickSettingsManager {
         this._styledButtons = new Map();
         this._buttonSignalIds = new Map();
     }
-
     setup() {
         if (!this._settings)
             return;
@@ -219,18 +212,15 @@ export class QuickSettingsManager {
             this._applyEffect();
         }
     }
-
     _getMenuMonitorGeometry() {
         return resolveMonitorGeometry([this.menu?.sourceActor, this.targetActor]);
     }
-
     _applyMenuOffsets() {
         if (!this.targetActor)
             return;
         this.targetActor.translation_y = this._menuYoffset;
         this.targetActor.translation_x = this._menuXoffset;
     }
-
     _bindSettings() {
         const connectSetting = (key, callback) => {
             let id = this._settings.connect(`changed::${key}`, callback.bind(this));
@@ -347,7 +337,6 @@ export class QuickSettingsManager {
             }
         });
     }
-
     _applyClassStyles() {
         if (!this.targetActor)
             return;
@@ -356,7 +345,6 @@ export class QuickSettingsManager {
         if (!this._hasStyleClass(this.animActor, 'liquid-glass-transparent'))
             this.animActor.add_style_class_name('liquid-glass-transparent');
     }
-
     _applyEffect() {
         if (this._isEffectActive)
             return;
@@ -372,7 +360,6 @@ export class QuickSettingsManager {
             this._applyBackgroundEffect();
         }
     }
-
     // Background mode: one sheet of glass behind the whole menu.
     _applyBackgroundEffect() {
         this._menuYoffset = this._settings.get_int('quick-settings-y-offset');
@@ -463,7 +450,6 @@ export class QuickSettingsManager {
             startFrameSync();
         }
     }
-
     // The glass starts at 1x1: a 0x0 actor with a shader crashes Cogl.
     _createGlass(toggles) {
         const params = {
@@ -476,7 +462,6 @@ export class QuickSettingsManager {
         glass.set_pivot_point(0.0, 0.0);
         return glass;
     }
-
     // Toggle mode: a piece of glass behind each toggle, drawn as regions of one
     // monitor-sized glass so the copy and the blur are done once per frame.
     // The menu keeps its own look and animation.
@@ -573,7 +558,6 @@ export class QuickSettingsManager {
             startFrameSync();
         }
     }
-
     // Follows the stage's frames while the menu is shown.
     _startFrameSync(sync, errorTag, honourFreeze) {
         if (this._frameSignalId !== 0)
@@ -589,11 +573,9 @@ export class QuickSettingsManager {
             },
         });
     }
-
     _stopFrameSync() {
         stopStageLoop(this._frameSignalSlot, this._frameSlot);
     }
-
     // The product of the scales of `actor` and all its ancestors;
     // get_scale() reports only an actor's own. BoxPointer.open() scales an
     // ancestor while Quick Settings opens.
@@ -611,13 +593,11 @@ export class QuickSettingsManager {
         }
         return [sx || 1.0, sy || 1.0];
     }
-
     // Whether the cached region set may stand in for a frame that produced none.
     _canReuseLastRegions() {
         return this._lastGoodRegions !== null &&
             this._regionGraceFrames < QuickSettingsManager.REGION_GRACE_FRAMES;
     }
-
     // Uses up one grace frame; once they are spent the cache is dropped and the
     // glass hides.
     _takeLastRegions() {
@@ -628,7 +608,6 @@ export class QuickSettingsManager {
         this._regionGraceFrames++;
         return this._lastGoodRegions;
     }
-
     // Every frame in toggle mode. The menu's own actors are left alone.
     _syncToggleRegions() {
         if (!this.glass || !this.targetActor || !this.targetActor.mapped) {
@@ -665,7 +644,6 @@ export class QuickSettingsManager {
         // After the geometry setters, so the relays cover this frame's rect.
         this.glass.syncSources();
     }
-
     /**
      * Keeps the glass host at the bottom of the menu box (the shell reorders
      * the box's children when toggles come and go), and returns the position
@@ -686,7 +664,6 @@ export class QuickSettingsManager {
         setScaleIfChanged(glass, 1.0 / accScaleX, 1.0 / accScaleY);
         return [(monitorX - hostAbsX) / accScaleX, (monitorY - hostAbsY) / accScaleY];
     }
-
     _collectToggleRegions(toggles, monitorX, monitorY) {
         const layout = { regions: [], minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
         for (let toggle of toggles) {
@@ -723,7 +700,6 @@ export class QuickSettingsManager {
         }
         return layout;
     }
-
     // Geometry is read before the pending relayout, so for a frame after a
     // submenu opens or a toggle comes or goes, a toggle can be visible but not
     // yet allocated. The last region set covers such a gap for a couple of
@@ -736,7 +712,6 @@ export class QuickSettingsManager {
         }
         return this._takeLastRegions();
     }
-
     _applyToggleBounds(glass, localBgX, localBgY, bgW, bgH, bgPosX, bgPosY, screenW, screenH) {
         if (this._lastBoundsSpace === 'toggles' && this._lastBgW === bgW && this._lastBgH === bgH &&
             this._lastBgX === localBgX && this._lastBgY === localBgY &&
@@ -755,7 +730,6 @@ export class QuickSettingsManager {
         this._lastScreenW = screenW;
         this._lastScreenH = screenH;
     }
-
     // Every frame in background mode.
     _syncGeometry() {
         if (!this.glass || !this.targetActor || !this.targetActor.mapped) {
@@ -786,7 +760,6 @@ export class QuickSettingsManager {
         this._applyGlassScale(scaleX, scaleY);
         this._adjustSubmenuPositions();
     }
-
     _panelScale() {
         let [scaleX, scaleY] = this.animActor.get_scale();
         if (!this._enableAnimation) {
@@ -803,13 +776,11 @@ export class QuickSettingsManager {
         }
         return [scaleX, scaleY];
     }
-
     _themeMarginSize() {
         let themeNode = this.animActor.get_theme_node();
         return [themeNode.get_margin(St.Side.LEFT) + themeNode.get_margin(St.Side.RIGHT),
             themeNode.get_margin(St.Side.TOP) + themeNode.get_margin(St.Side.BOTTOM)];
     }
-
     _measurePanel() {
         let [inW, inH] = this.animActor.get_size();
         let [outW] = this.targetActor.get_size();
@@ -835,7 +806,6 @@ export class QuickSettingsManager {
             scaleY,
         };
     }
-
     _resolvePanelOrigin(w) {
         return resolveGlassOrigin(this.animActor, this, () => {
             // Top center of the primary monitor.
@@ -845,7 +815,6 @@ export class QuickSettingsManager {
             return [(monitor.width / 2) - (w / 2), (Main.panel.height || 27) + (this._menuYoffset ?? 0)];
         });
     }
-
     _applyPanelBounds(glass, bgX, bgY, bgW, bgH, monitorX, monitorY, screenW, screenH) {
         if (this._lastBoundsSpace === 'panel' && this._lastBgW === bgW && this._lastBgH === bgH &&
             this._lastBgX === bgX && this._lastBgY === bgY &&
@@ -866,11 +835,9 @@ export class QuickSettingsManager {
         this._lastScreenW = screenW;
         this._lastScreenH = screenH;
     }
-
     _applyGlassScale(scaleX, scaleY) {
         applyGlassScale(this.glass, this._cornerRadius, scaleX, scaleY);
     }
-
     _updateResolution() {
         if (!this.glass)
             return;
@@ -879,17 +846,14 @@ export class QuickSettingsManager {
             this.glass.setResolution(width, height);
         }
     }
-
     _hasStyleClass(actor, className) {
         return actor instanceof St.Widget && actor.has_style_class_name(className);
     }
-
     _collectAdaptiveTextTargets(actor = this.menu?.actor, targets = []) {
         if (!actor)
             return targets;
         return this._findAllTextActors(this.menu?.actor);
     }
-
     _findAllTextActors(actor, foundActors = []) {
         if (!actor)
             return foundActors;
@@ -902,7 +866,6 @@ export class QuickSettingsManager {
             this._findAllTextActors(child, foundActors);
         return foundActors;
     }
-
     _setActorColor(actor, color, skipAnimations = false, batchStart) {
         // Clutter.Text targets have no St style.
         if (!(actor instanceof St.Widget))
@@ -924,7 +887,6 @@ export class QuickSettingsManager {
         actor._currentInsensitiveState = isInsensitive;
         this._animateActorColor(actor, color, isInsensitive, 380, skipAnimations, batchStart);
     }
-
     _clearAdaptiveStyles() {
         this._clearBackdropTracking();
         for (const [actor, originalStyle] of this._styledActors.entries()) {
@@ -935,7 +897,6 @@ export class QuickSettingsManager {
         }
         this._styledActors.clear();
     }
-
     // Text sitting on an opaque backdrop of its own (a row's highlight, an
     // expanded section) takes its color from that backdrop instead of the
     // sample; see _watchBackdrop().
@@ -954,7 +915,6 @@ export class QuickSettingsManager {
             this._setActorColor(actor, backdrop ?? color, backdrop !== null || skipAnimations, batchStart);
         }
     }
-
     // Watches the text's ancestors, whose restyles can change its backdrop.
     _watchBackdrop(actor) {
         for (let node = actor; node; node = node.get_parent()) {
@@ -981,7 +941,6 @@ export class QuickSettingsManager {
                 break;
         }
     }
-
     _queueBackdropColors(root) {
         if (!this.menu?.isOpen || !this._adaptiveConfig.enabled)
             return;
@@ -1009,7 +968,6 @@ export class QuickSettingsManager {
             return GLib.SOURCE_REMOVE;
         });
     }
-
     _clearBackdropTracking() {
         this._adaptiveGeneration++;
         if (this._backdropRefreshId)
@@ -1024,7 +982,6 @@ export class QuickSettingsManager {
         this._sampleColors.clear();
         this._dirtyBackdropRoots.clear();
     }
-
     /**
      * @param skipAnimations Set on open: the first sample is taken before the
      *   first frame, before the glass is drawn, from the bare backdrop where the
@@ -1063,7 +1020,6 @@ export class QuickSettingsManager {
             return GLib.SOURCE_CONTINUE;
         });
     }
-
     _stopAdaptiveColorSampling() {
         this._clearBackdropTracking();
         if (this._adaptiveTimerId !== 0) {
@@ -1075,7 +1031,6 @@ export class QuickSettingsManager {
             this._openSampleId = 0;
         }
     }
-
     _updateAdaptiveTextColors(skipAnimations = false) {
         if (!this._adaptiveConfig.enabled || this._adaptiveInFlight)
             return;
@@ -1105,7 +1060,6 @@ export class QuickSettingsManager {
             this._adaptiveInFlight = false;
         });
     }
-
     _animateActorColor(actor, targetHexColor, isInsensitive, durationMs = 380, skipAnimations = false, batchStart) {
         let themeNode = actor.get_theme_node();
         let startColor = themeNode.get_foreground_color();
@@ -1140,7 +1094,6 @@ export class QuickSettingsManager {
             apply,
         }, batchStart);
     }
-
     // Background mode dims the buttons' own backgrounds to BUTTON_ALPHA, and
     // keeps doing so as their state changes.
     _findAllButtons(actor, foundButtons = []) {
@@ -1161,7 +1114,6 @@ export class QuickSettingsManager {
             this._findAllButtons(child, foundButtons);
         return foundButtons;
     }
-
     _hasColoredToggleChild(button) {
         if (!(button instanceof St.Widget) || !button.has_style_class_name('quick-toggle'))
             return false;
@@ -1173,7 +1125,6 @@ export class QuickSettingsManager {
         }
         return false;
     }
-
     _applyButtonAlpha(button, targetAlpha) {
         const origStyle = this._styledButtons.get(button) || '';
         button.set_style(origStyle || null);
@@ -1197,7 +1148,6 @@ export class QuickSettingsManager {
         if (parent instanceof St.Widget && parent.has_style_class_name('quick-toggle'))
             this._updateSingleButtonAlpha(parent, targetAlpha);
     }
-
     // Keeps the adaptive text color rules while the background is re-applied.
     _updateSingleButtonAlpha(button, targetAlpha) {
         if (!button || button._isUpdatingAlpha)
@@ -1213,7 +1163,6 @@ export class QuickSettingsManager {
         }
         button._isUpdatingAlpha = false;
     }
-
     _updateButtonAlpha() {
         if (!this.menu?.isOpen)
             return;
@@ -1251,7 +1200,6 @@ export class QuickSettingsManager {
             this._updateSingleButtonAlpha(button, targetAlpha);
         }
     }
-
     _startButtonAlphaSampling() {
         this._updateButtonAlpha();
         if (this._buttonTimerId !== 0)
@@ -1265,7 +1213,6 @@ export class QuickSettingsManager {
             return GLib.SOURCE_CONTINUE;
         });
     }
-
     _stopButtonAlphaSampling() {
         if (this._buttonTimerId !== 0) {
             GLib.source_remove(this._buttonTimerId);
@@ -1275,7 +1222,6 @@ export class QuickSettingsManager {
             GLib.Source.remove(id);
         this._buttonIdleIds.clear();
     }
-
     _clearButtonStyles() {
         this._stopButtonAlphaSampling();
         this._disconnectButtonSignals();
@@ -1285,7 +1231,6 @@ export class QuickSettingsManager {
         }
         this._styledButtons.clear();
     }
-
     _disconnectButtonSignals() {
         for (const [button, signalIds] of this._buttonSignalIds.entries()) {
             for (const id of signalIds)
@@ -1293,7 +1238,6 @@ export class QuickSettingsManager {
         }
         this._buttonSignalIds.clear();
     }
-
     // The spring open/close animation.
     _startAnimation(targetValue) {
         if (this._tickId !== 0) {
@@ -1327,7 +1271,6 @@ export class QuickSettingsManager {
             }, normalizeAnimationIntervalMs(this._animationInterval));
         }
     }
-
     // Centers an open submenu horizontally in the menu and vertically in the
     // gap between the items above and below it. Everything is measured as laid
     // out in the menu's BoxPointer, which holds both the panel and the
@@ -1354,7 +1297,6 @@ export class QuickSettingsManager {
         for (let submenu of this._cachedSubmenus)
             this._centerSubmenu(submenu, root, parent, parentW, parentH);
     }
-
     _centerSubmenu(submenu, root, [parentX, parentY], parentW, parentH) {
         if (!submenu.mapped || !submenu.visible)
             return;
@@ -1374,14 +1316,12 @@ export class QuickSettingsManager {
         if (Math.abs(submenu.translation_y - translationY) > 0.5)
             submenu.translation_y = translationY;
     }
-
     _forgetSubmenus() {
         if (this._submenuAfterUpdateId)
             global.stage.disconnect(this._submenuAfterUpdateId);
         this._submenuAfterUpdateId = 0;
         this._cachedSubmenus = null;
     }
-
     _clearSubmenuFix() {
         let foundMenus = this._cachedSubmenus || [];
         if (foundMenus.length === 0 && this.menu?.actor)
@@ -1390,7 +1330,6 @@ export class QuickSettingsManager {
             submenu.set_translation(0, 0, 0);
         this._forgetSubmenus();
     }
-
     _removeEffect() {
         if (!this._isEffectActive)
             return;
@@ -1427,7 +1366,6 @@ export class QuickSettingsManager {
         this._lastBgY = undefined;
         this._activeMode = null;
     }
-
     _disconnectEffectSignals() {
         for (let sig of this._signals)
             sig.target.disconnect(sig.id);
@@ -1442,7 +1380,6 @@ export class QuickSettingsManager {
         }
         this._stopFrameSync();
     }
-
     _restoreMenuActors() {
         this.targetActor.remove_style_class_name('liquid-glass-transparent');
         if (this.animActor) {
@@ -1464,7 +1401,6 @@ export class QuickSettingsManager {
                 this.menu.close(MENU_NO_ANIMATION);
         }
     }
-
     cleanup() {
         this._stopFrameSync();
         for (let sigId of this._settingsSignals)

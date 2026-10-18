@@ -19,25 +19,21 @@ class Spring {
     _damping;
     velocity = 0;
     target;
-
     constructor(value, _stiffness, _damping) {
         this.value = value;
         this._stiffness = _stiffness;
         this._damping = _damping;
         this.target = value;
     }
-
     step(dt) {
         const acc = -this._stiffness * (this.value - this.target) - this._damping * this.velocity;
         this.velocity += acc * dt;
         this.value += this.velocity * dt;
     }
-
     settled(within) {
         return Math.abs(this.value - this.target) < within && Math.abs(this.velocity) < within * 10;
     }
 }
-
 // [stiffness, damping], unit mass, as liquid-dom's demo has them.
 const OPEN_MOVE = [144, 14];
 const CLOSE_MOVE = [130, 18];
@@ -104,12 +100,9 @@ function cubicBezier(x1, y1, x2, y2) {
         return at(t, y1, y2);
     };
 }
-
 // Slow out of the drop, then quick to the menu's size.
 const openSize = cubicBezier(0.8, 0.3, 0.5, 0.8);
-
 const easeOut = (t) => 1 - (1 - t) ** 2;
-
 const easeInOut = (t) => t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2;
 
 function clamp01(t) {
@@ -119,7 +112,6 @@ function clamp01(t) {
 function lerp(a, b, t) {
     return a + (b - a) * t;
 }
-
 export class MenuMorphMotion {
     opening;
     _buttonRect;
@@ -146,7 +138,6 @@ export class MenuMorphMotion {
     _furthest = 0;
     _soften = 0;
     _frame;
-
     /**
      * Starts towards the menu (`opening`) or back to the button, from `from`
      * (the frame a reversed motion had got to) or from where that motion rests.
@@ -193,16 +184,13 @@ export class MenuMorphMotion {
             this._y.velocity += Math.sin(angle) * push;
         }
     }
-
     /** The body's velocity, for a motion that reverses this one. */
     get velocities() {
         return [this._x.velocity, this._y.velocity];
     }
-
     get frame() {
         return this._frame;
     }
-
     /** Where the button and the menu are now; they may move while it runs. */
     retarget(button, menu, menuRadius) {
         this._buttonRect = button;
@@ -211,22 +199,18 @@ export class MenuMorphMotion {
         this._menuRadius = menuRadius;
         this._aim();
     }
-
     _fall() {
         return this._buttonRect[3] * DROP_FALL;
     }
-
     // The round drop between the capsule and the menu, px across.
     _drop() {
         const [, , w, h] = this._buttonRect;
         return Math.max(Math.min(h * DROP_SIZE, w), 1);
     }
-
     _aim() {
         [this._x.target, this._y.target] = center(this.opening ? this._menu : this._buttonRect);
         this._opacity.target = this.opening ? 1 : 0;
     }
-
     /** Advances by `elapsed` seconds. */
     step(elapsed) {
         const dt = Math.min(Math.max(elapsed, 0), MAX_FRAME_S);
@@ -234,7 +218,6 @@ export class MenuMorphMotion {
         this._frame = this.opening ? this._open(dt) : this._close(dt);
         return this._frame;
     }
-
     _stepSprings(dt) {
         for (let t = 0; t < dt; t += STEP_S) {
             const h = Math.min(STEP_S, dt - t);
@@ -242,7 +225,6 @@ export class MenuMorphMotion {
                 s.step(h);
         }
     }
-
     _open(dt) {
         if (this._t < this._capsuleS) {
             // The capsule draws into a drop where it is.
@@ -281,7 +263,6 @@ export class MenuMorphMotion {
             done: !moving && t >= OPEN_SIZE_S,
         };
     }
-
     _close(dt) {
         this._stepSprings(dt);
         const t = this._t;
@@ -333,8 +314,8 @@ export class MenuMorphMotion {
         };
     }
 }
-
 // How far apart two rects are, 0 when they touch or overlap.
+
 function rectGap(a, b) {
     const dx = Math.max(b[0] - (a[0] + a[2]), a[0] - (b[0] + b[2]), 0);
     const dy = Math.max(b[1] - (a[1] + a[3]), a[1] - (b[1] + b[3]), 0);

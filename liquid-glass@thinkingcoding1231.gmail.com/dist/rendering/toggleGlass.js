@@ -28,7 +28,6 @@ import { offscreenFormat, paintNodeWithContext, setUniformVector, uniformDeclara
 // The reader's fixed size; it is fitted to its rect by translation and scale
 // for the same reason as the sample area (relays.ts).
 const READER_BASE = 256;
-
 export const BackdropReader = GObject.registerClass(paintNodeWithContext(class BackdropReader extends Clutter.Actor {
     _init(logger) {
         super._init({ name: 'liquid-glass-backdrop-reader', reactive: false, width: READER_BASE, height: READER_BASE });
@@ -36,10 +35,8 @@ export const BackdropReader = GObject.registerClass(paintNodeWithContext(class B
         this.copier = new StageCopier(logger);
         this._rect = null;
     }
-
     vfunc_pick(_pickContext) {
     }
-
     // The stage rect [x0, y0, x1, y1] to copy. The actor covers it, so it is
     // painted whenever the rect is redrawn.
     setStageRect(rect) {
@@ -58,13 +55,11 @@ export const BackdropReader = GObject.registerClass(paintNodeWithContext(class B
         setTranslationIfChanged(this, x0, y0);
         setScaleIfChanged(this, Math.max(x1 - x0, 1) / READER_BASE, Math.max(y1 - y0, 1) / READER_BASE);
     }
-
     vfunc_paint_node(root, paintContext) {
         if (this._rect)
             this.copier.take(this, root, paintContext, this._rect);
     }
 }));
-
 // "Over" for premultiplied colors: the panel material (layer 1) over the
 // desktop (layer 0). Each layer has its own rect within the composed quad.
 const COMPOSE_DECL = 'uniform vec4 d_rect;\nuniform vec4 m_rect;\n';
@@ -72,7 +67,6 @@ const COMPOSE_BODY = 'vec2 uv = cogl_tex_coord_in[0].st;\n' +
     'vec4 d = texture2D(cogl_sampler0, mix(d_rect.xy, d_rect.zw, uv));\n' +
     'vec4 m = texture2D(cogl_sampler1, mix(m_rect.xy, m_rect.zw, uv));\n' +
     'cogl_color_out = m + d * (1.0 - m.a);\n';
-
 export const ToggleBackdropGlass = GObject.registerClass(paintNodeWithContext(class ToggleBackdropGlass extends GlassActor {
     _init(params = {}) {
         super._init(params);
@@ -87,7 +81,6 @@ export const ToggleBackdropGlass = GObject.registerClass(paintNodeWithContext(cl
         this._composeSerial = 0;
         this._composeBase = null;
     }
-
     // The reader works only while the glass is shown, and nothing behind it
     // was tracked while it was hidden.
     vfunc_map() {
@@ -95,17 +88,14 @@ export const ToggleBackdropGlass = GObject.registerClass(paintNodeWithContext(cl
         this.reader.show();
         this._relays.redrawArea();
     }
-
     vfunc_unmap() {
         this.reader.hide();
         super.vfunc_unmap();
     }
-
     _onShadersLoaded() {
         super._onShadersLoaded();
         this._relays.redrawArea();
     }
-
     /** See BackdropGlass.syncSources(); also places the reader. */
     syncSources() {
         const area = this._sampleAreaRect();
@@ -119,7 +109,6 @@ export const ToggleBackdropGlass = GObject.registerClass(paintNodeWithContext(cl
         this._wasPainted = painted;
         this.reader.copier.prune(this.reader.peek_stage_views());
     }
-
     vfunc_paint_node(root, paintContext) {
         const ctx = this._beginPaint();
         if (!ctx)
@@ -156,7 +145,6 @@ export const ToggleBackdropGlass = GObject.registerClass(paintNodeWithContext(cl
             };
         });
     }
-
     // The nearest ancestor drawn through an offscreen: the menu's BoxPointer.
     _offscreenAncestor() {
         for (let a = this.get_parent(); a; a = a.get_parent()) {
@@ -165,7 +153,6 @@ export const ToggleBackdropGlass = GObject.registerClass(paintNodeWithContext(cl
         }
         return null;
     }
-
     /**
      * Copies the panel background behind `local` [x0, y0, x1, y1] out of the
      * menu's offscreen, which at this point holds everything the menu drew
@@ -213,7 +200,6 @@ export const ToggleBackdropGlass = GObject.registerClass(paintNodeWithContext(cl
         this._materialUV = [(sx0 - fx0) / w, (sy0 - fy0) / h, (sx1 - fx0) / w, (sy1 - fy0) / h];
         this._materialCopies++;
     }
-
     // The material over the desktop, for the blur, at the material's
     // resolution and covering exactly the sample rect `local`.
     _compose(root, ctx, desktop, desktopRect, local) {
@@ -250,7 +236,6 @@ export const ToggleBackdropGlass = GObject.registerClass(paintNodeWithContext(cl
         this._composeSerial++;
         return this._composed;
     }
-
     /** Counters for the test driver and the dump. */
     get stats() {
         const c = this.reader.copier;
@@ -259,7 +244,6 @@ export const ToggleBackdropGlass = GObject.registerClass(paintNodeWithContext(cl
             offStage: c.offStageCount, materialCopies: this._materialCopies,
         };
     }
-
     describe() {
         return {
             ...super.describe(),
@@ -269,7 +253,6 @@ export const ToggleBackdropGlass = GObject.registerClass(paintNodeWithContext(cl
             sampleArea: this._relays.areaRect(),
         };
     }
-
     // The reader lives outside the glass (in uiGroup), so it goes here; at
     // shell shutdown the stage may have destroyed it already.
     cleanup() {

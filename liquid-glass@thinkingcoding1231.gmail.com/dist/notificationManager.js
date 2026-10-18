@@ -14,7 +14,6 @@ import { resolveCrossFade, adaptiveColorTweener, hexToColorArray, hexToRgb } fro
 import { BANNER_TRANSPARENT_CLASS } from './shellVersion.js';
 // Room around the glass rect for the shader's edge effects.
 const SHADER_PADDING = 20;
-
 export class NotificationManager {
     extensionPath;
     _settings;
@@ -26,17 +25,13 @@ export class NotificationManager {
     _signals;
     _settingsSignals;
     _frameSyncId;
-
     get _frameSlot() {
         return { get: () => this._frameSyncId, set: (id) => { this._frameSyncId = id; } };
     }
-
     _frameSignalId = 0;
-
     get _frameSignalSlot() {
         return { get: () => this._frameSignalId, set: (id) => { this._frameSignalId = id; } };
     }
-
     _tintTickId = 0;
     _isEffectActive;
     _bannerIdleId = 0;
@@ -61,7 +56,6 @@ export class NotificationManager {
     _currentTint;
     _notificationYOffset;
     _isFirstAdaptiveRun = true;
-
     constructor(extensionPath, settings, logger) {
         this.extensionPath = extensionPath;
         this._settings = settings;
@@ -86,7 +80,6 @@ export class NotificationManager {
         this._currentTint = 0.08;
         this._notificationYOffset = 10;
     }
-
     setup() {
         if (!this._settings)
             return;
@@ -95,7 +88,6 @@ export class NotificationManager {
             this._applyEffect();
         }
     }
-
     _bindSettings() {
         const connectSetting = (key, callback) => {
             let id = this._settings.connect(`changed::${key}`, callback.bind(this));
@@ -164,7 +156,6 @@ export class NotificationManager {
             this._notificationYOffset = this._settings.get_int('notification-y-offset');
         });
     }
-
     _applyEffect() {
         if (this._isEffectActive)
             return;
@@ -221,7 +212,6 @@ export class NotificationManager {
             this._setupBannerEffect(this.tray._banner);
         }
     }
-
     _setupBannerEffect(targetActor) {
         targetActor.add_style_class_name(BANNER_TRANSPARENT_CLASS);
         // @ts-expect-error
@@ -293,11 +283,9 @@ export class NotificationManager {
         this._contrastSampler.reset();
         this._startAdaptiveColorSampling();
     }
-
     _hoverTint() {
         return this.currentBanner?.hover ? this._baseTint + 0.1 : this._baseTint;
     }
-
     // Slightly stronger tint while hovered, eased over a few frames. The sync
     // loop only runs on frames something else asked for, so the easing keeps
     // its own ticker until it settles.
@@ -318,14 +306,12 @@ export class NotificationManager {
             return false;
         });
     }
-
     _stopHoverTint() {
         if (!this._tintTickId)
             return;
         removeFrameTicker(this._tintTickId);
         this._tintTickId = 0;
     }
-
     // Every frame. The glass covers the banner's monitor; the shader draws only
     // the glass rect.
     _syncGeometry() {
@@ -391,7 +377,6 @@ export class NotificationManager {
         // After the geometry setters, so the relays cover this frame's rect.
         this.glass.syncSources();
     }
-
     // Runs at paint time (see GlassActor.setLiveGeometryHook()), when the
     // banner's allocation is current. Only the shader's glass rect is updated;
     // actors must not change mid-paint.
@@ -409,7 +394,6 @@ export class NotificationManager {
         const bgH = h + this._glassExpand * 2 + SHADER_PADDING * 2;
         this.glass.setGlassGeometry(absX - this._glassExpand - SHADER_PADDING - origin[0], absY - this._glassExpand - SHADER_PADDING - origin[1], bgW, bgH);
     }
-
     _cleanupCurrentBanner() {
         this._bannerGeneration++;
         this._contrastSampler.invalidate();
@@ -442,7 +426,6 @@ export class NotificationManager {
         this._lastScreenH = undefined;
         this._isFirstAdaptiveRun = true;
     }
-
     _removeEffect() {
         if (!this._isEffectActive)
             return;
@@ -458,7 +441,6 @@ export class NotificationManager {
         this._signals = [];
         this._cleanupCurrentBanner();
     }
-
     cleanup() {
         this._liveMonitorOrigin = null;
         stopStageLoop(this._frameSignalSlot, this._frameSlot);
@@ -468,13 +450,11 @@ export class NotificationManager {
         this._settingsSignals = [];
         this._removeEffect();
     }
-
     _collectAdaptiveTextTargets(actor = this.currentBanner, targets = []) {
         if (!actor)
             return targets;
         return this._findAllTextActors(actor);
     }
-
     _setActorColor(actor, color, skipAnimations = false, batchStart) {
         // Clutter.Text targets have no St style.
         if (!(actor instanceof St.Widget))
@@ -491,7 +471,6 @@ export class NotificationManager {
         actor._currentTargetColor = color;
         this._animateActorColor(actor, color, 380, skipAnimations, batchStart);
     }
-
     _clearAdaptiveStyles() {
         for (const [actor, style] of this._styledActors.entries()) {
             adaptiveColorTweener.cancel(actor);
@@ -500,7 +479,6 @@ export class NotificationManager {
         }
         this._styledActors.clear();
     }
-
     _applyAdaptiveColorMap(colorMap, skipAnimations = false) {
         if (!colorMap || colorMap.size === 0)
             return;
@@ -510,7 +488,6 @@ export class NotificationManager {
             this._setActorColor(actor, color, skipAnimations, batchStart);
         }
     }
-
     _startAdaptiveColorSampling() {
         if (!this._adaptiveConfig.enabled)
             return;
@@ -526,14 +503,12 @@ export class NotificationManager {
             return GLib.SOURCE_CONTINUE;
         });
     }
-
     _stopAdaptiveColorSampling() {
         if (this._adaptiveTimerId !== 0) {
             GLib.source_remove(this._adaptiveTimerId);
             this._adaptiveTimerId = 0;
         }
     }
-
     _findAllTextActors(actor, foundActors = []) {
         if (!actor)
             return foundActors;
@@ -547,7 +522,6 @@ export class NotificationManager {
         }
         return foundActors;
     }
-
     _updateAdaptiveTextColors() {
         if (!this._adaptiveConfig.enabled || this._adaptiveInFlight)
             return;
@@ -574,7 +548,6 @@ export class NotificationManager {
             this._adaptiveInFlight = false;
         });
     }
-
     _animateActorColor(actor, targetHexColor, durationMs = 380, skipAnimations = false, batchStart) {
         // An existing tween is not cancelled: add() restarts from the color it
         // last applied.

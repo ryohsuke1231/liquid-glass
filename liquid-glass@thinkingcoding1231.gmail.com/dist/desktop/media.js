@@ -24,7 +24,6 @@ const BAR_FALL_S = 0.16;
 const MPRIS_PREFIX = 'org.mpris.MediaPlayer2.';
 const MPRIS_PATH = '/org/mpris/MediaPlayer2';
 const PLAYER_IFACE = 'org.mpris.MediaPlayer2.Player';
-
 /**
  * The song or video that is playing (or was last), with buttons for the
  * previous track, play/pause and the next track. Talks to the players over
@@ -46,7 +45,6 @@ export class MediaWidget extends GlassCard {
     _ownerChangedId = 0;
     _cancellable = new Gio.Cancellable();
     _current = null;
-
     constructor(env) {
         super('media', env, CARD_WIDTH);
         this.shown = false;
@@ -111,7 +109,6 @@ export class MediaWidget extends GlassCard {
             }
         });
     }
-
     _addPlayer(name) {
         if (this._players.has(name))
             return;
@@ -132,7 +129,6 @@ export class MediaWidget extends GlassCard {
             this._update();
         });
     }
-
     _removePlayer(name) {
         const player = this._players.get(name);
         if (!player)
@@ -144,11 +140,9 @@ export class MediaWidget extends GlassCard {
             this._current = null;
         this._update();
     }
-
     _property(player, name) {
         return player.proxy?.get_cached_property(name)?.recursiveUnpack() ?? null;
     }
-
     // The player that is playing, or the one that played last.
     _pick() {
         let best = null;
@@ -163,7 +157,6 @@ export class MediaWidget extends GlassCard {
         }
         return best;
     }
-
     _update() {
         const player = this._pick();
         this._current = player;
@@ -184,7 +177,6 @@ export class MediaWidget extends GlassCard {
         this._listen(playing);
         this.contentChanged();
     }
-
     // The bars follow the sound while a player plays, and lie down otherwise.
     _listen(playing) {
         const on = this.env.settings.get_boolean('media-visualizer');
@@ -197,7 +189,6 @@ export class MediaWidget extends GlassCard {
         this._targets = Array.from({ length: BAR_COUNT }, () => 0);
         this._animateBars();
     }
-
     _animateBars() {
         if (this._barsTickId)
             return;
@@ -222,7 +213,6 @@ export class MediaWidget extends GlassCard {
             return false;
         }, 16);
     }
-
     // Rounded lines standing on the same baseline, in the title's color.
     _drawBars() {
         const cr = this._bars.get_context();
@@ -241,11 +231,9 @@ export class MediaWidget extends GlassCard {
         cr.stroke();
         cr.$dispose();
     }
-
     _call(method) {
         this._current?.proxy?.call(method, null, Gio.DBusCallFlags.NONE, -1, null, null);
     }
-
     destroy() {
         this.env.settings.disconnect(this._settingsId);
         this._cancellable.cancel();

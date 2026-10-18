@@ -23,7 +23,6 @@ function paeth(a, b, c) {
     const pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c);
     return pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
 }
-
 export function decodePng(png) {
     let pos = 8;
     let width = 0, height = 0, colorType = 0, depth = 0, interlace = 0;
@@ -74,7 +73,6 @@ export function decodePng(png) {
     }
     return { width, height, channels, data };
 }
-
 /** Unpremultiplied RGBA, 4 bytes a pixel, whatever the PNG holds. */
 export function decodePngRgba(png) {
     const { width, height, channels, data } = decodePng(png);
@@ -91,7 +89,6 @@ export function decodePngRgba(png) {
     }
     return { width, height, data: rgba };
 }
-
 let crcTable = null;
 
 function crc32(bytes) {
@@ -120,7 +117,6 @@ function chunk(type, body) {
     view.setUint32(8 + body.length, crc32(out.subarray(4, 8 + body.length)));
     return out;
 }
-
 /** An 8-bit RGBA PNG of unpremultiplied pixels. */
 export function encodePngRgba(width, height, rgba) {
     const header = new Uint8Array(13);

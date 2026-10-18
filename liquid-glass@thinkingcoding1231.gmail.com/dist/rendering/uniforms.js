@@ -1,10 +1,7 @@
 import { setUniformArray } from '../shellVersion.js';
-
 export class UniformState {
     _pipeline = null;
-
     get values() { return this._pendingUniforms; }
-
     attach(pipeline) {
         this._pipeline = pipeline;
         this._compUniforms.clear();
@@ -15,20 +12,17 @@ export class UniformState {
         if (pipeline)
             this.flush();
     }
-
     takeDirty() {
         const changed = this._uniformsDirty;
         this._uniformsDirty = false;
         return changed;
     }
-
     clear() {
         this.attach(null);
         this._pendingUniforms.clear();
         this._pendingUniformArrays.clear();
         this._uniformsDirty = false;
     }
-
     // Uniform locations in the current pipeline.
     _compUniforms = new Map();
     _compUniformArrays = new Map();
@@ -42,7 +36,6 @@ export class UniformState {
     // Set when a value actually changed; the glass repaints only then.
     // Changes behind the glass arrive through the relays, not here.
     _uniformsDirty = false;
-
     // Sets a float uniform, buffered until attach() provides a pipeline.
     set(name, value) {
         if (this._pendingUniforms.get(name) === value)
@@ -53,7 +46,6 @@ export class UniformState {
             this._applyUniform(name, value);
         }
     }
-
     _applyUniform(name, value) {
         if (!this._pipeline)
             return;
@@ -67,7 +59,6 @@ export class UniformState {
         this._pipeline.set_uniform_1f(loc, value);
         this._appliedUniforms.set(name, value);
     }
-
     flush() {
         for (const [name, value] of this._pendingUniforms) {
             this._applyUniform(name, value);
@@ -76,7 +67,6 @@ export class UniformState {
             this._applyUniformArray(name, values);
         }
     }
-
     // Sets a float array uniform (e.g. region_x[16]), buffered like set().
     setArray(name, values) {
         const prev = this._pendingUniformArrays.get(name);
@@ -98,7 +88,6 @@ export class UniformState {
             this._applyUniformArray(name, values);
         }
     }
-
     _applyUniformArray(name, values) {
         if (!this._pipeline)
             return;

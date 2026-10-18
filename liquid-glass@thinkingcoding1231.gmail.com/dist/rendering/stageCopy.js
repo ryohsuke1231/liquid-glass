@@ -7,7 +7,6 @@ import Clutter from 'gi://Clutter';
 import Cogl from 'gi://Cogl';
 import Mtk from 'gi://Mtk';
 import { coglContext, newRootNode, offscreenFormat } from '../shellVersion.js';
-
 // An offscreen texture to render or blit into. A blit needs both sides fixed
 // point or both floating point, so `format` follows the source when that is
 // an offscreen (rotated or HDR views); null is the default RGBA8888_PRE.
@@ -26,7 +25,6 @@ export function createTarget(width, height, format = null, logger) {
     }
     return { texture, framebuffer };
 }
-
 // Queues a blit of `rect` [x, y, w, h] of `source` to the origin of `target`.
 // A RootNode makes the target the blit's destination and, with no clear
 // flags, leaves it alone otherwise. Its color state must be the source's.
@@ -37,7 +35,6 @@ export function addBlit(root, source, target, colorState, rect) {
     blit.add_blit_rectangle(rect[0], rect[1], 0, 0, rect[2], rect[3]);
     node.add_child(blit);
 }
-
 export class StageCopier {
     _logger;
     _copies = new Map();
@@ -48,11 +45,9 @@ export class StageCopier {
     reuseCount = 0;
     offStageCount = 0;
     missCount = 0;
-
     constructor(_logger) {
         this._logger = _logger;
     }
-
     // The view a paint of `actor` draws to directly, or null for a paint that
     // goes elsewhere (a clone, a screenshot, an ancestor's offscreen), where
     // the framebuffer does not hold what is behind the actor.
@@ -65,7 +60,6 @@ export class StageCopier {
         }
         return null;
     }
-
     /**
      * The copy to draw with for this paint of `actor`: a new one of the stage
      * rect `stageRect` [x0, y0, x1, y1] when the clip covers it, otherwise the
@@ -121,7 +115,6 @@ export class StageCopier {
         this.copyCount++;
         return { copy, missed: false };
     }
-
     _target(view, copy, width, height, format) {
         if (copy && copy.width === width && copy.height === height && copy.format === format)
             return copy;
@@ -132,7 +125,6 @@ export class StageCopier {
         this._copies.set(view, next);
         return next;
     }
-
     // Drops the copies of views the actor is no longer on.
     prune(views) {
         for (const view of this._copies.keys()) {
@@ -140,7 +132,6 @@ export class StageCopier {
                 this._copies.delete(view);
         }
     }
-
     clear() {
         this._copies.clear();
         this.lastCopy = null;

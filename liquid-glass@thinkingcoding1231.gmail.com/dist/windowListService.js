@@ -43,7 +43,6 @@ function readApplication(entry, metaWindow, tracker) {
     if (icon)
         entry.iconName = icon.to_string() ?? '';
 }
-
 export class WindowListService {
     _logger;
     _dbusImpl = null;
@@ -51,11 +50,9 @@ export class WindowListService {
     // A window's class and title can arrive after it is created.
     _windowSignals = new Map();
     _emitIdleId = 0;
-
     constructor(logger) {
         this._logger = logger;
     }
-
     setup() {
         // Exporting fails with a GError if the path is already taken.
         try {
@@ -79,7 +76,6 @@ export class WindowListService {
             this._trackWindow(metaWindow);
         this._logger.log('[Liquid Glass] WindowListService exported at ' + WINDOW_LIST_OBJECT_PATH);
     }
-
     cleanup() {
         if (this._emitIdleId) {
             GLib.Source.remove(this._emitIdleId);
@@ -98,12 +94,10 @@ export class WindowListService {
             this._dbusImpl = null;
         }
     }
-
     // D-Bus method.
     ListWindows() {
         return JSON.stringify(this._collectWindows());
     }
-
     _trackWindow(metaWindow) {
         if (this._windowSignals.has(metaWindow))
             return;
@@ -116,7 +110,6 @@ export class WindowListService {
         }));
         this._windowSignals.set(metaWindow, ids);
     }
-
     _untrackWindow(metaWindow) {
         const ids = this._windowSignals.get(metaWindow);
         if (!ids)
@@ -125,11 +118,9 @@ export class WindowListService {
             metaWindow.disconnect(id);
         this._windowSignals.delete(metaWindow);
     }
-
     _listMetaWindows() {
         return global.display.list_all_windows();
     }
-
     // One entry per WM_CLASS, the granularity the window lists match on.
     _collectWindows() {
         const tracker = Shell.WindowTracker.get_default();
@@ -156,7 +147,6 @@ export class WindowListService {
             .localeCompare((b.appName || b.wmClass).toLowerCase()));
         return entries;
     }
-
     // Windows open and close in bursts and 'restacked' fires often, so the
     // signal is coalesced onto an idle.
     _queueChanged() {

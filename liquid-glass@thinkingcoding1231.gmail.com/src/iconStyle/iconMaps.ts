@@ -69,6 +69,8 @@ export class IconMaps {
   private _prepareSerial = 0;
   private _cancellable = new Gio.Cancellable();
   private _dir = `${GLib.get_user_cache_dir()}/liquid-glass/icon-maps`;
+  // Tracks whether we're in a prepare() batch (multiple icons) vs individual get() calls.
+  private _inPrepareBatch = false;
 
   /** @param _onBusy Called when maps start being made, and once they all are. */
   constructor(extensionPath: string, private _logger: Logger, private _onBusy: (busy: boolean) => void) {
@@ -96,6 +98,7 @@ export class IconMaps {
   prepare(paths: string[]): void {
     const serial = ++this._prepareSerial;
     const queue = [...new Set(paths)];
+    this._inPrepareBatch = true;
     const next = async () => {
       while (serial === this._prepareSerial && queue.length) {
         const path = queue.shift()!;
@@ -108,6 +111,10 @@ export class IconMaps {
       }
     };
     this._workers.forEach(() => next());
+    // The batch ends when all workers have drained the queue.
+    Promise.all(this._workers.map(w => w.whenIdle())).finally(() => {
+      if (serial === this._prepareSerial) this._inPrepareBatch = false;
+    });
   }
 
   // The cache file of the icon in `path`, made first if it is not there.
@@ -128,8 +135,10 @@ export class IconMaps {
   private async _make(path: string, cache: Gio.File): Promise<void> {
     if (this._idleId) GLib.Source.remove(this._idleId);
     this._idleId = 0;
+    const wasBusy = this._busy;
     this._jobs++;
-    if (!this._busy) {
+    // Only notify for prepare() batches, not individual get() calls.
+    if (this._inPrepareBatch && !wasBusy) {
       this._busy = true;
       this._onBusy(true);
     }
@@ -141,12 +150,17 @@ export class IconMaps {
     } finally {
       if (--this._jobs === 0) {
         if (this._idleId) GLib.Source.remove(this._idleId);
-        this._idleId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, IDLE_DELAY_MS, () => {
-          this._idleId = 0;
+        // Only notify end-of-batch if we were in a prepare batch.
+        if (this._inPrepareBatch) {
+          this._idleId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, IDLE_DELAY_MS, () => {
+            this._idleId = 0;
+            this._busy = false;
+            this._onBusy(false);
+            return GLib.SOURCE_REMOVE;
+          });
+        } else {
           this._busy = false;
-          this._onBusy(false);
-          return GLib.SOURCE_REMOVE;
-        });
+        }
       }
     }
   }

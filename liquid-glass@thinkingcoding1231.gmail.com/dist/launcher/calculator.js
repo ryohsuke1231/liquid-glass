@@ -30,20 +30,16 @@ class Parser {
     _at = 0;
     // Whether a binary operator was read: a lone number is not a calculation.
     binary = false;
-
     constructor(_tokens) {
         this._tokens = _tokens;
     }
-
     parse() {
         const value = this._sum();
         return this._at === this._tokens.length ? value : null;
     }
-
     _peek() {
         return this._tokens[this._at];
     }
-
     _sum() {
         let value = this._product();
         while (value !== null && (this._peek() === '+' || this._peek() === '-')) {
@@ -56,7 +52,6 @@ class Parser {
         }
         return value;
     }
-
     _product() {
         let value = this._power();
         while (value !== null && (this._peek() === '*' || this._peek() === '/' || this._peek() === '%')) {
@@ -69,7 +64,6 @@ class Parser {
         }
         return value;
     }
-
     _power() {
         const base = this._unary();
         if (base === null || this._peek() !== '^')
@@ -81,7 +75,6 @@ class Parser {
         this.binary = true;
         return base ** exponent;
     }
-
     _unary() {
         const token = this._peek();
         if (token === '-' || token === '+') {
@@ -103,7 +96,6 @@ class Parser {
         return Number(token);
     }
 }
-
 /** The value of `text` when it is a calculation, else null. */
 export function evaluate(text) {
     const expression = text.replace(/[×✕]/g, '*').replace(/÷/g, '/').replace(/[−–]/g, '-').trim().replace(/=$/, '');
@@ -114,7 +106,6 @@ export function evaluate(text) {
     const value = parser.parse();
     return value !== null && parser.binary && Number.isFinite(value) ? value : null;
 }
-
 /** `value` with no more digits than a double holds reliably, and no exponent for everyday sizes. */
 export function formatNumber(value) {
     const rounded = Number(value.toPrecision(12));

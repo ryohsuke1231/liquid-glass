@@ -144,6 +144,25 @@ export class WorkerProcess {
     this._output = null;
     this._waiting.clear();
   }
+
+  /** Resolves when the worker has no pending requests. */
+  whenIdle(): Promise<void> {
+    if (this._waiting.size === 0) return Promise.resolve();
+    return new Promise(resolve => {
+      const check = () => {
+        if (this._waiting.size === 0) {
+          resolve();
+        } else {
+          // Check again next tick
+          GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+            check();
+            return GLib.SOURCE_REMOVE;
+          });
+        }
+      };
+      check();
+    });
+  }
 }
 
 /**

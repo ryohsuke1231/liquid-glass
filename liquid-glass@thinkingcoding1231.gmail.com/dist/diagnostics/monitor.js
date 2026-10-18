@@ -35,10 +35,8 @@ function createProbe(rect) {
             this.rect = r;
             this.full = 0;
         }
-
         vfunc_pick(_pickContext) {
         }
-
         vfunc_paint_node(_root, paintContext) {
             const clip = paintContext.get_redraw_clip();
             const [x, y, width, height] = this.rect;
@@ -56,8 +54,8 @@ function displayName(owner) {
         return 'app';
     return owner;
 }
-
 // Popups, tooltips and the like are not counted as windows.
+
 function isCountedWindow(window) {
     const type = window.get_window_type();
     return type === Meta.WindowType.NORMAL || type === Meta.WindowType.DIALOG || type === Meta.WindowType.MODAL_DIALOG;
@@ -67,9 +65,9 @@ function windowName(window) {
     const name = window.get_wm_class() || window.get_title() || '?';
     return (name.split('.').pop() ?? name).toLowerCase().replace(/[^a-z0-9_-]/g, '') || '?';
 }
-
 // The glass shape in stage coordinates: the shader's rect scaled from the
 // shader's resolution onto the actor's box.
+
 function glassStageRect(actor, u) {
     const ext = actor.get_transformed_extents();
     const { x, y } = ext.origin;
@@ -124,12 +122,10 @@ class GlassMonitor {
     _last = new Map();
     // Per-second totals for the summary.
     _totals = { seconds: 0, gpu: 0, power: 0, cpu: 0, frames: 0, full: 0 };
-
     constructor(_sources, _duration) {
         this._sources = _sources;
         this._duration = _duration;
     }
-
     start() {
         this._sensors = findGpuSensors();
         for (const m of Main.layoutManager.monitors) {
@@ -159,7 +155,6 @@ class GlassMonitor {
         diagnosticLog(`[Liquid Glass][monitor] started ${this._duration > 0 ? `for ${this._duration}s` : 'until monitorStop()'}; ` +
             `gpu sensors: ${[...this._sensors.busy, ...this._sensors.clock, ...this._sensors.power].join(', ') || 'none'}`);
     }
-
     // Lines from the next whole second on carry the label.
     setLabel(label) {
         const clean = label ? label.replace(/[^\w./-]/g, '') || null : null;
@@ -168,7 +163,6 @@ class GlassMonitor {
         this._label = clean;
         this._labelChanged = true;
     }
-
     stop() {
         this._cancellable.cancel();
         if (this._sampleId)
@@ -203,7 +197,6 @@ class GlassMonitor {
                 `${(t.frames / t.seconds).toFixed(1)} frames/s, ${(t.full / t.seconds).toFixed(1)} full redraws/s`);
         }
     }
-
     _sample() {
         this._readCounters();
         this._sampleWindows();
@@ -213,7 +206,6 @@ class GlassMonitor {
         for (let i = 0; i < global.display.get_n_monitors(); i++)
             this._fullscreen ||= global.display.get_monitor_in_fullscreen(i);
     }
-
     // The GPU sensors and the shell's CPU time, read without blocking the
     // compositor.
     async _readCounters() {
@@ -234,7 +226,6 @@ class GlassMonitor {
             this._latestTicksAt = GLib.get_monotonic_time();
         }
     }
-
     _sampleWindows() {
         const seen = new Set();
         for (const actor of global.get_window_actors()) {
@@ -262,7 +253,6 @@ class GlassMonitor {
                 this._windows.delete(actor);
         }
     }
-
     _sampleGlass() {
         const stage = [0, 0, global.stage.width, global.stage.height];
         const seen = new Set();
@@ -288,23 +278,19 @@ class GlassMonitor {
                 this._glass.delete(key);
         }
     }
-
     _counters(glass) {
         const s = glass.stats ?? {};
         return { copies: s.copies ?? 0, reuses: s.reuses ?? 0, paints: s.paints ?? 0, blurs: glass._blurRuns ?? 0 };
     }
-
     _snapshotCounters() {
         for (const glass of this._sources())
             this._last.set(glass, this._counters(glass));
     }
-
     // Kept as the scene's first field, which tools/perf/glass-monitor.sh groups
     // the summary by.
     _mode() {
         return this._glass.size > 0 ? 'stage' : 'no-glass';
     }
-
     _glassScene() {
         const counts = new Map();
         for (const track of this._glass.values()) {
@@ -321,7 +307,6 @@ class GlassMonitor {
         });
         return names.length ? names.join(' ') : 'no glass';
     }
-
     // The glass a window overlaps, leaving out its own window glass.
     _behind(actor, rect) {
         const names = new Set();
@@ -333,7 +318,6 @@ class GlassMonitor {
         }
         return [...names].sort();
     }
-
     _windowScene() {
         let shown = 0;
         const active = new Map();
@@ -363,7 +347,6 @@ class GlassMonitor {
             listed.push(`+${entries.length - listed.length} more`);
         return `${shown} win${listed.length ? `: ${listed.join(', ')}` : ''}`;
     }
-
     // Whether there is glass at all; the glass on screen (~ when it moved); the
     // windows shown and the busy (damaged BUSY_DAMAGE times), moving or
     // animating ones, with @ for each glass they overlap; then overview,
@@ -380,7 +363,6 @@ class GlassMonitor {
             parts.push('locked');
         return parts.join('; ');
     }
-
     _report() {
         this._seconds++;
         const parts = [];
@@ -433,7 +415,6 @@ class GlassMonitor {
         this._locked = false;
         this._workspaceSwitched = false;
     }
-
     // The shell's CPU time since the last report, as a percentage of one core.
     _cpuPercent() {
         const ticks = this._latestTicks;
@@ -452,7 +433,6 @@ class Gauge {
     sum = 0;
     n = 0;
     max = 0;
-
     add(value) {
         if (value === null)
             return;
@@ -461,11 +441,9 @@ class Gauge {
         if (value > this.max)
             this.max = value;
     }
-
     get mean() {
         return this.n ? this.sum / this.n : 0;
     }
-
     reset() {
         this.sum = 0;
         this.n = 0;
@@ -487,8 +465,8 @@ function listDir(path) {
     dir.close();
     return names;
 }
-
 // amdgpu's busy percentage, and its hwmon shader clock and power, per card.
+
 function findGpuSensors() {
     const sensors = { busy: [], clock: [], power: [] };
     const exists = (file) => GLib.file_test(file, GLib.FileTest.EXISTS);
@@ -510,7 +488,6 @@ function findGpuSensors() {
     }
     return sensors;
 }
-
 async function readMax(files, cancellable) {
     let result = null;
     for (const value of await Promise.all(files.map(file => readNumber(file, cancellable)))) {
@@ -519,7 +496,6 @@ async function readMax(files, cancellable) {
     }
     return result;
 }
-
 async function readSum(files, cancellable) {
     let result = null;
     for (const value of await Promise.all(files.map(file => readNumber(file, cancellable)))) {
@@ -528,9 +504,9 @@ async function readSum(files, cancellable) {
     }
     return result;
 }
-
 // load_contents_finish() throws a GError when the file cannot be read or the
 // read was cancelled.
+
 function readText(path, cancellable) {
     return new Promise(resolve => {
         const file = Gio.File.new_for_path(path);
@@ -545,7 +521,6 @@ function readText(path, cancellable) {
         });
     });
 }
-
 // utime + stime of the whole process; the command name before them is in
 // parentheses and may contain spaces.
 async function readProcessTicks(cancellable) {
@@ -556,7 +531,6 @@ async function readProcessTicks(cancellable) {
     const ticks = parseInt(fields[11], 10) + parseInt(fields[12], 10);
     return Number.isFinite(ticks) ? ticks : null;
 }
-
 async function readNumber(file, cancellable) {
     const text = await readText(file, cancellable);
     if (text === null)
@@ -564,26 +538,21 @@ async function readNumber(file, cancellable) {
     const value = parseInt(text, 10);
     return Number.isFinite(value) ? value : null;
 }
-
 let _monitor = null;
-
 /** Starts the record for `seconds` (0: until stopped), replacing a running one. */
 export function startGlassMonitor(sources, seconds) {
     stopGlassMonitor();
     _monitor = new GlassMonitor(sources, Math.max(0, Math.floor(seconds)));
     _monitor.start();
 }
-
 export function stopGlassMonitor() {
     _monitor?.stop();
     _monitor = null;
 }
-
 /** Labels the running record's lines (a benchmark's scenario); null clears it. */
 export function setGlassMonitorLabel(label) {
     _monitor?.setLabel(label);
 }
-
 export function isGlassMonitorRunning() {
     return _monitor !== null;
 }

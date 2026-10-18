@@ -7,8 +7,8 @@ const OPEN_SNAP_VELOCITY = 0.03;
 function clampOpacity(v) {
     return Math.min(255, Math.max(0, v));
 }
-
 // Closing uses exponential decay: faster than the spring and never bounces.
+
 function stepClosing(scale, elapsedMs) {
     const dt = Math.min(elapsedMs / 1000, MAX_STEP_S);
     const k = 1.0 - Math.exp(-CLOSE_SPEED * dt);
@@ -17,8 +17,8 @@ function stepClosing(scale, elapsedMs) {
         return { s: 0, stopped: true };
     return { s: scale.value, stopped: false };
 }
-
 // Opening uses the spring, which gives the bounce.
+
 function stepOpening(scale, elapsedMs) {
     const settled = scale.update(elapsedMs);
     const s = scale.value;
@@ -27,7 +27,6 @@ function stepOpening(scale, elapsedMs) {
         return { s: 1.0, stopped: true };
     return { s, stopped: settled };
 }
-
 export function stepMenuSpring(scale, elapsedMs) {
     const closing = scale.target === 0;
     const { s, stopped } = closing ? stepClosing(scale, elapsedMs) : stepOpening(scale, elapsedMs);
@@ -37,7 +36,6 @@ export function stepMenuSpring(scale, elapsedMs) {
         return { closing, stopped, scale: Math.max(0.001, s), opacity: clampOpacity((s - 0.3) / 0.7 * 255) };
     return { closing, stopped, scale: 0.2 + s * 0.8, opacity: clampOpacity((s / 0.3) * 255) };
 }
-
 export function applyMenuFrame(frame, animActor, glass, menuActor, sync) {
     animActor.set_scale(frame.scale, frame.scale);
     glass.opacity = frame.opacity;
@@ -58,7 +56,6 @@ export function applyMenuFrame(frame, animActor, glass, menuActor, sync) {
     glass.opacity = 255;
     sync();
 }
-
 export function showMenuAtRest(glass, animActor) {
     if (!glass)
         return;

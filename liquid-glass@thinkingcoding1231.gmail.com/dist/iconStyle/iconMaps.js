@@ -58,7 +58,6 @@ function exists(file, cancellable) {
 function isCancelled(e) {
     return e instanceof GLib.Error && e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED);
 }
-
 export class IconMaps {
     _logger;
     _onBusy;
@@ -73,7 +72,8 @@ export class IconMaps {
     _prepareSerial = 0;
     _cancellable = new Gio.Cancellable();
     _dir = `${GLib.get_user_cache_dir()}/liquid-glass/icon-maps`;
-
+    // Tracks whether we're in a prepare() batch (multiple icons) vs individual get() calls.
+    _inPrepareBatch = false;
     /** @param _onBusy Called when maps start being made, and once they all are. */
     constructor(extensionPath, _logger, _onBusy) {
         this._logger = _logger;
@@ -81,7 +81,6 @@ export class IconMaps {
         const count = Math.max(1, Math.min(MAX_WORKERS, GLib.get_num_processors() - 1));
         this._workers = Array.from({ length: count }, () => new WorkerProcess(`${extensionPath}/dist/iconStyle/iconWorker.js`, 'icon worker', _logger));
     }
-
     /** The map of the icon in `path`. Rejects when it cannot be made. */
     get(path) {
         let map = this._maps.get(path);
@@ -93,7 +92,6 @@ export class IconMaps {
         }
         return map;
     }
-
     /**
      * Makes the maps of the icons in `paths` that are not in the cache yet, without loading them, one per worker at
      * a time so that icons asked for meanwhile wait little. A later call takes the place of this one.
@@ -101,6 +99,7 @@ export class IconMaps {
     prepare(paths) {
         const serial = ++this._prepareSerial;
         const queue = [...new Set(paths)];
+        this._inPrepareBatch = true;
         const next = async () => {
             while (serial === this._prepareSerial && queue.length) {
                 const path = queue.shift();
@@ -115,8 +114,12 @@ export class IconMaps {
             }
         };
         this._workers.forEach(() => next());
+        // The batch ends when all workers have drained the queue.
+        Promise.all(this._workers.map(w => w.whenIdle())).finally(() => {
+            if (serial === this._prepareSerial)
+                this._inPrepareBatch = false;
+        });
     }
-
     // The cache file of the icon in `path`, made first if it is not there.
     async _cached(path) {
         const time = await modified(Gio.File.new_for_path(path), this._cancellable);
@@ -132,13 +135,14 @@ export class IconMaps {
         await making;
         return cache;
     }
-
     async _make(path, cache) {
         if (this._idleId)
             GLib.Source.remove(this._idleId);
         this._idleId = 0;
+        const wasBusy = this._busy;
         this._jobs++;
-        if (!this._busy) {
+        // Only notify for prepare() batches, not individual get() calls.
+        if (this._inPrepareBatch && !wasBusy) {
             this._busy = true;
             this._onBusy(true);
         }
@@ -152,16 +156,21 @@ export class IconMaps {
             if (--this._jobs === 0) {
                 if (this._idleId)
                     GLib.Source.remove(this._idleId);
-                this._idleId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, IDLE_DELAY_MS, () => {
-                    this._idleId = 0;
+                // Only notify end-of-batch if we were in a prepare batch.
+                if (this._inPrepareBatch) {
+                    this._idleId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, IDLE_DELAY_MS, () => {
+                        this._idleId = 0;
+                        this._busy = false;
+                        this._onBusy(false);
+                        return GLib.SOURCE_REMOVE;
+                    });
+                }
+                else {
                     this._busy = false;
-                    this._onBusy(false);
-                    return GLib.SOURCE_REMOVE;
-                });
+                }
             }
         }
     }
-
     async _load(path) {
         const cache = await this._cached(path);
         const bytes = await loadFile(cache, this._cancellable);
@@ -171,7 +180,6 @@ export class IconMaps {
         return { map: iconStyleTexture(bytes.subarray(0, length)), tone: iconStyleTexture(bytes.subarray(length, length * 2)),
             lens: iconStyleTexture(bytes.subarray(length * 2), LENS_SIZE, LENS_SIZE * 2) };
     }
-
     destroy() {
         this._cancellable.cancel();
         if (this._idleId)

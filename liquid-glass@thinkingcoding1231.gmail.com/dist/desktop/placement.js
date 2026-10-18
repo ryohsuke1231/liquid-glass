@@ -5,11 +5,9 @@ export const ANCHORS = ['top-left', 'top-right', 'bottom-left', 'bottom-right', 
 // Room between an item and the edge of the work area, and between items.
 export const EDGE_MARGIN = 32;
 export const ITEM_GAP = 16;
-
 export function sanitizeAnchor(value, fallback = 'top-right') {
     return ANCHORS.includes(value) ? value : fallback;
 }
-
 /**
  * Stacks items of the given sizes at `anchor` of `area`, the first nearest
  * the edge (or on top, at the center). Returns each item's top left corner.
@@ -33,7 +31,6 @@ export function stackAt(anchor, area, sizes) {
     }
     return out;
 }
-
 /** The top left corner of an item of `size` whose center is at `fraction` of `area`, kept inside it. */
 export function placeAtFraction(fraction, area, size) {
     const [w, h] = size;
@@ -44,14 +41,12 @@ export function placeAtFraction(fraction, area, size) {
         Math.round(Math.min(Math.max(y, area.y), area.y + Math.max(area.height - h, 0))),
     ];
 }
-
 /** The fraction of `area` the center of an item at `pos` of `size` is at. */
 export function fractionOf(pos, area, size) {
     const fx = (pos[0] + size[0] / 2 - area.x) / Math.max(area.width, 1);
     const fy = (pos[1] + size[1] / 2 - area.y) / Math.max(area.height, 1);
     return [Math.min(Math.max(fx, 0), 1), Math.min(Math.max(fy, 0), 1)];
 }
-
 /** `rect` with the edges a handle holds moved by (dx, dy), at least `min` px each way. */
 export function resizeRect(rect, hx, hy, dx, dy, min) {
     const out = { ...rect };
@@ -69,7 +64,6 @@ export function resizeRect(rect, hx, hy, dx, dy, min) {
     }
     return out;
 }
-
 // The positions the user moved items to, by item id, as stored in the
 // `desktop-item-positions` setting. Anything unreadable counts as none.
 export function parsePositions(json) {
@@ -90,7 +84,6 @@ export function parsePositions(json) {
     }
     return out;
 }
-
 /** The JSON of desktop-widget-anchors as id → anchor, skipping anything that is not one. */
 export function parseAnchors(json) {
     let parsed;
@@ -113,7 +106,6 @@ export function parseAnchors(json) {
 function overlaps(a, b) {
     return a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
 }
-
 /**
  * The top left corner of a button of `size` beside `frame`, `gap` px off it:
  * below, above, right or left of it, whichever comes first that is inside
@@ -138,7 +130,6 @@ export function placeBeside(frame, size, gap, area, obstacles) {
     const [x, y] = candidates.find(fits) ?? [cx, clamp(candidates[0][1], area.y, area.height - h)];
     return [Math.round(x), Math.round(y)];
 }
-
 // Items put one above the other stay a stack: the farthest apart two are
 // still taken as neighbours.
 const COLUMN_GAP = ITEM_GAP * 4;
@@ -147,7 +138,6 @@ function shareColumn(a, b) {
     const overlap = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x);
     return overlap >= Math.min(a.width, b.width) / 2;
 }
-
 /**
  * Where items the user moved go, given each one's rect as it was put and its
  * size now. Items that were put in a column are kept in one: the topmost shown

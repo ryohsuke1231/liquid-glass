@@ -19,7 +19,6 @@ const EFFECT_NAME = 'liquid-glass-icon-backdrop';
 const MARGIN = 8;
 // The copy's size is rounded up to this (px), so that icons coming and going do not make new textures every frame.
 const QUANTUM = 32;
-
 export const IconBackdrop = GObject.registerClass(class IconBackdrop extends Clutter.Effect {
     _init(params) {
         super._init();
@@ -57,7 +56,6 @@ export const IconBackdrop = GObject.registerClass(class IconBackdrop extends Clu
         apply();
         this._loadShaders();
     }
-
     async _loadShaders() {
         try {
             await this._renderer.pipelines.load(this._params.extensionPath, this._shaderLoad);
@@ -71,7 +69,6 @@ export const IconBackdrop = GObject.registerClass(class IconBackdrop extends Clu
         // The relays are hidden until now, so the host is what asks for the frame that copies.
         this._host?.queue_redraw();
     }
-
     /** Goes on `host`, the actor painted right over what the icons' glass shows. */
     attach(host) {
         this._host = host;
@@ -80,7 +77,6 @@ export const IconBackdrop = GObject.registerClass(class IconBackdrop extends Clu
         this._mapId = host.connect('notify::mapped', () => this._syncMapped());
         this._syncMapped();
     }
-
     _syncMapped() {
         if (!this._host?.mapped) {
             stopStageLoop(this._signalSlot, this._firstSlot);
@@ -97,7 +93,6 @@ export const IconBackdrop = GObject.registerClass(class IconBackdrop extends Clu
             step: () => this._sync(),
         });
     }
-
     // The rect to copy, [x0, y0, x1, y1] on the stage: around the icons, inside the host, which leaves out the
     // icons of an app grid's other pages. Inside the host, a redraw of the host redraws all of it.
     _rect() {
@@ -112,7 +107,6 @@ export const IconBackdrop = GObject.registerClass(class IconBackdrop extends Clu
         const y1 = Math.min(y0 + Math.ceil((r[3] + MARGIN - y0) / QUANTUM) * QUANTUM, by1);
         return x1 - x0 >= 1 && y1 - y0 >= 1 ? [x0, y0, x1, y1] : null;
     }
-
     // Before every frame: the relays follow what is behind the icons, and the area is redrawn whole when it moves,
     // so that the copy is taken again in that frame.
     _sync() {
@@ -134,7 +128,6 @@ export const IconBackdrop = GObject.registerClass(class IconBackdrop extends Clu
             relays.redrawArea();
         this._copier.prune(this._host.peek_stage_views());
     }
-
     vfunc_pre_paint(node, paintContext) {
         const host = this._host;
         const rect = host && this._loaded ? this._rect() : null;
@@ -164,7 +157,6 @@ export const IconBackdrop = GObject.registerClass(class IconBackdrop extends Clu
             blur.render(node, copy.texture, [0, 0, 1, 1], key);
         return true;
     }
-
     /** What is behind the icons now, or null until it has been copied since the host was last shown. */
     current() {
         const copy = this._copier.lastCopy;
@@ -173,17 +165,14 @@ export const IconBackdrop = GObject.registerClass(class IconBackdrop extends Clu
         const blur = this._renderer.blur;
         return { texture: blur.passCount > 0 && blur.result ? blur.result : copy.texture, rect: copy.rect };
     }
-
     /** The glass settings and this surface's color adjustments, by glass.frag's uniform names. */
     material() {
         return this._renderer.uniforms.values;
     }
-
     _materialChanged() {
         this.materialSerial++;
         this._host?.queue_redraw();
     }
-
     cleanup() {
         stopStageLoop(this._signalSlot, this._firstSlot);
         this._shaderLoad.cancel();
