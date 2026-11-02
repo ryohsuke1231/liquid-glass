@@ -26,11 +26,14 @@ type ArrowAlignedMenu = { _arrowAlignment: number };
 // The bars with glass, which the menus opened from them can grow out of.
 const liveBars = new Set<TopBarManager>();
 
-/** The bar the menu opened from `source` grows out of (top-bar-menus-grow), or null while menus float. */
-export function barGrowingMenuFrom(source: Clutter.Actor | null): TopBarManager | null {
+/**
+ * The bar whose button `source` is, while what opens from it grows out of the bar by the boolean setting `key`
+ * (top-bar-menus-grow, top-bar-notifications-grow), or null while it floats.
+ */
+export function barGrowingFrom(source: Clutter.Actor | null, key: string): TopBarManager | null {
   if (!source) return null;
   for (const bar of liveBars)
-    if (bar.growsMenuFrom(source)) return bar;
+    if (bar.growsFrom(source, key)) return bar;
   return null;
 }
 
@@ -120,12 +123,14 @@ export class TopBarManager {
       this._applyAttach();
       this._applyGrowths();
     });
-    watch('top-bar-menus-grow', () => {
-      // The glass reaches down the monitor only while menus grow out of it.
-      this._lastKey = '';
-      this._growths.clear();
-      this._applyGrowths();
-    });
+    for (const key of ['top-bar-menus-grow', 'top-bar-notifications-grow'])
+      watch(key, () => {
+        // The glass reaches down the monitor only while something grows out of it.
+        this._lastKey = '';
+        this._growths.clear();
+        this._restack();
+        this._applyGrowths();
+      });
     this._apply();
   }
 
@@ -156,8 +161,8 @@ export class TopBarManager {
     glass.setIsDock(false);
     glass.setMultiRegionMode(this._style === 'islands');
     glass.setShadowMaxRadius(SHADOW_ROOM - 8);
-    // Draw the glass below the panel.
     Main.layoutManager.uiGroup.insert_child_below(glass, panelBox);
+    this._restack();
     this._applyMaterial();
     this._applyAttach();
     this._lastKey = '';
@@ -576,9 +581,9 @@ export class TopBarManager {
     }
 
     this._bodies = rects.map(([rx, ry, rw, rh]) => [x + rx, y + ry, rw, rh]);
-    // Menus grown out of the bar reach down the monitor, so the glass does too.
+    // Menus and banners grown out of the bar reach down the monitor, so the glass does too.
     let glassHeight = height + SHADOW_ROOM;
-    if (this._settings.get_boolean(this._key('menus-grow'))) {
+    if (this._settings.get_boolean(this._key('menus-grow')) || this._settings.get_boolean(this._key('notifications-grow'))) {
       const monitor = Main.layoutManager.findMonitorForActor(panelBox);
       if (monitor) glassHeight = Math.max(glassHeight, Math.round(monitor.y + monitor.height - y));
     }
@@ -595,9 +600,23 @@ export class TopBarManager {
     glass.syncSources();
   }
 
-  /** Whether the menu opened from `source`, a button on this bar, grows out of it instead of floating. */
-  growsMenuFrom(source: Clutter.Actor): boolean {
-    return !!this._glass?.visible && this._bodies.length > 0 && this._settings.get_boolean(this._key('menus-grow')) &&
+  // Below the panel. While notification banners grow out of the main bar, also below the message tray, which the
+  // shell keeps far below the panel: the banners are drawn over the glass then, not under it.
+  private _restack(): void {
+    const glass = this._glass;
+    const uiGroup = Main.layoutManager.uiGroup;
+    if (!glass || glass.get_parent() !== uiGroup) return;
+    let below: Clutter.Actor = this._panelBox;
+    const tray = Main.messageTray as unknown as Clutter.Actor;
+    if (this._owner === 'top-bar' && this._settings.get_boolean(this._key('notifications-grow')) &&
+      tray.get_parent() === uiGroup && uiGroup.get_children().indexOf(tray) < uiGroup.get_children().indexOf(below))
+      below = tray;
+    uiGroup.set_child_below_sibling(glass, below);
+  }
+
+  /** Whether what opens from `source`, a button on this bar, grows out of it by the setting `key`. */
+  growsFrom(source: Clutter.Actor, key: string): boolean {
+    return !!this._glass?.visible && this._bodies.length > 0 && this._settings.get_boolean(key) &&
       isActorValid(source) && source.mapped && this._panel.contains(source);
   }
 

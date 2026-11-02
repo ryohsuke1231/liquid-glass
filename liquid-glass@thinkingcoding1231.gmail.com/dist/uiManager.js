@@ -10,7 +10,7 @@ import { ContentLens } from './rendering/pipelines.js';
 import { StageContrastSampler, AdaptiveContrastConfig, sanitizeColorPreference } from './contrastSampler.js';
 import { UnpickableWidget, ensureGlassAllocated, resolveMonitorGeometry, getAllocatedSize, isActorValid, placeScreenGlass, resolveGlassOrigin, applyGlassScale, GLASS_SHADOW_MAX_RADIUS } from './actors.js';
 import { MENU_NO_ANIMATION, accentColors } from './shellVersion.js';
-import { BarGrowth } from './barGrowth.js';
+import { BarGrowth, menuGrowthHost } from './barGrowth.js';
 // Room around the glass rect for the shader's edge effects.
 const SHADER_PADDING = 20;
 const SAMPLE_PER_ELEMENT = false;
@@ -162,8 +162,7 @@ export class UIManager {
         this.menu = panelButton.menu;
         this.animActor = panelButton.menu.box;
         this.glass = null;
-        this._barGrowth = new BarGrowth({
-            menu: this.menu, targetActor: this.targetActor, animActor: this.animActor,
+        this._barGrowth = new BarGrowth(menuGrowthHost(this.menu, this.targetActor, this.animActor, {
             source: () => {
                 const opener = this._openedFrom;
                 return opener && isActorValid(opener) && opener.mapped ? opener : this.menu?.sourceActor ?? null;
@@ -173,7 +172,7 @@ export class UIManager {
             radius: () => this._cornerRadius * this._menuScale,
             intervalMs: () => this._animationInterval,
             speed: () => this._morphSpeed,
-        });
+        }));
         this._signals = [];
         this._frameSyncId = 0;
         this._glassExpand = 0;

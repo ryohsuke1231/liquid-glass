@@ -4,60 +4,91 @@ import type St from 'gi://St';
 
 import { SwiftSpring, addFrameTicker, removeFrameTicker, normalizeAnimationIntervalMs } from './animation.js';
 import { getAllocatedSize, isActorValid } from './actors.js';
-import { barGrowingMenuFrom, type TopBarManager } from './topBarManager.js';
+import { barGrowingFrom, type TopBarManager } from './topBarManager.js';
 
 // The BoxPointer's own open and close eases, which are held while the bar grows and shrinks.
 const BOXPOINTER_EASED = ['opacity', 'translation-x', 'translation-y', 'scale-x', 'scale-y'];
 const BOXPOINTER_HOLD_MS = 10000;
-// How far the menu's glass starts inside the bar's, so the two read as one body with no seam where they meet.
+// How far the content's glass starts inside the bar's, so the two read as one body with no seam where they meet.
 const OVERLAP = 4;
 // The growth's springs, [response (s), damping fraction], as SwiftUI gives them. Opening, the glass spreads along
 // the bar under the button quickly and nearly without overshoot, while it flows down on a softer spring that swings
-// some 8% past the menu and settles back, as liquid does. Closing, both run back without a swing.
+// some 8% past the content and settles back, as liquid does. Closing, both run back without a swing.
 const OPEN_SPREAD = [0.3, 0.78];
 const OPEN_DROP = [0.46, 0.62];
 const CLOSE = [0.26, 1];
-// Frames to wait for a menu that is not laid out yet before it opens without the growth.
+// Frames to wait for content that is not laid out yet before it opens without the growth.
 const WAIT_FRAMES = 30;
-// The items come up through the glass between these points of its drop, and slide down this far (px) as they do,
-// riding the drop's swing.
+// The content comes up through the glass between these points of its drop, and slides down this far (px) as it
+// does, riding the drop's swing.
 const CONTENT_FROM = 0.3;
 const CONTENT_TO = 0.9;
 const CONTENT_SLIDE = 14;
-// Closing ends here rather than waiting out the spring's tail, while the hidden menu still takes the pointer.
+// Closing ends here rather than waiting out the spring's tail, while the hidden content still takes the pointer.
 const CLOSED_BELOW = 0.02;
 
-/** What a menu manager tells BarGrowth about its menu. */
+/** What grows out of the bar (a menu, a notification banner), as its manager tells BarGrowth. */
 export interface BarGrowthHost {
-  menu: any;
-  // The menu's BoxPointer and the box of its items.
-  targetActor: St.Widget;
-  animActor: St.Widget;
-  // The button the menu opened from.
+  // The setting that makes it grow out of the bar instead of floating.
+  key: string;
+  // The actor shown inside the glass, or null while there is none.
+  content(): St.Widget | null;
+  // Whether the content is on screen, and the scale its container puts on it.
+  shown(): boolean;
+  scale(): number;
+  // The bar's button it grows out of, and that button's capsule, [x, y, w, h] on the stage, or null.
   source(): Clutter.Actor | null;
-  // The button's capsule, [x, y, w, h] on the stage, or null when it is not on screen.
   button(): number[] | null;
-  // How far the menu's glass reaches past its items, px.
+  // How far its glass reaches past the content, px, and the radius of the glass's corners.
   expand(): number;
-  // The radius of the menu glass's corners.
   radius(): number;
-  // The manager's animation interval, ms.
+  // The manager's animation interval, ms, and how fast it animates (1 as designed).
   intervalMs(): number;
-  // How fast the menu animates, 1 as designed (the menu's morph-speed).
   speed(): number;
+  // Each frame of the growth: holds the shell's own open (`opening`) or close animation of the content.
+  hold(opening: boolean): void;
+  // The content went back into the bar.
+  closed(): void;
+}
+
+/** The host for a popup menu: its BoxPointer `targetActor` and its items' box `animActor`. */
+export function menuGrowthHost(menu: any, targetActor: St.Widget, animActor: St.Widget,
+  rest: Pick<BarGrowthHost, 'source' | 'button' | 'expand' | 'radius' | 'intervalMs' | 'speed'>): BarGrowthHost {
+  return {
+    ...rest,
+    key: 'top-bar-menus-grow',
+    content: () => animActor,
+    shown: () => targetActor.mapped,
+    scale: () => targetActor.get_scale()[1] || 1,
+    // The menu stays where it opens and stays visible until the glass is back in the bar.
+    hold: opening => {
+      for (const name of BOXPOINTER_EASED) {
+        const ease = targetActor.get_transition(name);
+        if (!ease) continue;
+        if (opening) ease.set_from(ease.get_interval().peek_final_value());
+        else ease.set_to(ease.get_interval().peek_initial_value());
+        if (!opening && name === 'opacity') ease.set_duration(BOXPOINTER_HOLD_MS);
+      }
+    },
+    closed: () => {
+      animActor.opacity = 0;
+      if (!menu.isOpen) targetActor.hide();
+    },
+  };
 }
 
 /**
- * A menu that grows out of the top bar's glass instead of floating below it (top-bar-menus-grow). The bar draws
- * the menu's glass as part of its own; the menu manager's glass stays hidden meanwhile. Opening, the glass runs
- * down out of the bar below the button and widens into the menu, its items coming up through it; closing runs back.
+ * Content that grows out of the top bar's glass instead of floating below it. The bar draws the content's glass as
+ * part of its own; the manager's glass stays hidden meanwhile. Opening, the glass spreads out of the bar under the
+ * button and flows down into the content, which comes up through it; closing runs back.
  */
 export class BarGrowth {
   private _bar: TopBarManager | null = null;
-  // How far the glass has spread along the bar towards the menu's width, and dropped towards its bottom, 0 to 1.
+  // How far the glass has spread along the bar towards the content's width, and dropped towards its bottom, 0 to 1.
   private _spread = new SwiftSpring(OPEN_SPREAD[0], OPEN_SPREAD[1]);
   private _drop = new SwiftSpring(OPEN_DROP[0], OPEN_DROP[1]);
-  // The items' translation_y at rest, and the slide (stage px) added to it now.
+  // The content the growth moves, its translation_y at rest, and the slide (stage px) added to it now.
+  private _content: St.Widget | null = null;
   private _restY = 0;
   private _slide = 0;
   private _opening = false;
@@ -65,21 +96,29 @@ export class BarGrowth {
   private _lastUs = 0;
   private _waitFrames = 0;
   private _button: number[] | null = null;
+  // The glass body last drawn, which a growth whose content went away runs back in from.
+  private _lastBody: number[] | null = null;
 
   constructor(private _host: BarGrowthHost) {}
 
-  /** Whether the bar draws the menu now, as it grows or at rest. */
+  /** Whether the bar draws the content now, as it grows or at rest. */
   get holding(): boolean {
     return this._bar !== null;
   }
 
+  /** Whether it is opening or open, rather than closing. */
+  get opening(): boolean {
+    return this._opening;
+  }
+
   /**
-   * Starts the menu growing out of the bar (`open`) or back into it. False when the menu does not grow out of a
-   * bar; the manager then animates it as usual.
+   * Starts the content growing out of the bar (`open`) or back into it. False when it does not grow out of a bar;
+   * the manager then animates it as usual.
    */
   start(open: boolean): boolean {
-    const bar = barGrowingMenuFrom(this._host.source()) ?? (open ? null : this._bar);
-    if (!bar) {
+    const bar = barGrowingFrom(this._host.source(), this._host.key) ?? (open ? null : this._bar);
+    const content = this._host.content();
+    if (!bar || !content) {
       this.release();
       return false;
     }
@@ -92,13 +131,21 @@ export class BarGrowth {
     this._drop.updateParams(drop[0], drop[1]);
     this._spread.target = this._drop.target = open ? 1 : 0;
     this._waitFrames = 0;
-    // The items keep their size; a scale the menu's own spring left behind would shrink them and the glass.
-    const a = this._host.animActor;
-    a.remove_all_transitions();
-    a.set_scale(1, 1);
+    // The content keeps its size; a scale the manager's own spring left behind would shrink it and the glass.
+    content.remove_all_transitions();
+    content.set_scale(1, 1);
+    // New content (a banner coming while the last one's glass runs back in) takes over the glass where it is.
+    if (this._content !== content) {
+      if (this._content) this._resetContent();
+      this._content = content;
+      this._slide = 0;
+      this._restY = content.translation_y;
+      if (open) content.opacity = 0;
+    } else if (!this._tickId) {
+      this._restY = content.translation_y - this._slide;
+      if (open) content.opacity = 0;
+    }
     if (!this._tickId) {
-      this._restY = a.translation_y - this._slide;
-      if (open) a.opacity = 0;
       this._lastUs = 0;
       this._tickId = addFrameTicker(() => this._step(), normalizeAnimationIntervalMs(this._host.intervalMs()));
     }
@@ -106,15 +153,18 @@ export class BarGrowth {
   }
 
   /**
-   * Keeps the bar drawing the resting menu, for a manager's per-frame sync. True while it does, and the manager's
-   * own glass is to stay hidden.
+   * Keeps the bar drawing the content at rest, for a manager's per-frame sync. True while it does, and the
+   * manager's own glass is to stay hidden.
    */
   holdAtRest(): boolean {
     if (this._tickId) return true;
-    const bar = this._host.targetActor.mapped ? barGrowingMenuFrom(this._host.source()) : null;
-    if (bar !== this._bar) this.release();
-    if (!bar) return false;
+    const content = this._host.content();
+    const bar = content && this._host.shown() ? barGrowingFrom(this._host.source(), this._host.key) : null;
+    if (bar !== this._bar || content !== this._content) this.release();
+    if (!bar || !content) return false;
     this._bar = bar;
+    this._content = content;
+    this._opening = true;
     this._spread.value = this._spread.target = this._drop.value = this._drop.target = 1;
     this._spread.velocity = this._drop.velocity = 0;
     const body = this._body();
@@ -122,7 +172,27 @@ export class BarGrowth {
     return true;
   }
 
-  /** Takes the menu's glass back into the bar at once and leaves the menu's items as the manager expects them. */
+  /**
+   * Runs the glass back into the bar from where it is, without the content, which went away (a banner the shell
+   * removed at once). Nothing happens unless the bar holds it.
+   */
+  retract(): void {
+    if (!this._bar || !this._lastBody) {
+      this.release();
+      return;
+    }
+    this._resetContent();
+    this._opening = false;
+    this._spread.updateParams(CLOSE[0], CLOSE[1]);
+    this._drop.updateParams(CLOSE[0], CLOSE[1]);
+    this._spread.target = this._drop.target = 0;
+    if (!this._tickId) {
+      this._lastUs = 0;
+      this._tickId = addFrameTicker(() => this._step(), normalizeAnimationIntervalMs(this._host.intervalMs()));
+    }
+  }
+
+  /** Takes the content's glass back into the bar at once and leaves the content as the manager expects it. */
   release(): void {
     if (this._tickId) {
       removeFrameTicker(this._tickId);
@@ -131,43 +201,49 @@ export class BarGrowth {
     if (!this._bar) return;
     this._bar.setMenuGrowth(this, null, 0);
     this._bar = null;
+    this._lastBody = null;
     for (const spring of [this._spread, this._drop]) {
       spring.value = spring.target = 0;
       spring.velocity = 0;
     }
-    const a = this._host.animActor;
-    if (!isActorValid(a)) return;
-    if (this._slide) this._setSlide(0);
-    a.remove_clip();
-    a.opacity = 255;
+    this._resetContent();
   }
 
-  // Moves the items `slide` stage px from where they rest.
+  private _resetContent(): void {
+    const content = this._content;
+    this._content = null;
+    if (!content || !isActorValid(content)) {
+      this._slide = 0;
+      return;
+    }
+    if (this._slide) {
+      content.translation_y = this._restY;
+      this._slide = 0;
+    }
+    content.remove_clip();
+    content.opacity = 255;
+  }
+
+  // Moves the content `slide` stage px from where it rests.
   private _setSlide(slide: number): void {
-    const a = this._host.animActor;
-    const k = this._host.targetActor.get_scale()[1] || 1;
     this._slide = slide;
-    a.translation_y = this._restY + slide / k;
+    this._content!.translation_y = this._restY + slide / this._host.scale();
   }
 
   private _step(): boolean {
     const host = this._host;
     const bar = this._bar;
-    if (!bar) {
+    // Without its content only a retract goes on, from the glass's last shape.
+    const content = this._content && isActorValid(this._content) ? this._content : null;
+    if (!bar || (!content && this._opening)) {
       this._tickId = 0;
+      this.release();
       return false;
     }
-    // The menu stays where it opens and stays visible until the glass is back in the bar.
-    for (const name of BOXPOINTER_EASED) {
-      const ease = host.targetActor.get_transition(name);
-      if (!ease) continue;
-      if (this._opening) ease.set_from(ease.get_interval().peek_final_value());
-      else ease.set_to(ease.get_interval().peek_initial_value());
-      if (!this._opening && name === 'opacity') ease.set_duration(BOXPOINTER_HOLD_MS);
-    }
+    if (content) host.hold(this._opening);
 
     this._button = host.button() ?? this._button;
-    const body = this._body();
+    const body = content ? this._body() : this._lastBody;
     if (!body || !this._button) {
       if (++this._waitFrames < WAIT_FRAMES) return true;
       this._tickId = 0;
@@ -196,60 +272,61 @@ export class BarGrowth {
     this._tickId = 0;
     if (this._opening) {
       this._setSlide(0);
-      host.animActor.remove_clip();
-      host.animActor.opacity = 255;
+      content!.remove_clip();
+      content!.opacity = 255;
     } else {
       this.release();
-      host.animActor.opacity = 0;
-      if (!host.menu.isOpen) host.targetActor.hide();
+      if (content) host.closed();
     }
     return false;
   }
 
-  // The menu's glass body where its items are, [x, y, w, h] on the stage, or null before they are laid out.
+  // The content's glass body where it is, [x, y, w, h] on the stage, or null before it is laid out.
   private _body(): number[] | null {
-    const { targetActor, animActor } = this._host;
-    if (!targetActor.mapped) return null;
+    const content = this._content;
+    if (!content || !this._host.shown()) return null;
     // The allocation: a restyle leaves a relayout pending, during which the size getters re-measure.
-    const [w, h] = getAllocatedSize(animActor);
-    const [x, slidY] = animActor.get_transformed_position();
-    // Where the items rest, not where their slide has them now.
+    const [w, h] = getAllocatedSize(content);
+    const [x, slidY] = content.get_transformed_position();
+    // Where the content rests, not where its slide has it now.
     const y = slidY - this._slide;
-    const k = (targetActor.get_scale()[0] || 1) * (animActor.get_scale()[0] || 1);
+    const k = this._host.scale() * (content.get_scale()[0] || 1);
     if (!Number.isFinite(x) || !Number.isFinite(y) || !(w > 1) || !(h > 1)) return null;
     const e = this._host.expand();
     return [x - e, y - e, w * k + e * 2, h * k + e * 2];
   }
 
-  // Hands the bar the glass down to `body`'s bottom, and shows the menu's items inside it, coming in with the
-  // glass's drop `p`.
+  // Hands the bar the glass down to `body`'s bottom, and shows the content inside it, coming in with the glass's
+  // drop `p`.
   private _place(body: number[], p: number): void {
     const bar = this._bar!;
+    const content = this._content;
+    if (content) this._lastBody = body;
     const top = bar.glassBottom() - OVERLAP;
     const [x, , w] = body;
     const bottom = body[1] + body[3];
     const h = bottom - top;
     if (!(w >= 1) || !(h > OVERLAP)) {
       bar.setMenuGrowth(this, null, 0);
-      this._host.animActor.opacity = 0;
+      if (content) content.opacity = 0;
       return;
     }
     bar.setMenuGrowth(this, [x, top, w, h], this._host.radius());
+    if (!content) return;
 
-    const a = this._host.animActor;
     const t = Math.min(Math.max((p - CONTENT_FROM) / (CONTENT_TO - CONTENT_FROM), 0), 1);
-    a.opacity = Math.round(255 * t * t * (3 - 2 * t));
+    content.opacity = Math.round(255 * t * t * (3 - 2 * t));
     // Above the rest at first, then down with the glass, past the rest on its swing and back. Only while it moves:
-    // at rest the manager owns the items' translation.
+    // at rest the manager owns the content's translation.
     if (this._tickId) this._setSlide(-CONTENT_SLIDE * (1 - p));
     if (p >= 1 && Math.abs(this._slide) < 0.5) {
-      a.remove_clip();
+      content.remove_clip();
       return;
     }
-    // Cut to the glass, so the items come out of the bar with it.
-    const [ax, ay] = a.get_transformed_position();
-    const [aw] = a.get_transformed_size();
-    const k = aw > 0 && a.width > 0 ? aw / a.width : 1;
-    a.set_clip((x - ax) / k, (top - ay) / k, w / k, h / k);
+    // Cut to the glass, so the content comes out of the bar with it.
+    const [ax, ay] = content.get_transformed_position();
+    const [aw] = content.get_transformed_size();
+    const k = aw > 0 && content.width > 0 ? aw / content.width : 1;
+    content.set_clip((x - ax) / k, (top - ay) / k, w / k, h / k);
   }
 }

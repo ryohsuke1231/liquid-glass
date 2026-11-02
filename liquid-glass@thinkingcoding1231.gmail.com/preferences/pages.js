@@ -740,7 +740,9 @@ function addLayout(group, controls, surface, appearance) {
     addEdgeAttachment(group, controls, surface, rows.get('margin-top'), ['top-bar-style'], shown);
     const grow = controls.toggle(group, 'Menus grow out of the bar', 'top-bar-menus-grow',
       'Clicking a button grows the bar\'s glass down into its menu, which then has the bar\'s glass');
-    controls.watch(['top-bar-style'], () => { grow.visible = shown(); });
+    const growNotifications = controls.toggle(group, 'Notifications grow out of the bar', 'top-bar-notifications-grow',
+      'Banners grow out of the bar under the clock, or out of the screen\'s top edge while the bar is hidden');
+    controls.watch(['top-bar-style'], () => { grow.visible = growNotifications.visible = shown(); });
     controls.toggle(group, 'Glass behind the hidden-panel clock', 'enable-hidden-clock-glass',
       'The clock Hide Top Bar: Multi Monitors shows while a panel is hidden sits on the top bar\'s glass, grown out of the screen edge');
   }

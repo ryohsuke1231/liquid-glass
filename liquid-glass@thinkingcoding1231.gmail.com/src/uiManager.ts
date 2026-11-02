@@ -19,7 +19,7 @@ import {
 
 import { MENU_NO_ANIMATION, accentColors } from './shellVersion.js';
 import { Logger } from './logger.js';
-import { BarGrowth } from './barGrowth.js';
+import { BarGrowth, menuGrowthHost } from './barGrowth.js';
 
 // Room around the glass rect for the shader's edge effects.
 const SHADER_PADDING = 20;
@@ -207,8 +207,7 @@ export class UIManager {
     this.animActor = panelButton.menu.box as St.Widget;
 
     this.glass = null;
-    this._barGrowth = new BarGrowth({
-      menu: this.menu, targetActor: this.targetActor, animActor: this.animActor,
+    this._barGrowth = new BarGrowth(menuGrowthHost(this.menu, this.targetActor, this.animActor, {
       source: () => {
         const opener = this._openedFrom;
         return opener && isActorValid(opener) && opener.mapped ? opener : this.menu?.sourceActor ?? null;
@@ -218,7 +217,7 @@ export class UIManager {
       radius: () => this._cornerRadius * this._menuScale,
       intervalMs: () => this._animationInterval,
       speed: () => this._morphSpeed,
-    });
+    }));
 
     this._signals = [];
     this._frameSyncId = 0;

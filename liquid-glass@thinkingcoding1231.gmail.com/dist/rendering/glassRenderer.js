@@ -5,8 +5,8 @@ import { hexToColorArray } from '../animation.js';
 // Must match glass.frag's `#define MAX_GLASS_REGIONS 16`.
 export const MAX_GLASS_REGIONS = 16;
 const ATTACHED_EDGES = ['none', 'top', 'bottom', 'left', 'right'];
-// Must match glass.frag's `#define MAX_GLASS_GROWTHS 2`.
-export const MAX_GLASS_GROWTHS = 2;
+// Must match glass.frag's `#define MAX_GLASS_GROWTHS 3`: a menu closing, another opening and a notification.
+export const MAX_GLASS_GROWTHS = 3;
 
 /**
  * What every glass draws with, whatever supplies its backdrop: the shader

@@ -114,7 +114,7 @@ uniform float attach_radius;
 // bottom left), joined to the glass through concave fillets of grow_f px on
 // their left and right. A side flush with the glass's end has none, since a
 // rounded union bulges where two straight edges run together.
-#define MAX_GLASS_GROWTHS 2
+#define MAX_GLASS_GROWTHS 3
 uniform float grow_count;
 uniform float grow_f[MAX_GLASS_GROWTHS * 2];
 uniform float grow_x[MAX_GLASS_GROWTHS];

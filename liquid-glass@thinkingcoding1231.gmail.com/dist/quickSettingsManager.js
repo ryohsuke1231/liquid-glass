@@ -10,7 +10,7 @@ import { ContentLens } from './rendering/pipelines.js';
 import { StageContrastSampler, AdaptiveContrastConfig, sanitizeColorPreference } from './contrastSampler.js';
 import { LayoutOpaqueActor, ensureGlassAllocated, isActorValid, resolveMonitorGeometry, getAllocatedSize, getTransformedRect, placeScreenGlass, resolveGlassOrigin, applyGlassScale, GLASS_SHADOW_MAX_RADIUS, setPositionIfChanged, setScaleIfChanged } from './actors.js';
 import { MENU_NO_ANIMATION } from './shellVersion.js';
-import { BarGrowth } from './barGrowth.js';
+import { BarGrowth, menuGrowthHost } from './barGrowth.js';
 // Room around the glass rect for the shader's edge effects.
 const SHADER_PADDING = 20;
 const SAMPLE_PER_ELEMENT = false;
@@ -208,8 +208,7 @@ export class QuickSettingsManager {
         // The menu's content box, which the animations and offsets move.
         this.animActor = Main.panel.statusArea.quickSettings.menu.box;
         this.glass = null;
-        this._barGrowth = new BarGrowth({
-            menu: this.menu, targetActor: this.targetActor, animActor: this.animActor,
+        this._barGrowth = new BarGrowth(menuGrowthHost(this.menu, this.targetActor, this.animActor, {
             // Only the whole menu's glass can become the bar's; the individual buttons keep theirs.
             source: () => {
                 if (!(this.glass instanceof BackdropGlass))
@@ -222,7 +221,7 @@ export class QuickSettingsManager {
             radius: () => this._cornerRadius,
             intervalMs: () => this._animationInterval,
             speed: () => this._morphSpeed,
-        });
+        }));
         this._signals = [];
         this._frameSyncId = 0;
         this._isEffectActive = false;

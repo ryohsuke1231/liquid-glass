@@ -21,8 +21,8 @@ export interface GlassRegion {
 export type AttachedEdge = 'none' | 'top' | 'bottom' | 'left' | 'right';
 const ATTACHED_EDGES: AttachedEdge[] = ['none', 'top', 'bottom', 'left', 'right'];
 
-// Must match glass.frag's `#define MAX_GLASS_GROWTHS 2`.
-export const MAX_GLASS_GROWTHS = 2;
+// Must match glass.frag's `#define MAX_GLASS_GROWTHS 3`: a menu closing, another opening and a notification.
+export const MAX_GLASS_GROWTHS = 3;
 
 /**
  * A menu grown out of the glass: a box in actor px, its corners' radii (top left, top right, bottom right, bottom
