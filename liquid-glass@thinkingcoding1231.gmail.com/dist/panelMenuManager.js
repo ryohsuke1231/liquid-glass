@@ -187,6 +187,83 @@ function menuOf(actor) {
 }
 
 /**
+ * Glass behind Dash to Dock's app icon menus (and its show-apps button's), which grow out of the dock's glass by
+ * dock-menus-grow. They follow the other panel menus' switch and settings.
+ */
+export class DockMenuManager {
+    _path;
+    _settings;
+    _logger;
+    _signals = [];
+    _menus = new Map();
+    _settingsId = 0;
+    _attached = 0;
+
+    constructor(_path, _settings, _logger) {
+        this._path = _path;
+        this._settings = _settings;
+        this._logger = _logger;
+    }
+
+    setup() {
+        const uiGroup = Main.layoutManager.uiGroup;
+        // Dash to Dock builds a menu on its first popup, which adds itself to uiGroup and opens at once: it is attached
+        // here, before it opens, rather than on a later scan.
+        this._signals.push({ target: uiGroup, id: uiGroup.connect('child-added', (_group, actor) => this._attach(actor)) });
+        this._signals.push({ target: uiGroup, id: uiGroup.connect('destroy', () => this.cleanup()) });
+        this._settingsId = this._settings.connect('changed::enable-extra-menu-glass', () => this._rescan());
+        this._rescan();
+    }
+
+    _rescan() {
+        for (const manager of this._menus.values())
+            manager.cleanup();
+        this._menus.clear();
+        if (!this._settings.get_boolean('enable-extra-menu-glass'))
+            return;
+        for (const child of Main.layoutManager.uiGroup.get_children())
+            this._attach(child);
+    }
+
+    _attach(actor) {
+        const menu = menuOf(actor);
+        if (!menu || this._menus.has(menu) || !this._settings.get_boolean('enable-extra-menu-glass'))
+            return;
+        if (!actor.has_style_class_name?.('dock-app-menu') || !menu.box)
+            return;
+        const manager = new UIManager(this._path, this._settings, this._logger, { menu }, false, 'enable-extra-menu-glass', PANEL_MENU_PREFIX, `menu:dock${++this._attached}`, false);
+        // Dash to Dock's menus may not be built the way UIManager expects.
+        try {
+            manager.setup();
+        }
+        catch (e) {
+            manager.cleanup();
+            this._logger.log(`[Liquid Glass] Could not attach glass to a Dash to Dock menu: ${e}`);
+            return;
+        }
+        this._menus.set(menu, manager);
+        actor.connect('destroy', () => {
+            if (this._menus.get(menu) !== manager)
+                return;
+            this._menus.delete(menu);
+            manager.cleanup();
+        });
+    }
+
+    cleanup() {
+        for (const { target, id } of this._signals)
+            target.disconnect(id);
+        this._signals = [];
+        if (this._settingsId)
+            this._settings.disconnect(this._settingsId);
+        this._settingsId = 0;
+        for (const manager of this._menus.values())
+            manager.cleanup();
+        this._menus.clear();
+    }
+}
+
+/**
  * Glass behind the calendar menus of the top bars other extensions put on further monitors,
  * such as Multi Monitors Bar. Those bars build their own DateMenuButton, which the main panel's
  * UIManager never sees. They follow the Calendar menu's switch and settings.

@@ -1264,6 +1264,17 @@ export class UIManager {
             this.glass?.hide();
             return;
         }
+        // Without animations it is just there, in the bar's glass, which _syncGeometry() then holds: the menu's own
+        // spring would unfold it from its top while the bar already draws it whole.
+        if (!St.Settings.get().enable_animations && this._barGrowth.growsOutOfBar) {
+            this._endMorph();
+            if (this.animActor)
+                this.animActor.remove_all_transitions();
+            if (targetValue === 1)
+                showMenuAtRest(this.glass, this.animActor);
+            this.glass?.hide();
+            return;
+        }
         if (this._growFromButton && St.Settings.get().enable_animations && this._startMorph(targetValue === 1))
             return;
         this._endMorph();

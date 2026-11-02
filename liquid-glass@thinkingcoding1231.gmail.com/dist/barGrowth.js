@@ -85,6 +85,11 @@ export class BarGrowth {
         return this._bar !== null;
     }
 
+    /** Whether what it holds would grow out of a bar now, were animations on. */
+    get growsOutOfBar() {
+        return growthBarFrom(this._host.source(), this._host.key) !== null;
+    }
+
     /** Whether it is opening or open, rather than closing. */
     get opening() {
         return this._opening;
