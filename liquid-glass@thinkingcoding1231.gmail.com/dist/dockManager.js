@@ -512,7 +512,8 @@ export class DashManager {
         let [x1, y1, x2, y2] = [x, y, x + w, y + h];
         const menus = this._growsMenus() ? [...this._growths.values()].slice(-MAX_GLASS_GROWTHS) : [];
         if (menus.length > 0 || this._drewGrowths) {
-            const p = SHADER_PADDING;
+            // The body as glass.frag draws a dock's: inside the padding and the feathered edge.
+            const p = SHADER_PADDING + this._feather();
             const ox = glass.x, oy = glass.y;
             const radius = this._settings.get_double('dock-corner-radius');
             const smoothing = this._settings.get_double('glass-corner-smoothing');
@@ -562,7 +563,14 @@ export class DashManager {
     glassEdge() {
         const [, y, , h] = this._glassRect ?? [0, 0, 0, 0];
         const oy = this.glass?.y ?? 0;
-        return this.growDirection > 0 ? oy + y + h - SHADER_PADDING : oy + y + SHADER_PADDING;
+        const inset = SHADER_PADDING + this._feather();
+        return this.growDirection > 0 ? oy + y + h - inset : oy + y + inset;
+    }
+
+    // How far glass.frag keeps a dock's body inside its rect past the padding: the feathered edge, which it does not
+    // take off the menus grown out of it.
+    _feather() {
+        return Math.max(this._settings.get_double('glass-edge-smoothing'), 0.75);
     }
 
     setMenuGrowth(owner, rect, radius) {
