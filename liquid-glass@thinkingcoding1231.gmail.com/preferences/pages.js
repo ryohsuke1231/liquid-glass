@@ -169,7 +169,7 @@ const BMS_PARTS = [
 ];
 
 const GEOCODING = 'https://geocoding-api.open-meteo.com/v1/search';
-const USER_AGENT = 'Liquid Glass GNOME Shell extension (https://github.com/ryohsuke1231/liquid-glass)';
+const USER_AGENT = 'Liquid Glass GNOME Shell extension (https://github.com/AlessandroTelesca/liquid-glass)';
 const MAX_PLACES = 8;
 
 const PLACES = [
