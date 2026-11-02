@@ -58,7 +58,7 @@ export class DesktopLayer {
   private _edit: EditFrame | null = null;
 
   constructor(private _path: string, private _settings: Gio.Settings, private _logger: Logger,
-              private _openPreferences: () => void) {
+    private _openPreferences: () => void) {
     this._env = {
       path: _path, settings: _settings, logger: _logger,
       menu: (item, x, y) => this._openMenu(item, x, y),
@@ -88,10 +88,10 @@ export class DesktopLayer {
 
   private _create(id: string): DesktopItem {
     switch (id) {
-    case 'clock': return new GlassClock(this._env);
-    case 'weather': return new WeatherWidget(this._env);
-    case 'events': return new EventsWidget(this._env);
-    default: return new MediaWidget(this._env);
+      case 'clock': return new GlassClock(this._env);
+      case 'weather': return new WeatherWidget(this._env);
+      case 'events': return new EventsWidget(this._env);
+      default: return new MediaWidget(this._env);
     }
   }
 
@@ -137,9 +137,9 @@ export class DesktopLayer {
       }),
     });
     // The workspace switch animation covers the desktop with pictures of the workspaces until it ends.
-    this._signals.push({ target: Main.uiGroup, id: Main.uiGroup.connect('child-added', (_group, actor) => this._addToSwitch(actor)) });
+    this._signals.push({ target: Main.layoutManager.uiGroup, id: Main.layoutManager.uiGroup.connect('child-added', (_group, actor) => this._addToSwitch(actor)) });
     this._signals.push({
-      target: Main.uiGroup, id: Main.uiGroup.connect('child-removed', (_group, actor) => {
+      target: Main.layoutManager.uiGroup, id: Main.layoutManager.uiGroup.connect('child-removed', (_group, actor) => {
         if (actor instanceof MonitorGroup) this._syncWorkspace();
       }),
     });

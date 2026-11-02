@@ -134,9 +134,9 @@ export class DesktopLayer {
             }),
         });
         // The workspace switch animation covers the desktop with pictures of the workspaces until it ends.
-        this._signals.push({ target: Main.uiGroup, id: Main.uiGroup.connect('child-added', (_group, actor) => this._addToSwitch(actor)) });
+        this._signals.push({ target: Main.layoutManager.uiGroup, id: Main.layoutManager.uiGroup.connect('child-added', (_group, actor) => this._addToSwitch(actor)) });
         this._signals.push({
-            target: Main.uiGroup, id: Main.uiGroup.connect('child-removed', (_group, actor) => {
+            target: Main.layoutManager.uiGroup, id: Main.layoutManager.uiGroup.connect('child-removed', (_group, actor) => {
                 if (actor instanceof MonitorGroup)
                     this._syncWorkspace();
             }),
