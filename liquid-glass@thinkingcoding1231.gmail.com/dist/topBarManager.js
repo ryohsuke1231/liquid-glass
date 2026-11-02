@@ -4,6 +4,7 @@ import GLib from 'gi://GLib';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import { BackdropGlass } from './rendering/backdropGlass.js';
+import { MAX_GLASS_GROWTHS } from './rendering/glassRenderer.js';
 import { ensureGlassAllocated, isActorValid } from './actors.js';
 import { startSyncLoop, stopStageLoop, hexToColorArray } from './animation.js';
 import { sanitizeColorPreference, AdaptiveTextColor } from './contrastSampler.js';
@@ -12,6 +13,18 @@ const SHADER_PADDING = 20;
 // Space for the pill shadow.
 const SHADOW_ROOM = 48;
 const SIDES = ['top', 'bottom', 'left', 'right'];
+// The bars with glass, which the menus opened from them can grow out of.
+const liveBars = new Set();
+
+/** The bar the menu opened from `source` grows out of (top-bar-menus-grow), or null while menus float. */
+export function barGrowingMenuFrom(source) {
+    if (!source)
+        return null;
+    for (const bar of liveBars)
+        if (bar.growsMenuFrom(source))
+            return bar;
+    return null;
+}
 
 function sanitizeStyle(value) {
     return value === 'pill' || value === 'islands' || value === 'center' ? value : 'off';
@@ -58,6 +71,11 @@ export class TopBarManager {
     _centeredWidth = 0;
     _savedXAlign = 0;
     _savedQuickSettingsAlignment = 0;
+    // The menus grown out of this bar, by the manager that holds each: [x, y, w, h] on the stage and the radius of
+    // the corners that are free of the bar. The latest are drawn.
+    _growths = new Map();
+    // The bar's glass bodies on the stage, [x, y, w, h], as last drawn.
+    _bodies = [];
 
     constructor(_path, _settings, _logger,
     // The panel's boxes are not part of the shell's typings.
@@ -88,7 +106,16 @@ export class TopBarManager {
             this._applyAttach();
             this._applyLayout();
         });
-        watch('top-bar-edge-radius', () => this._applyAttach());
+        watch('top-bar-edge-radius', () => {
+            this._applyAttach();
+            this._applyGrowths();
+        });
+        watch('top-bar-menus-grow', () => {
+            // The glass reaches down the monitor only while menus grow out of it.
+            this._lastKey = '';
+            this._growths.clear();
+            this._applyGrowths();
+        });
         this._apply();
     }
 
@@ -114,6 +141,7 @@ export class TopBarManager {
             extensionPath: this._path, settings: this._settings, logger: this._logger, owner: this._owner, outline: 'top-bar',
         });
         this._glass = glass;
+        liveBars.add(this);
         glass.reactive = false;
         glass.setPadding(SHADER_PADDING);
         glass.setIsDock(false);
@@ -563,12 +591,20 @@ export class TopBarManager {
         else if (this._style === 'islands' && this._lastIslandRects.length === 0 && rects.length > 0) {
             this._lastIslandRects = rects.map(rect => [...rect]);
         }
-        const key = `${x},${y},${width},${height},${rects.flat().join(',')}`;
+        this._bodies = rects.map(([rx, ry, rw, rh]) => [x + rx, y + ry, rw, rh]);
+        // Menus grown out of the bar reach down the monitor, so the glass does too.
+        let glassHeight = height + SHADOW_ROOM;
+        if (this._settings.get_boolean(this._key('menus-grow'))) {
+            const monitor = Main.layoutManager.findMonitorForActor(panelBox);
+            if (monitor)
+                glassHeight = Math.max(glassHeight, Math.round(monitor.y + monitor.height - y));
+        }
+        const key = `${x},${y},${width},${glassHeight},${rects.flat().join(',')}`;
         if (key !== this._lastKey) {
             this._lastKey = key;
             glass.set_position(x, y);
-            glass.set_size(width, height + SHADOW_ROOM);
-            glass.setResolution(width, height + SHADOW_ROOM);
+            glass.set_size(width, glassHeight);
+            glass.setResolution(width, glassHeight);
             const p = SHADER_PADDING;
             if (this._style !== 'islands') {
                 const [rx, ry, rw, rh] = rects[0];
@@ -581,8 +617,49 @@ export class TopBarManager {
                 glass.setGlassRegions(regions);
                 glass.setGlassGeometry(0, 0, width, height);
             }
+            this._applyGrowths();
             this._text.invalidate();
         }
+        glass.syncSources();
+    }
+
+    /** Whether the menu opened from `source`, a button on this bar, grows out of it instead of floating. */
+    growsMenuFrom(source) {
+        return !!this._glass?.visible && this._bodies.length > 0 && this._settings.get_boolean(this._key('menus-grow')) &&
+            isActorValid(source) && this._panel.contains(source);
+    }
+
+    /** The bottom of the bar's glass, a stage y. */
+    glassBottom() {
+        return Math.max(...this._bodies.map(([, y, , h]) => y + h));
+    }
+
+    /**
+     * Grows the menu `owner` holds out of the bar as `rect` ([x, y, w, h] on the stage, its top inside the bar's
+     * glass), its free corners rounded by `radius`; null takes it back into the bar.
+     */
+    setMenuGrowth(owner, rect, radius) {
+        this._growths.delete(owner);
+        if (rect)
+            this._growths.set(owner, { rect, radius });
+        this._applyGrowths();
+    }
+
+    _applyGrowths() {
+        const glass = this._glass;
+        if (!glass)
+            return;
+        // A top corner under the straight part of the bar runs into it; one beside the bar is rounded.
+        const barCorner = this._settings.get_double(this._key('corner-radius'));
+        const underBar = (x) => this._bodies.some(([bx, , bw, bh]) => {
+            const inset = Math.min(barCorner, bh / 2);
+            return x >= bx + inset && x <= bx + bw - inset;
+        });
+        const growths = [...this._growths.values()].slice(-MAX_GLASS_GROWTHS).map(({ rect: [x, y, w, h], radius }) => ({
+            x: x - glass.x, y: y - glass.y, w, h,
+            radii: [underBar(x) ? 0 : radius, underBar(x + w) ? 0 : radius, radius, radius],
+        }));
+        glass.setGrowths(growths, this._settings.get_double(this._key('edge-radius')));
         glass.syncSources();
     }
 
@@ -609,6 +686,9 @@ export class TopBarManager {
         this._text.clear();
         const glass = this._glass;
         this._glass = null;
+        liveBars.delete(this);
+        this._growths.clear();
+        this._bodies = [];
         this._disconnectBoxSignals();
         this._disconnectContainerSignals();
         if (glass) {

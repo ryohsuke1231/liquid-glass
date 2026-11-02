@@ -19,12 +19,14 @@ The fork is not meant to be merged back; it is where my own changes live. If you
 | **Top bar grown out of the screen edge** | Instead of floating below the top of the screen, the top bar's glass (one pill, three pills or centered pill) reaches the top edge and curves outwards into it, like part of the screen's border. The corners that touch the edge are concave fillets; the rim light, bevel, refraction and shadow all follow them. The top margin is not used while this is on. | Preferences → Appearance (Advanced view) → Top bar → **Grow out of the screen edge**, with an **Edge flare radius** (default 12 px). |
 | **Dock grown out of the screen edge** | The same for Dash to Dock / Ubuntu Dock and Dhruva, on whichever edge the dock sits. When the dock hides, its glass draws back into the edge instead of sliding away as a floating pill. The dock's own edge spacing is not used while this is on. | Preferences → Appearance (Advanced view) → Dock → **Grow out of the screen edge**, with an **Edge flare radius** (default 16 px). |
 | **Dock icons close to the edge** | While the dock is attached, the room Dash to Dock keeps between the icons and the screen edge is cut from 14 px to 4 px, so the icons sit evenly inside the glass. | Automatic with the dock attachment. |
+| **Menus grow out of the top bar** | Clicking a top bar button grows the bar's own glass down into its menu instead of opening a separate floating menu: the glass runs out of the bar under the button, widens into the menu with a small spring, and the menu's items come up through it; closing draws it back into the bar. Bar and menu are one piece of glass, joined by the same concave fillets as the screen edge. Works for Quick Settings (whole-menu mode), the calendar and the other top bar menus, on every top bar style; the menus then take the top bar's glass settings. | Preferences → Appearance (Advanced view) → Top bar → **Menus grow out of the bar**. |
 
-Both attachment options are off by default, so with them off the fork behaves like upstream. From a terminal:
+All three options are off by default, so with them off the fork behaves like upstream. From a terminal:
 
 ```bash
 dconf write /org/gnome/shell/extensions/liquid-glass/top-bar-attach-to-edge true
 dconf write /org/gnome/shell/extensions/liquid-glass/dock-attach-to-edge true
+dconf write /org/gnome/shell/extensions/liquid-glass/top-bar-menus-grow true
 ```
 
 The extension keeps upstream's UUID (`liquid-glass@thinkingcoding1231.gmail.com`) and settings schema, so it replaces an installed upstream copy and keeps its settings. Install one or the other, not both.

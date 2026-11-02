@@ -738,6 +738,9 @@ function addLayout(group, controls, surface, appearance) {
       for (const row of rows.values()) row.visible = shown();
     });
     addEdgeAttachment(group, controls, surface, rows.get('margin-top'), ['top-bar-style'], shown);
+    const grow = controls.toggle(group, 'Menus grow out of the bar', 'top-bar-menus-grow',
+      'Clicking a button grows the bar\'s glass down into its menu, which then has the bar\'s glass');
+    controls.watch(['top-bar-style'], () => { grow.visible = shown(); });
   }
   if (surface === 'quick-settings') {
     controls.watch(['quick-settings-apply-to'], () => {

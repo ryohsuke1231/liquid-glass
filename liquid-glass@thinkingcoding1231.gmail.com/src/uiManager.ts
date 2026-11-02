@@ -19,6 +19,7 @@ import {
 
 import { MENU_NO_ANIMATION, accentColors } from './shellVersion.js';
 import { Logger } from './logger.js';
+import { BarGrowth } from './barGrowth.js';
 
 // Room around the glass rect for the shader's edge effects.
 const SHADER_PADDING = 20;
@@ -162,6 +163,7 @@ export class UIManager {
   private _enableAnimation: boolean;
   private _growFromButton: boolean = true;
   private _morph: MenuMorph | null = null;
+  private _barGrowth: BarGrowth;
   // Multi Monitors Bar opens a shared menu from its own bar's button and hands the menu back to the main bar's
   // button as it closes, so the glass closes into the button it opened from.
   private _openedFrom: Clutter.Actor | null = null;
@@ -205,6 +207,17 @@ export class UIManager {
     this.animActor = panelButton.menu.box as St.Widget;
 
     this.glass = null;
+    this._barGrowth = new BarGrowth({
+      menu: this.menu, targetActor: this.targetActor, animActor: this.animActor,
+      source: () => {
+        const opener = this._openedFrom;
+        return opener && isActorValid(opener) && opener.mapped ? opener : this.menu?.sourceActor ?? null;
+      },
+      button: () => this._buttonRect(),
+      expand: () => this._glassExpand,
+      radius: () => this._cornerRadius * this._menuScale,
+      intervalMs: () => this._animationInterval,
+    });
 
     this._signals = [];
     this._frameSyncId = 0;
@@ -862,6 +875,7 @@ export class UIManager {
       id: this.menu.actor.connect('notify::mapped', () => {
         if (!this.menu.actor.mapped) {
           stopFrameSync();
+          this._barGrowth.release();
           // The morph owns the glass until it ends.
           if (this._morph) return;
 
@@ -885,6 +899,11 @@ export class UIManager {
   _syncGeometry() {
     // The morph places the glass itself.
     if (this._morph) return;
+    // So does a bar the menu grows out of.
+    if (this._barGrowth.holdAtRest()) {
+      this.glass?.hide();
+      return;
+    }
     if (!this._syncBgVisibility()) return;
     const { w, h, scaleX, scaleY } = this._measureMenu();
     const [animAbsX, animAbsY] = this._resolveMenuOrigin(w);
@@ -1359,6 +1378,12 @@ export class UIManager {
       showMenuAtRest(this.glass, this.animActor);
       return;
     }
+    // A menu that grows out of the top bar moves with the bar's glass, whichever animation the menu has.
+    if (St.Settings.get().enable_animations && this._barGrowth.start(targetValue === 1)) {
+      this._endMorph();
+      this.glass?.hide();
+      return;
+    }
     if (this._growFromButton && St.Settings.get().enable_animations && this._startMorph(targetValue === 1))
       return;
     this._endMorph();
@@ -1634,6 +1659,7 @@ export class UIManager {
     this._stopAdaptiveColorSampling();
     this._clearAdaptiveStyles();
     this._disconnectEffectSources();
+    this._barGrowth.release();
     this._restoreMenuActors();
     this._releaseGlass();
   }

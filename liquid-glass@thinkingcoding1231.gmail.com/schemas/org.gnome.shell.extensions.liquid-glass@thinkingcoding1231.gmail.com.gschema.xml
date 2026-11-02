@@ -921,6 +921,11 @@
       <summary>Edge flare radius (px)</summary>
       <description>Radius of the outward-curved corners where the glass meets the top of the screen.</description>
     </key>
+    <key name="top-bar-menus-grow" type="b">
+      <default>false</default>
+      <summary>Menus grow out of the bar</summary>
+      <description>The top bar's glass grows down into the menus opened from it (the calendar, Quick Settings in whole-menu mode and the other top bar menus) instead of the menus floating below it with glass of their own. The menus then take the top bar's glass settings, and the edge flare radius rounds the join.</description>
+    </key>
     <key name="top-bar-padding-top" type="i">
       <range min="0" max="100"/>
       <default>0</default>
