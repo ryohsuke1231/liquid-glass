@@ -217,6 +217,7 @@ export class UIManager {
       expand: () => this._glassExpand,
       radius: () => this._cornerRadius * this._menuScale,
       intervalMs: () => this._animationInterval,
+      speed: () => this._morphSpeed,
     });
 
     this._signals = [];

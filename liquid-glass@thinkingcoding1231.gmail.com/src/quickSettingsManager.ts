@@ -296,6 +296,7 @@ export class QuickSettingsManager {
       expand: () => this._glassExpand,
       radius: () => this._cornerRadius,
       intervalMs: () => this._animationInterval,
+      speed: () => this._morphSpeed,
     });
 
     this._signals = [];

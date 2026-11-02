@@ -7,13 +7,19 @@ const BOXPOINTER_EASED = ['opacity', 'translation-x', 'translation-y', 'scale-x'
 const BOXPOINTER_HOLD_MS = 10000;
 // How far the menu's glass starts inside the bar's, so the two read as one body with no seam where they meet.
 const OVERLAP = 4;
-// The growth's spring: a little quicker than the drop morph, and settling with a small swing past the menu.
-const RESPONSE_S = 0.36;
-const DAMPING_FRACTION = 0.8;
+// The growth's springs, [response (s), damping fraction], as SwiftUI gives them. Opening, the glass spreads along
+// the bar under the button quickly and nearly without overshoot, while it flows down on a softer spring that swings
+// some 8% past the menu and settles back, as liquid does. Closing, both run back without a swing.
+const OPEN_SPREAD = [0.3, 0.78];
+const OPEN_DROP = [0.46, 0.62];
+const CLOSE = [0.26, 1];
 // Frames to wait for a menu that is not laid out yet before it opens without the growth.
 const WAIT_FRAMES = 30;
-// The items come up through the glass over the last part of the growth.
-const CONTENT_FROM = 0.45;
+// The items come up through the glass between these points of its drop, and slide down this far (px) as they do,
+// riding the drop's swing.
+const CONTENT_FROM = 0.3;
+const CONTENT_TO = 0.9;
+const CONTENT_SLIDE = 14;
 // Closing ends here rather than waiting out the spring's tail, while the hidden menu still takes the pointer.
 const CLOSED_BELOW = 0.02;
 
@@ -25,7 +31,12 @@ const CLOSED_BELOW = 0.02;
 export class BarGrowth {
     _host;
     _bar = null;
-    _progress = new SwiftSpring(RESPONSE_S, DAMPING_FRACTION);
+    // How far the glass has spread along the bar towards the menu's width, and dropped towards its bottom, 0 to 1.
+    _spread = new SwiftSpring(OPEN_SPREAD[0], OPEN_SPREAD[1]);
+    _drop = new SwiftSpring(OPEN_DROP[0], OPEN_DROP[1]);
+    // The items' translation_y at rest, and the slide (stage px) added to it now.
+    _restY = 0;
+    _slide = 0;
     _opening = false;
     _tickId = 0;
     _lastUs = 0;
@@ -55,15 +66,20 @@ export class BarGrowth {
             this._bar.setMenuGrowth(this, null, 0);
         this._bar = bar;
         this._opening = open;
-        this._progress.target = open ? 1 : 0;
+        // A reversal midway keeps the springs' values and velocities, so the glass turns round smoothly.
+        const [spread, drop] = open ? [OPEN_SPREAD, OPEN_DROP] : [CLOSE, CLOSE];
+        this._spread.updateParams(spread[0], spread[1]);
+        this._drop.updateParams(drop[0], drop[1]);
+        this._spread.target = this._drop.target = open ? 1 : 0;
         this._waitFrames = 0;
         // The items keep their size; a scale the menu's own spring left behind would shrink them and the glass.
         const a = this._host.animActor;
         a.remove_all_transitions();
         a.set_scale(1, 1);
-        if (open)
-            a.opacity = 0;
         if (!this._tickId) {
+            this._restY = a.translation_y - this._slide;
+            if (open)
+                a.opacity = 0;
             this._lastUs = 0;
             this._tickId = addFrameTicker(() => this._step(), normalizeAnimationIntervalMs(this._host.intervalMs()));
         }
@@ -83,7 +99,8 @@ export class BarGrowth {
         if (!bar)
             return false;
         this._bar = bar;
-        this._progress.value = this._progress.target = 1;
+        this._spread.value = this._spread.target = this._drop.value = this._drop.target = 1;
+        this._spread.velocity = this._drop.velocity = 0;
         const body = this._body();
         if (body)
             this._place(body, 1);
@@ -100,13 +117,25 @@ export class BarGrowth {
             return;
         this._bar.setMenuGrowth(this, null, 0);
         this._bar = null;
-        this._progress.value = this._progress.target = 0;
-        this._progress.velocity = 0;
+        for (const spring of [this._spread, this._drop]) {
+            spring.value = spring.target = 0;
+            spring.velocity = 0;
+        }
         const a = this._host.animActor;
         if (!isActorValid(a))
             return;
+        if (this._slide)
+            this._setSlide(0);
         a.remove_clip();
         a.opacity = 255;
+    }
+
+    // Moves the items `slide` stage px from where they rest.
+    _setSlide(slide) {
+        const a = this._host.animActor;
+        const k = this._host.targetActor.get_scale()[1] || 1;
+        this._slide = slide;
+        a.translation_y = this._restY + slide / k;
     }
 
     _step() {
@@ -138,20 +167,26 @@ export class BarGrowth {
             return false;
         }
         const now = GLib.get_monotonic_time();
-        const settled = this._progress.update(this._lastUs ? (now - this._lastUs) / 1000 : 1000 / 60);
+        const elapsedMs = (this._lastUs ? (now - this._lastUs) / 1000 : 1000 / 60) * Math.max(host.speed(), 0.05);
         this._lastUs = now;
-        const p = this._progress.value;
+        // Both stepped every frame: && would skip the second once the first settles.
+        const spreadSettled = this._spread.update(elapsedMs);
+        const dropSettled = this._drop.update(elapsedMs);
+        const spread = this._spread.value, drop = this._drop.value;
         const [bx, , bw] = this._button;
-        const lerp = (from, to) => from + (to - from) * p;
-        const bottom = bar.glassBottom();
-        const left = lerp(bx, body[0]);
-        const right = lerp(bx + bw, body[0] + body[2]);
-        const reach = lerp(bottom, body[1] + body[3]);
-        this._place([left, body[1], right - left, reach - body[1]], p);
-        if (!settled && (this._opening || p > CLOSED_BELOW))
+        const lerp = (from, to, p) => from + (to - from) * p;
+        const left = lerp(bx, body[0], spread);
+        const right = lerp(bx + bw, body[0] + body[2], spread);
+        const reach = lerp(bar.glassBottom(), body[1] + body[3], drop);
+        this._place([left, body[1], right - left, reach - body[1]], drop);
+        const done = this._opening
+            ? spreadSettled && dropSettled
+            : Math.max(spread, drop) <= CLOSED_BELOW;
+        if (!done)
             return true;
         this._tickId = 0;
         if (this._opening) {
+            this._setSlide(0);
             host.animActor.remove_clip();
             host.animActor.opacity = 255;
         }
@@ -171,7 +206,9 @@ export class BarGrowth {
             return null;
         // The allocation: a restyle leaves a relayout pending, during which the size getters re-measure.
         const [w, h] = getAllocatedSize(animActor);
-        const [x, y] = animActor.get_transformed_position();
+        const [x, slidY] = animActor.get_transformed_position();
+        // Where the items rest, not where their slide has them now.
+        const y = slidY - this._slide;
         const k = (targetActor.get_scale()[0] || 1) * (animActor.get_scale()[0] || 1);
         if (!Number.isFinite(x) || !Number.isFinite(y) || !(w > 1) || !(h > 1))
             return null;
@@ -179,7 +216,8 @@ export class BarGrowth {
         return [x - e, y - e, w * k + e * 2, h * k + e * 2];
     }
 
-    // Hands the bar the glass down to `body`'s bottom, and shows the menu's items inside it, fading in with `p`.
+    // Hands the bar the glass down to `body`'s bottom, and shows the menu's items inside it, coming in with the
+    // glass's drop `p`.
     _place(body, p) {
         const bar = this._bar;
         const top = bar.glassBottom() - OVERLAP;
@@ -193,8 +231,13 @@ export class BarGrowth {
         }
         bar.setMenuGrowth(this, [x, top, w, h], this._host.radius());
         const a = this._host.animActor;
-        a.opacity = Math.round(255 * Math.min(Math.max((p - CONTENT_FROM) / (1 - CONTENT_FROM), 0), 1));
-        if (p >= 1) {
+        const t = Math.min(Math.max((p - CONTENT_FROM) / (CONTENT_TO - CONTENT_FROM), 0), 1);
+        a.opacity = Math.round(255 * t * t * (3 - 2 * t));
+        // Above the rest at first, then down with the glass, past the rest on its swing and back. Only while it moves:
+        // at rest the manager owns the items' translation.
+        if (this._tickId)
+            this._setSlide(-CONTENT_SLIDE * (1 - p));
+        if (p >= 1 && Math.abs(this._slide) < 0.5) {
             a.remove_clip();
             return;
         }
