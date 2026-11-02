@@ -329,7 +329,7 @@ export const GlassActor = GObject.registerClass(
     setTintStrength(strength: number): void { this._renderer.setTintStrength(strength); }
     setCornerRadius(radius: number): void { this._renderer.setCornerRadius(radius); }
     setAttachedEdge(edge: AttachedEdge, radius: number): void { this._renderer.setAttachedEdge(edge, radius); }
-    setGrowths(growths: GlassGrowth[], fillet: number): void { this._renderer.setGrowths(growths, fillet); }
+    setGrowths(growths: GlassGrowth[]): void { this._renderer.setGrowths(growths); }
     setAnimationScale(scale: number): void { this._renderer.setAnimationScale(scale); }
     // The glass's size in shader space; normally its own size.
     setResolution(width: number, height: number): void { this._renderer.setResolution(width, height); }

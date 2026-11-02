@@ -315,7 +315,7 @@ export const GlassActor = GObject.registerClass(class GlassActor extends Clutter
 
     setAttachedEdge(edge, radius) { this._renderer.setAttachedEdge(edge, radius); }
 
-    setGrowths(growths, fillet) { this._renderer.setGrowths(growths, fillet); }
+    setGrowths(growths) { this._renderer.setGrowths(growths); }
 
     setAnimationScale(scale) { this._renderer.setAnimationScale(scale); }
 

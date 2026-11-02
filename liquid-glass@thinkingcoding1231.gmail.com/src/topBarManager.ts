@@ -6,7 +6,7 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
 import { BackdropGlass } from './rendering/backdropGlass.js';
-import { MAX_GLASS_GROWTHS, type GlassRegion } from './rendering/glassRenderer.js';
+import { MAX_GLASS_GROWTHS, type GlassGrowth, type GlassRegion } from './rendering/glassRenderer.js';
 import { ensureGlassAllocated, isActorValid } from './actors.js';
 import { startSyncLoop, stopStageLoop, hexToColorArray } from './animation.js';
 import { sanitizeColorPreference, AdaptiveTextColor } from './contrastSampler.js';
@@ -620,9 +620,7 @@ export class TopBarManager {
   private _applyGrowths(): void {
     const glass = this._glass;
     if (!glass || this._bodies.length === 0) return;
-    const barCorner = this._settings.get_double(this._key('corner-radius'));
-    const drawn = [...this._growths.values()].slice(-MAX_GLASS_GROWTHS);
-    const bodies = this._widenedBodies(drawn.map(({ rect }) => rect), barCorner);
+    const { bodies, growths } = this._layoutGrowths([...this._growths.values()].slice(-MAX_GLASS_GROWTHS));
 
     const p = SHADER_PADDING;
     const [width, , height] = this._glassSize;
@@ -637,41 +635,55 @@ export class TopBarManager {
       glass.setGlassRegions(regions);
       glass.setGlassGeometry(0, 0, width, height);
     }
-
-    // A top corner under the straight part of the bar runs into it. Only one held back by the monitor's side is
-    // still beside the bar, and is rounded.
-    const underBar = (x: number) => bodies.some(([bx, , bw, bh]) => {
-      const inset = Math.min(barCorner, bh / 2);
-      return x >= bx + inset - 0.5 && x <= bx + bw - inset + 0.5;
-    });
-    const growths = drawn.map(({ rect: [x, y, w, h], radius }) => ({
-      x: x - glass.x, y: y - glass.y, w, h,
-      radii: [underBar(x) ? 0 : radius, underBar(x + w) ? 0 : radius, radius, radius],
-    }));
-    glass.setGrowths(growths, this._settings.get_double(this._key('edge-radius')));
+    glass.setGrowths(growths.map(g => ({ ...g, x: g.x - glass.x, y: g.y - glass.y })));
     glass.syncSources();
   }
 
+  // How far up from its bottom a body of height `h` starts to round its corners, as glass.frag's cornerShape() draws them.
+  private _cornerReach(h: number): number {
+    const r = Math.max(Math.min(this._settings.get_double(this._key('corner-radius')), h / 2), 0);
+    const smoothing = Math.min(Math.max(this._settings.get_double('glass-corner-smoothing'), 0), 1);
+    return r * Math.min(1 + smoothing, Math.max(h / 2 / Math.max(r, 1e-3), 1));
+  }
+
   /**
-   * The bar's bodies widened so each menu in `menus` ([x, y, w, h] on the stage) hangs from the straight part of
-   * the body it grows out of, past which the body's rounded end runs by its corner radius. Within the glass actor;
-   * islands that come to touch become one.
+   * The bar's bodies and the glass of each menu in `menus` (both on the stage). A menu's glass starts where the
+   * bottom corners of the body it grows out of begin to round, so it covers them. A side of the menu under the
+   * body's straight part hangs from it through a concave fillet; a side that reaches the body's rounded end runs
+   * flush into it, the end moving out to the menu, so the two make one straight side up to the bar's top. Across
+   * the rounded end one turns into the other. Islands that come to touch become one.
    */
-  private _widenedBodies(menus: number[][], barCorner: number): number[][] {
+  private _layoutGrowths(menus: { rect: number[], radius: number }[]): { bodies: number[][], growths: GlassGrowth[] } {
     const bodies = this._bodies.map(body => [...body]);
     const minX = this._glass!.x, maxX = minX + this._glassSize[0];
-    for (const [mx, , mw] of menus) {
+    const fillet = this._settings.get_double(this._key('edge-radius'));
+    const growths: GlassGrowth[] = [];
+    for (const { rect: [mx, my, mw, mh], radius } of menus) {
       // The body the menu comes out of: the one it overlaps most, or else the nearest.
       let body = bodies[0], best = -Infinity;
       for (const b of bodies) {
         const overlap = Math.min(b[0] + b[2], mx + mw) - Math.max(b[0], mx);
         if (overlap > best) { best = overlap; body = b; }
       }
-      const inset = Math.min(barCorner, body[3] / 2);
-      const x0 = Math.max(minX, Math.min(body[0], mx - inset));
-      const x1 = Math.min(maxX, Math.max(body[0] + body[2], mx + mw + inset));
-      body[0] = x0;
-      body[2] = x1 - x0;
+      const reach = this._cornerReach(body[3]);
+      // One side: the menu's `edge`, the body's `end` and `out`, the way out of the body (-1 left, 1 right).
+      const side = (edge: number, end: number, out: number) => {
+        const flush = reach > 0 ? Math.min(Math.max(((edge - end) * out + reach) / reach, 0), 1) : 1;
+        if (flush >= 1) {
+          const at = Math.min(Math.max(edge, minX), maxX);
+          return { edge: at, end: (at - end) * out > 0 ? at : end, fillet: 0 };
+        }
+        return { edge: edge + (end - edge) * flush, end, fillet: fillet * (1 - flush) };
+      };
+      const left = side(mx, body[0], -1);
+      const right = side(mx + mw, body[0] + body[2], 1);
+      body[0] = left.end;
+      body[2] = right.end - left.end;
+      const top = Math.min(my, body[1] + body[3] - reach);
+      growths.push({
+        x: left.edge, y: top, w: right.edge - left.edge, h: my + mh - top,
+        radii: [0, 0, radius, radius], fillets: [left.fillet, right.fillet],
+      });
     }
     bodies.sort((a, b) => a[0] - b[0]);
     const merged: number[][] = [];
@@ -680,7 +692,7 @@ export class TopBarManager {
       if (last && b[0] <= last[0] + last[2]) last[2] = Math.max(last[0] + last[2], b[0] + b[2]) - last[0];
       else merged.push(b);
     }
-    return merged;
+    return { bodies: merged, growths };
   }
 
   private _fitCenteredWidth(maxWidth: number): number {

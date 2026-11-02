@@ -111,10 +111,12 @@ uniform float attach_radius;
 
 // Menus grown out of the glass (a top bar's): up to MAX_GLASS_GROWTHS boxes in
 // actor px, each with its corners' radii (top left, top right, bottom right,
-// bottom left), joined to the glass through concave fillets of grow_fillet px.
+// bottom left), joined to the glass through concave fillets of grow_f px on
+// their left and right. A side flush with the glass's end has none, since a
+// rounded union bulges where two straight edges run together.
 #define MAX_GLASS_GROWTHS 2
 uniform float grow_count;
-uniform float grow_fillet;
+uniform float grow_f[MAX_GLASS_GROWTHS * 2];
 uniform float grow_x[MAX_GLASS_GROWTHS];
 uniform float grow_y[MAX_GLASS_GROWTHS];
 uniform float grow_w[MAX_GLASS_GROWTHS];
@@ -288,7 +290,10 @@ float sdGlass(vec2 p, vec2 b, vec2 corner) {
         vec2 extent = vec2(grow_w[i], grow_h[i]) * 0.5;
         vec2 c = vec2(grow_x[i], grow_y[i]) + extent;
         vec4 r = vec4(grow_r[i * 4], grow_r[i * 4 + 1], grow_r[i * 4 + 2], grow_r[i * 4 + 3]);
-        d = roundUnion(d, sdCornerBox(q - c, extent, r), max(grow_fillet, 0.0));
+        // Blended across the middle, so the field stays continuous inside.
+        float side = smoothstep(c.x - extent.x * 0.5, c.x + extent.x * 0.5, q.x);
+        float f = max(mix(grow_f[i * 2], grow_f[i * 2 + 1], side), 0.0);
+        d = roundUnion(d, sdCornerBox(q - c, extent, r), f);
     }
     return d;
 }

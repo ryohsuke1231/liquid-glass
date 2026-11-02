@@ -211,12 +211,12 @@ export class GlassRenderer {
         this._repaintIfDirty();
     }
 
-    /** Joins `growths` (the first MAX_GLASS_GROWTHS) to the glass through concave fillets of `fillet` px. */
-    setGrowths(growths, fillet) {
+    /** Joins `growths` (the first MAX_GLASS_GROWTHS) to the glass. */
+    setGrowths(growths) {
         const used = growths.slice(0, MAX_GLASS_GROWTHS);
         const slot = (pick) => Array.from({ length: MAX_GLASS_GROWTHS }, (_, i) => (used[i] ? pick(used[i]) : 0));
         this.uniforms.set('grow_count', used.length);
-        this.uniforms.set('grow_fillet', Math.max(fillet, 0));
+        this.uniforms.setArray('grow_f', Array.from({ length: MAX_GLASS_GROWTHS * 2 }, (_, i) => Math.max(used[Math.floor(i / 2)]?.fillets[i % 2] ?? 0, 0)));
         this.uniforms.setArray('grow_x', slot(g => g.x));
         this.uniforms.setArray('grow_y', slot(g => g.y));
         this.uniforms.setArray('grow_w', slot(g => g.w));
