@@ -598,7 +598,7 @@ export class TopBarManager {
   /** Whether the menu opened from `source`, a button on this bar, grows out of it instead of floating. */
   growsMenuFrom(source: Clutter.Actor): boolean {
     return !!this._glass?.visible && this._bodies.length > 0 && this._settings.get_boolean(this._key('menus-grow')) &&
-      isActorValid(source) && this._panel.contains(source);
+      isActorValid(source) && source.mapped && this._panel.contains(source);
   }
 
   /** The bottom of the bar's glass, a stage y. */
