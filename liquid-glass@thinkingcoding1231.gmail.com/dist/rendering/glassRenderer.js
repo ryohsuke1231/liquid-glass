@@ -8,6 +8,7 @@ import { UniformState } from './uniforms.js';
 import { RenderPasses } from './passes.js';
 // Must match glass.frag's `#define MAX_GLASS_REGIONS 16`.
 export const MAX_GLASS_REGIONS = 16;
+const ATTACHED_EDGES = ['none', 'top', 'bottom', 'left', 'right'];
 
 /**
  * What every glass draws with, whatever supplies its backdrop: the shader
@@ -202,6 +203,13 @@ export class GlassRenderer {
 
     setCornerRadius(radius) {
         this.uniforms.set('corner_radius', radius);
+        this._repaintIfDirty();
+    }
+
+    /** Grows the glass out of `edge`, flaring into it with fillets of `radius` px. */
+    setAttachedEdge(edge, radius) {
+        this.uniforms.set('attach_edge', ATTACHED_EDGES.indexOf(edge));
+        this.uniforms.set('attach_radius', Math.max(radius, 0));
         this._repaintIfDirty();
     }
 

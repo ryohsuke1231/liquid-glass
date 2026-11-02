@@ -87,7 +87,8 @@ export class GlassGeometry {
     /**
      * The union [x0, y0, x1, y1] of the glass bodies, or null. The rect a
      * manager passes is the background box; the shader insets the body by
-     * `padding` (the shadow margin for application windows).
+     * `padding` (the shadow margin for application windows), and an attached
+     * glass flares out of it by its fillet radius.
      */
     _glassBodyUnion() {
         const pad = Math.max(this._uniforms.get('padding') ?? 0, 0);
@@ -112,7 +113,9 @@ export class GlassGeometry {
         }
         if (!(x1 > x0) || !(y1 > y0))
             return null;
-        return [x0, y0, x1, y1];
+        // The fillets only widen the side on the edge, but growing every side keeps this simple and costs little.
+        const flare = (this._uniforms.get('attach_edge') ?? 0) > 0.5 ? Math.max(this._uniforms.get('attach_radius') ?? 0, 0) : 0;
+        return [x0 - flare, y0 - flare, x1 + flare, y1 + flare];
     }
 
     _samplingReachPx(resW, resH) {

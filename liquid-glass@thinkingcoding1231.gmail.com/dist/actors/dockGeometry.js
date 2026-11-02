@@ -78,23 +78,51 @@ export function balanceDockBounds(bounds, reference, edges) {
     return { absX, absY, baseW, baseH };
 }
 
+// The screen edge the dock is closest to.
+export function dockSide(edges) {
+    const { minCenterDist, distBottomCenter, distTopCenter, distRightCenter } = edges;
+    if (minCenterDist === distBottomCenter)
+        return 'bottom';
+    if (minCenterDist === distTopCenter)
+        return 'top';
+    if (minCenterDist === distRightCenter)
+        return 'right';
+    return 'left';
+}
+
 // Trims the dock to `margin` from the screen edge it is closest to.
 export function insetDockBounds(bounds, monitor, edges, margin, stableBaseW, stableBaseH) {
     let { absX, absY, baseW, baseH } = bounds;
-    const { minCenterDist, distBottomCenter, distTopCenter, distRightCenter } = edges;
-    if (minCenterDist === distBottomCenter) {
-        [absY, baseH] = insetSpan(absY, baseH, monitor.y + monitor.height - margin, stableBaseH, false);
-    }
-    else if (minCenterDist === distTopCenter) {
-        [absY, baseH] = insetSpan(absY, baseH, monitor.y + margin, stableBaseH, true);
-    }
-    else if (minCenterDist === distRightCenter) {
-        [absX, baseW] = insetSpan(absX, baseW, monitor.x + monitor.width - margin, stableBaseW, false);
-    }
-    else {
-        [absX, baseW] = insetSpan(absX, baseW, monitor.x + margin, stableBaseW, true);
+    switch (dockSide(edges)) {
+        case 'bottom':
+            [absY, baseH] = insetSpan(absY, baseH, monitor.y + monitor.height - margin, stableBaseH, false);
+            break;
+        case 'top':
+            [absY, baseH] = insetSpan(absY, baseH, monitor.y + margin, stableBaseH, true);
+            break;
+        case 'right':
+            [absX, baseW] = insetSpan(absX, baseW, monitor.x + monitor.width - margin, stableBaseW, false);
+            break;
+        case 'left':
+            [absX, baseW] = insetSpan(absX, baseW, monitor.x + margin, stableBaseW, true);
+            break;
     }
     return { absX, absY, baseW, baseH };
+}
+
+/**
+ * The monitor-local glass rect [x, y, w, h], padded by `pad` on every side, with its side on `side` moved onto the
+ * monitor's edge so the glass grows out of it. The opposite side stays where it is, so a dock sliding out of the
+ * screen draws its glass back into the edge.
+ */
+export function attachRectToEdge(rect, side, monitorW, monitorH, pad) {
+    const [x, y, w, h] = rect;
+    switch (side) {
+        case 'top': return [x, -pad, w, y + h + pad];
+        case 'bottom': return [x, y, w, monitorH + pad - y];
+        case 'left': return [-pad, y, x + w + pad, h];
+        case 'right': return [x, y, monitorW + pad - x, h];
+    }
 }
 
 function insetSpan(start, size, edge, stableSize, leading) {

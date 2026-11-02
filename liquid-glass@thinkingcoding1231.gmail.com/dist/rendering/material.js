@@ -43,6 +43,9 @@ export class MaterialSettings {
         this._uniforms.set('dock_y', 0.0);
         this._uniforms.set('dock_w', 0.0);
         this._uniforms.set('dock_h', 0.0);
+        // Floating, not grown out of a screen edge.
+        this._uniforms.set('attach_edge', 0.0);
+        this._uniforms.set('attach_radius', 0.0);
         // One glass per region, for Quick Settings' toggle-button mode.
         this._uniforms.set('multi_region_mode', 0.0);
         this._uniforms.set('region_count', 0.0);

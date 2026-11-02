@@ -21,6 +21,17 @@
       <default>8</default>
       <summary>Bottom margin</summary>
     </key>
+    <key name="dock-attach-to-edge" type="b">
+      <default>false</default>
+      <summary>Grow out of the screen edge</summary>
+      <description>The glass reaches the screen edge the dock sits on and flares into it, instead of floating above it. The bottom margin is not used while this is on.</description>
+    </key>
+    <key name="dock-edge-radius" type="d">
+      <range min="0.0" max="64.0"/>
+      <default>16.0</default>
+      <summary>Edge flare radius (px)</summary>
+      <description>Radius of the outward-curved corners where the glass meets the screen edge.</description>
+    </key>
     <key name="dock-tint-color" type="s">
       <default>"#ffffff"</default>
       <summary>Tint color (Hex)</summary>
@@ -898,6 +909,17 @@
       <default>6</default>
       <summary>Margin right (px)</summary>
       <description>Space between the pills and the screen's edge; the bar grows to make room for it.</description>
+    </key>
+    <key name="top-bar-attach-to-edge" type="b">
+      <default>false</default>
+      <summary>Grow out of the screen edge</summary>
+      <description>The glass reaches the top of the screen and flares into it, instead of floating below it. The top margin is not used while this is on.</description>
+    </key>
+    <key name="top-bar-edge-radius" type="d">
+      <range min="0.0" max="64.0"/>
+      <default>12.0</default>
+      <summary>Edge flare radius (px)</summary>
+      <description>Radius of the outward-curved corners where the glass meets the top of the screen.</description>
     </key>
     <key name="top-bar-padding-top" type="i">
       <range min="0" max="100"/>

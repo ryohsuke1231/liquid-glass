@@ -55,7 +55,7 @@ function fixture(monitor) {
   // The glass is one actor that also takes the shader setters.
   class Backdrop extends Actor {
     constructor(params) { super(); this.params = params; this.set_name('liquid-glass-bg-actor'); }
-    setPadding() {} setTintColor() {} setTintStrength() {} setCornerRadius() {}
+    setPadding() {} setTintColor() {} setTintStrength() {} setCornerRadius() {} setAttachedEdge() {}
     setBrightness() {} setContrast() {} setSaturation() {} setBlurRadius() {} setLiveGeometryHook() {}
     setIsDock() {} setShadowMaxRadius() {} setResolution() {}
     setGlassGeometry(...args) { calls.push(['geometry', ...args]); }

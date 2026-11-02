@@ -86,6 +86,11 @@ export class TopBarManager {
             watch(`top-bar-margin-${side}`, () => this._applyLayout());
             watch(`top-bar-padding-${side}`, () => this._applyLayout());
         }
+        watch('top-bar-attach-to-edge', () => {
+            this._applyAttach();
+            this._applyLayout();
+        });
+        watch('top-bar-edge-radius', () => this._applyAttach());
         this._apply();
     }
 
@@ -119,6 +124,7 @@ export class TopBarManager {
         // Draw the glass below the panel.
         Main.layoutManager.uiGroup.insert_child_below(glass, panelBox);
         this._applyMaterial();
+        this._applyAttach();
         this._lastKey = '';
         this._lastIslandRects = [];
         this._islandGeometryHoldFrames = 0;
@@ -213,6 +219,14 @@ export class TopBarManager {
         glass.setBrightness(this._settings.get_double(this._key('brightness')));
         glass.setContrast(this._settings.get_double(this._key('contrast')));
         glass.setSaturation(this._settings.get_double(this._key('saturation')));
+    }
+
+    _attached() {
+        return this._settings.get_boolean(this._key('attach-to-edge'));
+    }
+
+    _applyAttach() {
+        this._glass?.setAttachedEdge(this._attached() ? 'top' : 'none', this._settings.get_double(this._key('edge-radius')));
     }
 
     _insets(kind) {
@@ -392,6 +406,9 @@ export class TopBarManager {
             const panel = this._panel;
             const sections = this._sections();
             const margin = this._margin = this._insets('margin');
+            // Grown out of the screen's top, the glass starts at it.
+            if (this._attached())
+                margin.top = 0;
             const padding = this._padding = this._insets('padding');
             const top = margin.top + padding.top;
             const bottom = margin.bottom + padding.bottom;

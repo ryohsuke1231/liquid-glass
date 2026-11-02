@@ -702,6 +702,22 @@ function addOutline(group, controls, surface) {
   controls.watch([key], () => { branch.enabled = controls.settings.get_boolean(key); });
 }
 
+// Glass that grows out of the screen edge instead of floating, with the margin to that edge turned off meanwhile.
+// `shown` hides the rows while the surface has no glass, and is checked again when one of `shownKeys` changes.
+function addEdgeAttachment(group, controls, surface, marginRow, shownKeys = [], shown = () => true) {
+  const key = `${surface}-attach-to-edge`;
+  const toggle = controls.toggle(group, 'Grow out of the screen edge', key,
+    'The glass reaches the edge and curves outwards into it');
+  const branch = new Branch(toggle);
+  branch.add(controls.number(group, 'Edge flare radius', [`${surface}-edge-radius`], 0, 64, 1, '', { slider: true }));
+  controls.watch([key, ...shownKeys], () => {
+    const attached = controls.settings.get_boolean(key);
+    toggle.visible = shown();
+    branch.enabled = attached && shown();
+    marginRow.sensitive = !attached;
+  });
+}
+
 function addLayout(group, controls, surface, appearance) {
   const rows = addNumbers(group, controls, LAYOUT[surface], `${surface}-`);
   if (surface === 'menu' || surface === 'panel-menu') {
@@ -709,11 +725,13 @@ function addLayout(group, controls, surface, appearance) {
     controls.toggle(group, 'Match quick settings height', key);
     controls.watch([key], () => { rows.get('scale').sensitive = !controls.settings.get_boolean(key); });
   }
+  if (surface === 'dock') addEdgeAttachment(group, controls, surface, rows.get('margin-bottom'));
   if (surface === 'top-bar') {
+    const shown = () => controls.settings.get_value('top-bar-style').deep_unpack() !== 'off';
     controls.watch(['top-bar-style'], () => {
-      const shown = controls.settings.get_value('top-bar-style').deep_unpack() !== 'off';
-      for (const row of rows.values()) row.visible = shown;
+      for (const row of rows.values()) row.visible = shown();
     });
+    addEdgeAttachment(group, controls, surface, rows.get('margin-top'), ['top-bar-style'], shown);
   }
   if (surface === 'quick-settings') {
     controls.watch(['quick-settings-apply-to'], () => {

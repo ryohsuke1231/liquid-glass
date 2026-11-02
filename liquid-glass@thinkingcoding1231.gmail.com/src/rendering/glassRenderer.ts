@@ -19,6 +19,10 @@ export interface GlassRegion {
   baseStrength?: number;
 }
 
+/** The screen edge a glass grows out of; glass.frag's attach_edge is the index. */
+export type AttachedEdge = 'none' | 'top' | 'bottom' | 'left' | 'right';
+const ATTACHED_EDGES: AttachedEdge[] = ['none', 'top', 'bottom', 'left', 'right'];
+
 /**
  * What every glass draws with, whatever supplies its backdrop: the shader
  * pipelines, the blur, the uniforms and the settings bound to them. The owner
@@ -223,6 +227,13 @@ export class GlassRenderer {
 
   setCornerRadius(radius: number): void {
     this.uniforms.set('corner_radius', radius);
+    this._repaintIfDirty();
+  }
+
+  /** Grows the glass out of `edge`, flaring into it with fillets of `radius` px. */
+  setAttachedEdge(edge: AttachedEdge, radius: number): void {
+    this.uniforms.set('attach_edge', ATTACHED_EDGES.indexOf(edge));
+    this.uniforms.set('attach_radius', Math.max(radius, 0));
     this._repaintIfDirty();
   }
 

@@ -82,21 +82,52 @@ export function balanceDockBounds(bounds: DockBounds, reference: DockBounds, edg
   return { absX, absY, baseW, baseH };
 }
 
+export type DockSide = 'top' | 'bottom' | 'left' | 'right';
+
+// The screen edge the dock is closest to.
+export function dockSide(edges: DockEdges): DockSide {
+  const { minCenterDist, distBottomCenter, distTopCenter, distRightCenter } = edges;
+  if (minCenterDist === distBottomCenter) return 'bottom';
+  if (minCenterDist === distTopCenter) return 'top';
+  if (minCenterDist === distRightCenter) return 'right';
+  return 'left';
+}
+
 // Trims the dock to `margin` from the screen edge it is closest to.
 export function insetDockBounds(bounds: DockBounds, monitor: DockMonitor, edges: DockEdges,
   margin: number, stableBaseW: number, stableBaseH: number): DockBounds {
   let { absX, absY, baseW, baseH } = bounds;
-  const { minCenterDist, distBottomCenter, distTopCenter, distRightCenter } = edges;
-  if (minCenterDist === distBottomCenter) {
+  switch (dockSide(edges)) {
+  case 'bottom':
     [absY, baseH] = insetSpan(absY, baseH, monitor.y + monitor.height - margin, stableBaseH, false);
-  } else if (minCenterDist === distTopCenter) {
+    break;
+  case 'top':
     [absY, baseH] = insetSpan(absY, baseH, monitor.y + margin, stableBaseH, true);
-  } else if (minCenterDist === distRightCenter) {
+    break;
+  case 'right':
     [absX, baseW] = insetSpan(absX, baseW, monitor.x + monitor.width - margin, stableBaseW, false);
-  } else {
+    break;
+  case 'left':
     [absX, baseW] = insetSpan(absX, baseW, monitor.x + margin, stableBaseW, true);
+    break;
   }
   return { absX, absY, baseW, baseH };
+}
+
+/**
+ * The monitor-local glass rect [x, y, w, h], padded by `pad` on every side, with its side on `side` moved onto the
+ * monitor's edge so the glass grows out of it. The opposite side stays where it is, so a dock sliding out of the
+ * screen draws its glass back into the edge.
+ */
+export function attachRectToEdge(rect: number[], side: DockSide, monitorW: number, monitorH: number,
+  pad: number): number[] {
+  const [x, y, w, h] = rect;
+  switch (side) {
+  case 'top': return [x, -pad, w, y + h + pad];
+  case 'bottom': return [x, y, w, monitorH + pad - y];
+  case 'left': return [-pad, y, x + w + pad, h];
+  case 'right': return [x, y, monitorW + pad - x, h];
+  }
 }
 
 function insetSpan(start: number, size: number, edge: number, stableSize: number, leading: boolean): [number, number] {

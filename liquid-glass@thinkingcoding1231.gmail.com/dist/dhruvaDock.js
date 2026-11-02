@@ -1,6 +1,7 @@
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import GLib from 'gi://GLib';
-import { SHADER_PADDING, createDockGlass, followDockMaterial } from './dockManager.js';
+import { SHADER_PADDING, attachDockGlass, createDockGlass, followDockMaterial } from './dockManager.js';
+import { dockEdges, dockSide } from './actors/dockGeometry.js';
 import { placeScreenGlass, GLASS_SHADOW_MAX_RADIUS } from './actors/glassBounds.js';
 import { ensureGlassAllocated } from './actors/allocation.js';
 import { isActorValid } from './actors/lifecycle.js';
@@ -119,7 +120,9 @@ export class DhruvaDock {
         if (!monitor)
             return;
         const pad = SHADER_PADDING + this._settings.get_int('dock-glass-expand');
-        const rect = { x: x - pad - monitor.x, y: y - pad - monitor.y, w: w + pad * 2, h: h + pad * 2 };
+        const side = dockSide(dockEdges({ absX: x, absY: y, baseW: w, baseH: h }, monitor));
+        const [rx, ry, rw, rh] = attachDockGlass(glass, this._settings, [x - pad - monitor.x, y - pad - monitor.y, w + pad * 2, h + pad * 2], side, monitor.width, monitor.height).rect;
+        const rect = { x: rx, y: ry, w: rw, h: rh };
         if (sync) {
             glass.show();
             // Dhruva fades the whole dock in and out as it hides.
