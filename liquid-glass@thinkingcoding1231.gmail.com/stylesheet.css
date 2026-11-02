@@ -28,6 +28,27 @@
     box-shadow: none !important;
 }
 
+/* A dock grown out of the screen edge: its icons sit close to that edge. */
+#dashtodockContainer.bottom #dash #dashtodockDashContainer.liquid-glass-attached .dash-item-container .app-well-app,
+#dashtodockContainer.bottom #dash #dashtodockDashContainer.liquid-glass-attached .dash-item-container .show-apps {
+    padding-bottom: 4px !important;
+}
+
+#dashtodockContainer.top #dash #dashtodockDashContainer.liquid-glass-attached .dash-item-container .app-well-app,
+#dashtodockContainer.top #dash #dashtodockDashContainer.liquid-glass-attached .dash-item-container .show-apps {
+    padding-top: 4px !important;
+}
+
+#dashtodockContainer.left #dash #dashtodockDashContainer.liquid-glass-attached .dash-item-container .app-well-app,
+#dashtodockContainer.left #dash #dashtodockDashContainer.liquid-glass-attached .dash-item-container .show-apps {
+    padding-left: 4px !important;
+}
+
+#dashtodockContainer.right #dash #dashtodockDashContainer.liquid-glass-attached .dash-item-container .app-well-app,
+#dashtodockContainer.right #dash #dashtodockDashContainer.liquid-glass-attached .dash-item-container .show-apps {
+    padding-right: 4px !important;
+}
+
 /* Plain calendar days; today and interactive states keep their theme style. */
 .liquid-glass-transparent .calendar-day:not(.calendar-today):not(:hover):not(:active):not(:focus):not(:checked) {
     background-color: transparent !important;

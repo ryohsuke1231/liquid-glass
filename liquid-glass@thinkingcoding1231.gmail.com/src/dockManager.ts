@@ -215,6 +215,10 @@ export class DashManager {
     }
     this._currentMarginStyle = marginStyle;
     this.targetActor.set_style(`${this._originalStyle} ${marginStyle}`);
+    // Dash to Dock keeps extra room on the edge side for the running dots; the attached glass already runs on to
+    // the edge, so stylesheet.css takes most of that room away.
+    if (this._settings.get_boolean('dock-attach-to-edge')) this.targetActor.add_style_class_name('liquid-glass-attached');
+    else this.targetActor.remove_style_class_name('liquid-glass-attached');
   }
 
   _applyEffect() {
@@ -552,6 +556,7 @@ export class DashManager {
     this._signals = [];
     if (dockAlive) {
       this.targetActor.remove_style_class_name('liquid-glass-transparent');
+      this.targetActor.remove_style_class_name('liquid-glass-attached');
       if (this._originalStyle !== undefined) this.targetActor.set_style(this._originalStyle);
       for (const child of this.targetActor.get_children() as St.Widget[]) {
         if (child.has_style_class_name('dash-background')) child.opacity = 255;
