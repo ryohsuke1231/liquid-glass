@@ -21,15 +21,17 @@ The fork is not meant to be merged back; it is where my own changes live. If you
 | **Dock icons close to the edge** | While the dock is attached, the room Dash to Dock keeps between the icons and the screen edge is cut from 14 px to 4 px, so the icons sit evenly inside the glass. | Automatic with the dock attachment. |
 | **Menus grow out of the top bar** | Clicking a top bar button grows the bar's own glass down into its menu instead of opening a separate floating menu: the glass runs out of the bar under the button, widens into the menu with a small spring, and the menu's items come up through it; closing draws it back into the bar. Bar and menu are one piece of glass, joined by the same concave fillets as the screen edge; when the menu is wider than the bar, the bar widens with it so the menu always hangs from it. Works for Quick Settings (whole-menu mode), the calendar and the other top bar menus, on every top bar style; the menus then take the top bar's glass settings. | Preferences → Appearance (Advanced view) → Top bar → **Menus grow out of the bar**. |
 | **Notifications grow out of the top bar** | While the top bar is shown, a notification banner grows out of the bar's glass under the clock with the same springs as the menus, and runs back into it when it times out or is dismissed. While the bar is hidden (Hide Top Bar), the banner's own glass grows out of the screen's top edge instead, with the edge flare radius. | Preferences → Appearance (Advanced view) → Top bar → **Notifications grow out of the bar**. |
+| **Volume and brightness popups grow out of the top bar** | The popup moves from the bottom of the screen to under the top bar's system indicators, on each monitor whose bar has glass (Multi Monitors Bar's bars too), and grows out of the bar with the menus' springs, running back in when GNOME fades it out. While the bar is hidden (Hide Top Bar), it sits at the top of the screen and its own glass grows out of the top edge. | Preferences → Appearance (Advanced view) → Top bar → **Volume and brightness popups grow out of the bar**. |
 | **Glass behind the hidden-panel clock** | With [Hide Top Bar: Multi Monitors](https://github.com/AlessandroTelesca/hidetopbar-multimonitor), a monitor whose panel is hidden shows the panel's clock on a tab grown out of the screen edge. With this on, the tab is the top bar's glass, attached to the edge with the edge flare radius, instead of a dark translucent tab; it fades with the clock. | Preferences → Appearance (Advanced view) → Top bar → **Glass behind the hidden-panel clock**. |
 
-All five options are off by default, so with them off the fork behaves like upstream. From a terminal:
+All six options are off by default, so with them off the fork behaves like upstream. From a terminal:
 
 ```bash
 dconf write /org/gnome/shell/extensions/liquid-glass/top-bar-attach-to-edge true
 dconf write /org/gnome/shell/extensions/liquid-glass/dock-attach-to-edge true
 dconf write /org/gnome/shell/extensions/liquid-glass/top-bar-menus-grow true
 dconf write /org/gnome/shell/extensions/liquid-glass/top-bar-notifications-grow true
+dconf write /org/gnome/shell/extensions/liquid-glass/top-bar-osd-grow true
 dconf write /org/gnome/shell/extensions/liquid-glass/enable-hidden-clock-glass true
 ```
 

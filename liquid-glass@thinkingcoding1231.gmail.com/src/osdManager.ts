@@ -3,7 +3,7 @@ import Clutter from 'gi://Clutter';
 import St from 'gi://St';
 import GLib from 'gi://GLib';
 import { BackdropGlass } from './rendering/backdropGlass.js';
-import { isActorValid, ensureGlassAllocated, setClipIfChanged } from './actors.js';
+import { isActorValid, ensureGlassAllocated, setClipIfChanged, getAllocatedSize, getTransformedRect } from './actors.js';
 import { StageContrastSampler, AdaptiveContrastConfig, sanitizeColorPreference } from './contrastSampler.js';
 import Gio from 'gi://Gio';
 import { reportFrameLoopError, Logger } from './logger.js';
@@ -11,6 +11,12 @@ import {
   isFrameSyncFrozen, SAME_FRAME_WINDOW_US, startStageLoop, stopStageLoop, resolveCrossFade,
   adaptiveColorTweener, hexToColorArray, hexToRgb, rgbToHex
 } from './animation.js';
+import { BarGrowth } from './barGrowth.js';
+import { barOnMonitor, type TopBarManager } from './topBarManager.js';
+import { attachRectToEdge } from './dockManager.js';
+
+// With top-bar-osd-grow the popup sits under the bar's system indicators, kept this far (px) inside the monitor.
+const MONITOR_GAP = 8;
 
 
 interface CustomBannerActor extends St.Widget {
@@ -39,6 +45,14 @@ interface OsdState {
   _wasVisible: boolean;
   _isFirstAdaptiveRun: boolean;
   _destroyId: number;
+  // With top-bar-osd-grow: the popup moved up under its monitor's bar (`atTop`), growing out of the bar while the
+  // bar is shown (`barShown`), and otherwise its own glass grown out of the screen's top edge (`edgeAttached`).
+  // `grew` notes that the bar drew this showing, so the popup's own glass does not flash up as it fades away.
+  growth: BarGrowth;
+  atTop: boolean;
+  barShown: boolean;
+  edgeAttached: boolean;
+  grew: boolean;
 }
 
 // Room around the glass rect for the shader's edge effects.
@@ -208,7 +222,7 @@ export class OsdManager {
     connectSetting('osd-y-offset', () => {
       this._osdYOffset = this._settings.get_int('osd-y-offset');
       for (let state of this._osdStates) {
-        if (state.targetBox) {
+        if (state.targetBox && !state.atTop) {
           state.targetBox.translation_y = -this._osdYOffset;
         }
       }
@@ -312,10 +326,41 @@ export class OsdManager {
     glass.setBlurRadius(blurRadius);
     glass.hide();
 
+    // Volume and brightness belong to the bar's system indicators: the popup grows out of the bar under them.
+    const indicators = () => barOnMonitor(osdWindow._monitorIndex)?.button('quickSettings') ?? null;
+    const growth = new BarGrowth({
+      key: 'top-bar-osd-grow',
+      content: () => targetBox,
+      shown: () => osdWindow.visible && osdWindow.mapped,
+      scale: () => 1,
+      source: indicators,
+      button: () => {
+        const button = indicators();
+        if (!button?.mapped) return null;
+        const rect = getTransformedRect(button);
+        return rect.every(Number.isFinite) && rect[2] > 0 ? rect : null;
+      },
+      expand: () => this._glassExpand,
+      radius: () => this._settings.get_double('osd-corner-radius'),
+      intervalMs: () => 16,
+      speed: () => 1,
+      // GNOME fades the popup in; the growth brings it instead. Its fade out is left as it is.
+      hold: opening => {
+        const ease = opening ? osdWindow.get_transition('opacity') : null;
+        if (ease) ease.set_from(ease.get_interval().peek_final_value());
+      },
+      closed: () => {},
+    });
+
     let state: OsdState = {
       osdWindow,
       targetBox,
       glass,
+      growth,
+      atTop: false,
+      barShown: false,
+      edgeAttached: false,
+      grew: false,
       _lastBgW: undefined,
       _lastBgH: undefined,
       _lastBgX: undefined,
@@ -337,10 +382,66 @@ export class OsdManager {
     });
   }
 
+  // With top-bar-osd-grow and a bar on the popup's monitor, moves the popup from GNOME's place at the bottom to
+  // under the bar's system indicators, or to the top of the screen while the bar is hidden; otherwise puts it back.
+  // The window moves, not the popup's box, whose translation the growth slides.
+  private _placeOsd(state: OsdState, bar: TopBarManager | null): void {
+    const win = state.osdWindow, box = state.targetBox;
+    const atTop = !!bar;
+    if (atTop !== state.atTop) {
+      state.atTop = atTop;
+      win.y_align = atTop ? Clutter.ActorAlign.START : Clutter.ActorAlign.END;
+      box.translation_y = atTop ? 0 : -this._osdYOffset;
+      if (!atTop) win.set_translation(0, 0, 0);
+      state._lastBgW = undefined;
+    }
+    state.barShown = false;
+    if (!bar || !win.visible) return;
+    const monitor = Main.layoutManager.monitors[win._monitorIndex];
+    if (!monitor) return;
+    const indicators = bar.button('quickSettings');
+    state.barShown = !!indicators && bar.growsFrom(indicators, 'top-bar-osd-grow');
+    const top = (state.barShown ? bar.glassBottom() : monitor.y) + this._osdYOffset;
+    let center = monitor.x + monitor.width / 2;
+    if (indicators?.mapped) {
+      const [x, , w] = getTransformedRect(indicators);
+      if (Number.isFinite(x)) center = x + w / 2;
+    }
+    const [w] = getAllocatedSize(box);
+    const left = Math.min(Math.max(center - w / 2, monitor.x + MONITOR_GAP), monitor.x + monitor.width - w - MONITOR_GAP);
+    const winBox = win.get_allocation_box(), boxBox = box.get_allocation_box();
+    const tx = Math.round(left - (winBox.x1 + boxBox.x1));
+    const ty = Math.round(top - (winBox.y1 + boxBox.y1));
+    if (Number.isFinite(tx) && Number.isFinite(ty) && (win.translation_x !== tx || win.translation_y !== ty))
+      win.set_translation(tx, ty, 0);
+  }
+
+  // Grown out of the bar, the bar draws the popup's glass: it grows as GNOME shows the popup and runs back in once
+  // GNOME's timeout has started the fade out. True while the popup's own glass is to stay hidden.
+  private _syncGrowth(state: OsdState): boolean {
+    const win = state.osdWindow, growth = state.growth;
+    const shown = win.visible && win.mapped;
+    const hiding = shown && !win._hideTimeoutId;
+    if (shown && !hiding && !(growth.holding && growth.opening)) growth.start(true);
+    else if (!(shown && !hiding) && growth.holding && growth.opening) growth.retract();
+    const barHolds = shown && !hiding ? growth.holdAtRest() : growth.holding;
+    state.grew ||= barHolds;
+    if (!shown && !growth.holding) state.grew = false;
+    return barHolds || (state.grew && hiding);
+  }
+
   // Every frame, for one monitor's OSD.
   _syncGeometry(state: OsdState) {
     const glass = state.glass;
     if (!glass || !state.targetBox) return;
+
+    const bar = this._settings.get_boolean('top-bar-osd-grow') ? barOnMonitor(state.osdWindow._monitorIndex) : null;
+    this._placeOsd(state, bar);
+    if (bar && this._syncGrowth(state)) {
+      glass.hide();
+      return;
+    }
+    if (!bar && state.growth.holding) state.growth.release();
 
     let [w, h] = state.targetBox.get_size();
     let [absX, absY] = state.targetBox.get_transformed_position();
@@ -396,6 +497,17 @@ export class OsdManager {
     let localBgX = bgX_abs - monitorX;
     let localBgY = bgY_abs - monitorY;
 
+    // Up at the top while the bar is hidden, the popup's glass grows out of the screen's top edge.
+    const edgeAttached = state.atTop && !state.barShown;
+    if (edgeAttached !== state.edgeAttached) {
+      state.edgeAttached = edgeAttached;
+      state._lastBgW = undefined;
+    }
+    glass.setAttachedEdge(edgeAttached ? 'top' : 'none', this._settings.get_double('top-bar-edge-radius'));
+    if (edgeAttached)
+      [localBgX, localBgY] = attachRectToEdge([localBgX, localBgY, bgW, bgH], 'top', screenW, screenH, SHADER_PADDING);
+    const glassH = edgeAttached ? bgY_abs - monitorY + bgH - localBgY : bgH;
+
     if (state._lastBgW !== bgW || state._lastBgH !== bgH ||
       state._lastBgX !== bgX_abs || state._lastBgY !== bgY_abs ||
       state._lastScreenW !== screenW || state._lastScreenH !== screenH) {
@@ -411,14 +523,14 @@ export class OsdManager {
       setClipIfChanged(
         glass,
         localBgX - CLIP_PADDING, localBgY - CLIP_PADDING,
-        bgW + CLIP_PADDING * 2, bgH + CLIP_PADDING * 2
+        bgW + CLIP_PADDING * 2, glassH + CLIP_PADDING * 2
       );
 
       const SHADOW_MAX_RADIUS = CLIP_PADDING - 20;
       glass.setShadowMaxRadius(SHADOW_MAX_RADIUS);
 
       glass.setResolution(screenW, screenH);
-      glass.setGlassGeometry(localBgX, localBgY, bgW, bgH);
+      glass.setGlassGeometry(localBgX, localBgY, bgW, glassH);
 
       state._lastBgW = bgW; state._lastBgH = bgH;
       state._lastBgX = bgX_abs; state._lastBgY = bgY_abs;
@@ -486,10 +598,16 @@ export class OsdManager {
       state._destroyId = 0;
     }
 
+    state.growth.release();
     if (state.targetBox) {
       state.targetBox.remove_style_class_name('liquid-glass-transparent');
       state.targetBox.translation_y = 0;
     }
+    if (state.atTop && isActorValid(state.osdWindow)) {
+      state.osdWindow.y_align = Clutter.ActorAlign.END;
+      state.osdWindow.set_translation(0, 0, 0);
+    }
+    state.atTop = false;
   }
 
   cleanup() {

@@ -37,6 +37,13 @@ export function barGrowingFrom(source: Clutter.Actor | null, key: string): TopBa
   return null;
 }
 
+/** The bar with glass on monitor `index`, or null. */
+export function barOnMonitor(index: number): TopBarManager | null {
+  for (const bar of liveBars)
+    if (bar.monitorIndex === index) return bar;
+  return null;
+}
+
 function sanitizeStyle(value: string): TopBarStyle {
   return value === 'pill' || value === 'islands' || value === 'center' ? value : 'off';
 }
@@ -123,7 +130,7 @@ export class TopBarManager {
       this._applyAttach();
       this._applyGrowths();
     });
-    for (const key of ['top-bar-menus-grow', 'top-bar-notifications-grow'])
+    for (const key of ['top-bar-menus-grow', 'top-bar-notifications-grow', 'top-bar-osd-grow'])
       watch(key, () => {
         // The glass reaches down the monitor only while something grows out of it.
         this._lastKey = '';
@@ -583,7 +590,7 @@ export class TopBarManager {
     this._bodies = rects.map(([rx, ry, rw, rh]) => [x + rx, y + ry, rw, rh]);
     // Menus and banners grown out of the bar reach down the monitor, so the glass does too.
     let glassHeight = height + SHADOW_ROOM;
-    if (this._settings.get_boolean(this._key('menus-grow')) || this._settings.get_boolean(this._key('notifications-grow'))) {
+    if (['menus-grow', 'notifications-grow', 'osd-grow'].some(key => this._settings.get_boolean(this._key(key)))) {
       const monitor = Main.layoutManager.findMonitorForActor(panelBox);
       if (monitor) glassHeight = Math.max(glassHeight, Math.round(monitor.y + monitor.height - y));
     }
@@ -612,6 +619,16 @@ export class TopBarManager {
       tray.get_parent() === uiGroup && uiGroup.get_children().indexOf(tray) < uiGroup.get_children().indexOf(below))
       below = tray;
     uiGroup.set_child_below_sibling(glass, below);
+  }
+
+  /** The monitor the bar is on: Multi Monitors Bar's panels carry it, and the shell's own bar is the primary's. */
+  get monitorIndex(): number {
+    return (this._panel as unknown as { monitorIndex?: number }).monitorIndex ?? Main.layoutManager.primaryIndex;
+  }
+
+  /** The bar's status area button `name` (dateMenu, quickSettings…), or null. */
+  button(name: string): St.Widget | null {
+    return (this._panel as unknown as { statusArea?: Record<string, St.Widget> }).statusArea?.[name] ?? null;
   }
 
   /** Whether what opens from `source`, a button on this bar, grows out of it by the setting `key`. */

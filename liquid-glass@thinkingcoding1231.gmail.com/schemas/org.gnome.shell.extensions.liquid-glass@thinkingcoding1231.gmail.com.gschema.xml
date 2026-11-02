@@ -926,6 +926,11 @@
       <summary>Notifications grow out of the bar</summary>
       <description>Notification banners grow out of the top bar's glass under the clock, as the menus do with top-bar-menus-grow, while the bar is shown; while it is hidden (Hide Top Bar), their own glass grows out of the screen's top edge with the edge flare radius.</description>
     </key>
+    <key name="top-bar-osd-grow" type="b">
+      <default>false</default>
+      <summary>Volume and brightness popups grow out of the bar</summary>
+      <description>The volume and brightness popup moves from the bottom of the screen to under the top bar's system indicators, on each monitor whose top bar has glass, and grows out of the bar's glass with the menus' springs; while the bar is hidden (Hide Top Bar), it sits at the top of the screen and its own glass grows out of the top edge.</description>
+    </key>
     <key name="enable-hidden-clock-glass" type="b">
       <default>false</default>
       <summary>Glass behind Hide Top Bar: Multi Monitors' clock</summary>
