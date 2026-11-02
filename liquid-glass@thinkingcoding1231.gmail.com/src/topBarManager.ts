@@ -85,8 +85,10 @@ export class TopBarManager {
   // The menus grown out of this bar, by the manager that holds each: [x, y, w, h] on the stage and the radius of
   // the corners that are free of the bar. The latest are drawn.
   private _growths = new Map<object, { rect: number[], radius: number }>();
-  // The bar's glass bodies on the stage, [x, y, w, h], as last drawn.
+  // The bar's glass bodies on the stage, [x, y, w, h], before the menus widen them, and the glass actor's size and
+  // the bar's height.
   private _bodies: number[][] = [];
+  private _glassSize: number[] = [0, 0, 0];
 
   constructor(private _path: string, private _settings: Gio.Settings, private _logger: Logger,
     // The panel's boxes are not part of the shell's typings.
@@ -586,17 +588,7 @@ export class TopBarManager {
       glass.set_position(x, y);
       glass.set_size(width, glassHeight);
       glass.setResolution(width, glassHeight);
-      const p = SHADER_PADDING;
-      if (this._style !== 'islands') {
-        const [rx, ry, rw, rh] = rects[0];
-        glass.setGlassGeometry(rx - p, ry - p, rw + p * 2, rh + p * 2);
-      } else {
-        const regions: GlassRegion[] = rects.map(([rx, ry, rw, rh]) => ({
-          x: rx - p, y: ry - p, w: rw + p * 2, h: rh + p * 2, tintR: 1, tintG: 1, tintB: 1,
-        }));
-        glass.setGlassRegions(regions);
-        glass.setGlassGeometry(0, 0, width, height);
-      }
+      this._glassSize = [width, glassHeight, height];
       this._applyGrowths();
       this._text.invalidate();
     }
@@ -624,21 +616,71 @@ export class TopBarManager {
     this._applyGrowths();
   }
 
+  // Draws the bar, widened for the menus growing out of it, and the menus.
   private _applyGrowths(): void {
     const glass = this._glass;
-    if (!glass) return;
-    // A top corner under the straight part of the bar runs into it; one beside the bar is rounded.
+    if (!glass || this._bodies.length === 0) return;
     const barCorner = this._settings.get_double(this._key('corner-radius'));
-    const underBar = (x: number) => this._bodies.some(([bx, , bw, bh]) => {
+    const drawn = [...this._growths.values()].slice(-MAX_GLASS_GROWTHS);
+    const bodies = this._widenedBodies(drawn.map(({ rect }) => rect), barCorner);
+
+    const p = SHADER_PADDING;
+    const [width, , height] = this._glassSize;
+    const local = bodies.map(([x, y, w, h]) => [x - glass.x, y - glass.y, w, h]);
+    if (this._style !== 'islands') {
+      const [rx, ry, rw, rh] = local[0];
+      glass.setGlassGeometry(rx - p, ry - p, rw + p * 2, rh + p * 2);
+    } else {
+      const regions: GlassRegion[] = local.map(([rx, ry, rw, rh]) => ({
+        x: rx - p, y: ry - p, w: rw + p * 2, h: rh + p * 2, tintR: 1, tintG: 1, tintB: 1,
+      }));
+      glass.setGlassRegions(regions);
+      glass.setGlassGeometry(0, 0, width, height);
+    }
+
+    // A top corner under the straight part of the bar runs into it. Only one held back by the monitor's side is
+    // still beside the bar, and is rounded.
+    const underBar = (x: number) => bodies.some(([bx, , bw, bh]) => {
       const inset = Math.min(barCorner, bh / 2);
-      return x >= bx + inset && x <= bx + bw - inset;
+      return x >= bx + inset - 0.5 && x <= bx + bw - inset + 0.5;
     });
-    const growths = [...this._growths.values()].slice(-MAX_GLASS_GROWTHS).map(({ rect: [x, y, w, h], radius }) => ({
+    const growths = drawn.map(({ rect: [x, y, w, h], radius }) => ({
       x: x - glass.x, y: y - glass.y, w, h,
       radii: [underBar(x) ? 0 : radius, underBar(x + w) ? 0 : radius, radius, radius],
     }));
     glass.setGrowths(growths, this._settings.get_double(this._key('edge-radius')));
     glass.syncSources();
+  }
+
+  /**
+   * The bar's bodies widened so each menu in `menus` ([x, y, w, h] on the stage) hangs from the straight part of
+   * the body it grows out of, past which the body's rounded end runs by its corner radius. Within the glass actor;
+   * islands that come to touch become one.
+   */
+  private _widenedBodies(menus: number[][], barCorner: number): number[][] {
+    const bodies = this._bodies.map(body => [...body]);
+    const minX = this._glass!.x, maxX = minX + this._glassSize[0];
+    for (const [mx, , mw] of menus) {
+      // The body the menu comes out of: the one it overlaps most, or else the nearest.
+      let body = bodies[0], best = -Infinity;
+      for (const b of bodies) {
+        const overlap = Math.min(b[0] + b[2], mx + mw) - Math.max(b[0], mx);
+        if (overlap > best) { best = overlap; body = b; }
+      }
+      const inset = Math.min(barCorner, body[3] / 2);
+      const x0 = Math.max(minX, Math.min(body[0], mx - inset));
+      const x1 = Math.min(maxX, Math.max(body[0] + body[2], mx + mw + inset));
+      body[0] = x0;
+      body[2] = x1 - x0;
+    }
+    bodies.sort((a, b) => a[0] - b[0]);
+    const merged: number[][] = [];
+    for (const b of bodies) {
+      const last = merged[merged.length - 1];
+      if (last && b[0] <= last[0] + last[2]) last[2] = Math.max(last[0] + last[2], b[0] + b[2]) - last[0];
+      else merged.push(b);
+    }
+    return merged;
   }
 
   private _fitCenteredWidth(maxWidth: number): number {
