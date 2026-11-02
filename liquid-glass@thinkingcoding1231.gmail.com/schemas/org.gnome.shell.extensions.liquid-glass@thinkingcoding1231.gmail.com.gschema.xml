@@ -921,6 +921,11 @@
       <summary>Edge flare radius (px)</summary>
       <description>Radius of the outward-curved corners where the glass meets the top of the screen.</description>
     </key>
+    <key name="enable-hidden-clock-glass" type="b">
+      <default>false</default>
+      <summary>Glass behind Hide Top Bar: Multi Monitors' clock</summary>
+      <description>Draws glass, with the top bar's look, behind the clock Hide Top Bar: Multi Monitors shows on a monitor while that monitor's panel is hidden, in place of its own dark tab. The glass grows out of the screen edge like an attached top bar, with the edge flare radius.</description>
+    </key>
     <key name="top-bar-menus-grow" type="b">
       <default>false</default>
       <summary>Menus grow out of the bar</summary>

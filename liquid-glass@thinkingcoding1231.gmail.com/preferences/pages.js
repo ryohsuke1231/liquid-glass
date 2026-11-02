@@ -741,6 +741,8 @@ function addLayout(group, controls, surface, appearance) {
     const grow = controls.toggle(group, 'Menus grow out of the bar', 'top-bar-menus-grow',
       'Clicking a button grows the bar\'s glass down into its menu, which then has the bar\'s glass');
     controls.watch(['top-bar-style'], () => { grow.visible = shown(); });
+    controls.toggle(group, 'Glass behind the hidden-panel clock', 'enable-hidden-clock-glass',
+      'The clock Hide Top Bar: Multi Monitors shows while a panel is hidden sits on the top bar\'s glass, grown out of the screen edge');
   }
   if (surface === 'quick-settings') {
     controls.watch(['quick-settings-apply-to'], () => {
