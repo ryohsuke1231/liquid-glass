@@ -20,6 +20,14 @@ function menusOf(name, button) {
     return [[name, button.menu]];
 }
 
+// Whether `actor` sits in Dash to Dock's dash. Some status area entries are not actors.
+function inDock(actor) {
+    for (let a = actor; typeof a?.get_parent === 'function'; a = a.get_parent())
+        if (a.get_name() === 'dashtodockDashContainer')
+            return true;
+    return false;
+}
+
 export class PanelMenuManager {
     _path;
     _settings;
@@ -82,7 +90,8 @@ export class PanelMenuManager {
         const enabled = this._settings.get_boolean('enable-extra-menu-glass');
         const reserved = new Set([panel.statusArea.dateMenu?.menu, panel.statusArea.quickSettings?.menu]);
         for (const [name, button] of Object.entries(panel.statusArea)) {
-            if (!button || !panel.contains(button.container ?? button))
+            // On the bar, or moved into Dash to Dock (as Dock Tray does with the tray icons).
+            if (!button || !(panel.contains(button.container ?? button) || inDock(button.container ?? button)))
                 continue;
             buttons.add(button);
             this._watchButton(button);

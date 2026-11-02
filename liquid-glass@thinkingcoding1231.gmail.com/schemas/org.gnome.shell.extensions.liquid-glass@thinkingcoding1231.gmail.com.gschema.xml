@@ -32,6 +32,11 @@
       <summary>Edge flare radius (px)</summary>
       <description>Radius of the outward-curved corners where the glass meets the screen edge.</description>
     </key>
+    <key name="dock-menus-grow" type="b">
+      <default>false</default>
+      <summary>Menus grow out of the dock</summary>
+      <description>The dock's glass grows into the menus of top bar buttons placed in the dock (such as the tray icons Dock Tray moves there) instead of the menus floating with glass of their own: up out of a dock at the bottom of the screen, down out of one at the top. The menus then take the dock's glass settings, and the edge flare radius rounds the join.</description>
+    </key>
     <key name="dock-tint-color" type="s">
       <default>"#ffffff"</default>
       <summary>Tint color (Hex)</summary>

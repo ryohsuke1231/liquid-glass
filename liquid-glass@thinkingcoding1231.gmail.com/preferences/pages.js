@@ -731,7 +731,11 @@ function addLayout(group, controls, surface, appearance) {
     controls.toggle(group, 'Match quick settings height', key);
     controls.watch([key], () => { rows.get('scale').sensitive = !controls.settings.get_boolean(key); });
   }
-  if (surface === 'dock') addEdgeAttachment(group, controls, surface, rows.get('margin-bottom'));
+  if (surface === 'dock') {
+    addEdgeAttachment(group, controls, surface, rows.get('margin-bottom'));
+    controls.toggle(group, 'Menus grow out of the dock', 'dock-menus-grow',
+      'Menus of top bar buttons placed in the dock (such as Dock Tray\'s tray icons) grow out of the dock\'s glass');
+  }
   if (surface === 'top-bar') {
     const shown = () => controls.settings.get_value('top-bar-style').deep_unpack() !== 'off';
     controls.watch(['top-bar-style'], () => {

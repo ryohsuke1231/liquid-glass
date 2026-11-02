@@ -8,6 +8,7 @@ import { MAX_GLASS_GROWTHS } from './rendering/glassRenderer.js';
 import { ensureGlassAllocated, isActorValid } from './actors.js';
 import { startSyncLoop, stopStageLoop, hexToColorArray } from './animation.js';
 import { sanitizeColorPreference, AdaptiveTextColor } from './contrastSampler.js';
+import { addGrowthBar, removeGrowthBar, cornerReach, layoutGrowths } from './growthBars.js';
 // Extra space for shader edge effects.
 const SHADER_PADDING = 20;
 // Space for the pill shadow.
@@ -57,6 +58,7 @@ export class TopBarManager {
     _panel;
     _panelBox;
     _owner;
+    growDirection = 1;
     _style = 'off';
     _glass = null;
     _settingsIds = [];
@@ -157,6 +159,7 @@ export class TopBarManager {
         });
         this._glass = glass;
         liveBars.add(this);
+        addGrowthBar(this);
         glass.reactive = false;
         glass.setPadding(SHADER_PADDING);
         glass.setIsDock(false);
@@ -663,6 +666,11 @@ export class TopBarManager {
         return Math.max(...this._bodies.map(([, y, , h]) => y + h));
     }
 
+    /** Things grow down out of the bar's bottom. */
+    glassEdge() {
+        return this.glassBottom();
+    }
+
     /**
      * Grows the menu `owner` holds out of the bar as `rect` ([x, y, w, h] on the stage, its top inside the bar's
      * glass), its free corners rounded by `radius`; null takes it back into the bar.
@@ -698,65 +706,17 @@ export class TopBarManager {
         glass.syncSources();
     }
 
-    // How far up from its bottom a body of height `h` starts to round its corners, as glass.frag's cornerShape() draws them.
-    _cornerReach(h) {
-        const r = Math.max(Math.min(this._settings.get_double(this._key('corner-radius')), h / 2), 0);
-        const smoothing = Math.min(Math.max(this._settings.get_double('glass-corner-smoothing'), 0), 1);
-        return r * Math.min(1 + smoothing, Math.max(h / 2 / Math.max(r, 1e-3), 1));
-    }
-
-    /**
-     * The bar's bodies and the glass of each menu in `menus` (both on the stage). A menu's glass starts where the
-     * bottom corners of the body it grows out of begin to round, so it covers them. A side of the menu under the
-     * body's straight part hangs from it through a concave fillet; a side that reaches the body's rounded end runs
-     * flush into it, the end moving out to the menu, so the two make one straight side up to the bar's top. Across
-     * the rounded end one turns into the other. Islands that come to touch become one.
-     */
+    // The bar's bodies and the glass of each menu in `menus`, joined as layoutGrowths() describes.
     _layoutGrowths(menus) {
-        const bodies = this._bodies.map(body => [...body]);
-        const minX = this._glass.x, maxX = minX + this._glassSize[0];
-        const fillet = this._settings.get_double(this._key('edge-radius'));
-        const growths = [];
-        for (const { rect: [mx, my, mw, mh], radius } of menus) {
-            // The body the menu comes out of: the one it overlaps most, or else the nearest.
-            let body = bodies[0], best = -Infinity;
-            for (const b of bodies) {
-                const overlap = Math.min(b[0] + b[2], mx + mw) - Math.max(b[0], mx);
-                if (overlap > best) {
-                    best = overlap;
-                    body = b;
-                }
-            }
-            const reach = this._cornerReach(body[3]);
-            // One side: the menu's `edge`, the body's `end` and `out`, the way out of the body (-1 left, 1 right).
-            const side = (edge, end, out) => {
-                const flush = reach > 0 ? Math.min(Math.max(((edge - end) * out + reach) / reach, 0), 1) : 1;
-                if (flush >= 1) {
-                    const at = Math.min(Math.max(edge, minX), maxX);
-                    return { edge: at, end: (at - end) * out > 0 ? at : end, fillet: 0 };
-                }
-                return { edge: edge + (end - edge) * flush, end, fillet: fillet * (1 - flush) };
-            };
-            const left = side(mx, body[0], -1);
-            const right = side(mx + mw, body[0] + body[2], 1);
-            body[0] = left.end;
-            body[2] = right.end - left.end;
-            const top = Math.min(my, body[1] + body[3] - reach);
-            growths.push({
-                x: left.edge, y: top, w: right.edge - left.edge, h: my + mh - top,
-                radii: [0, 0, radius, radius], fillets: [left.fillet, right.fillet],
-            });
-        }
-        bodies.sort((a, b) => a[0] - b[0]);
-        const merged = [];
-        for (const b of bodies) {
-            const last = merged[merged.length - 1];
-            if (last && b[0] <= last[0] + last[2])
-                last[2] = Math.max(last[0] + last[2], b[0] + b[2]) - last[0];
-            else
-                merged.push(b);
-        }
-        return { bodies: merged, growths };
+        const minX = this._glass.x;
+        const radius = this._settings.get_double(this._key('corner-radius'));
+        const smoothing = this._settings.get_double('glass-corner-smoothing');
+        return layoutGrowths(this._bodies, menus, {
+            minX, maxX: minX + this._glassSize[0],
+            fillet: this._settings.get_double(this._key('edge-radius')),
+            reach: h => cornerReach(radius, smoothing, h),
+            direction: 1,
+        });
     }
 
     _fitCenteredWidth(maxWidth) {
@@ -783,6 +743,7 @@ export class TopBarManager {
         const glass = this._glass;
         this._glass = null;
         liveBars.delete(this);
+        removeGrowthBar(this);
         this._growths.clear();
         this._bodies = [];
         this._disconnectBoxSignals();

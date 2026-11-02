@@ -1,7 +1,7 @@
 import GLib from 'gi://GLib';
 import { SwiftSpring, addFrameTicker, removeFrameTicker, normalizeAnimationIntervalMs } from './animation.js';
 import { getAllocatedSize, isActorValid } from './actors.js';
-import { barGrowingFrom } from './topBarManager.js';
+import { growthBarFrom } from './growthBars.js';
 // The BoxPointer's own open and close eases, which are held while the bar grows and shrinks.
 const BOXPOINTER_EASED = ['opacity', 'translation-x', 'translation-y', 'scale-x', 'scale-y'];
 const BOXPOINTER_HOLD_MS = 10000;
@@ -95,7 +95,7 @@ export class BarGrowth {
      * the manager then animates it as usual.
      */
     start(open) {
-        const bar = barGrowingFrom(this._host.source(), this._host.key) ?? (open ? null : this._bar);
+        const bar = growthBarFrom(this._host.source(), this._host.key) ?? (open ? null : this._bar);
         const content = this._host.content();
         if (!bar || !content) {
             this.release();
@@ -144,7 +144,7 @@ export class BarGrowth {
         if (this._tickId)
             return true;
         const content = this._host.content();
-        const bar = content && this._host.shown() ? barGrowingFrom(this._host.source(), this._host.key) : null;
+        const bar = content && this._host.shown() ? growthBarFrom(this._host.source(), this._host.key) : null;
         if (bar !== this._bar || content !== this._content)
             this.release();
         if (!bar || !content)
@@ -251,8 +251,15 @@ export class BarGrowth {
         const lerp = (from, to, p) => from + (to - from) * p;
         const left = lerp(bx, body[0], spread);
         const right = lerp(bx + bw, body[0] + body[2], spread);
-        const reach = lerp(bar.glassBottom(), body[1] + body[3], drop);
-        this._place([left, body[1], right - left, reach - body[1]], drop);
+        // Down out of a top bar to the content's bottom, or up out of a dock to its top.
+        if (bar.growDirection > 0) {
+            const reach = lerp(bar.glassEdge(), body[1] + body[3], drop);
+            this._place([left, body[1], right - left, reach - body[1]], drop);
+        }
+        else {
+            const reach = lerp(bar.glassEdge(), body[1], drop);
+            this._place([left, reach, right - left, body[1] + body[3] - reach], drop);
+        }
         const done = this._opening
             ? spreadSettled && dropSettled
             : Math.max(spread, drop) <= CLOSED_BELOW;
@@ -296,10 +303,12 @@ export class BarGrowth {
         const content = this._content;
         if (content)
             this._lastBody = body;
-        const top = bar.glassBottom() - OVERLAP;
+        const dir = bar.growDirection;
+        // From just inside the glass to the body's far end: its bottom growing down, its top growing up.
+        const near = bar.glassEdge() - OVERLAP * dir;
         const [x, , w] = body;
-        const bottom = body[1] + body[3];
-        const h = bottom - top;
+        const top = dir > 0 ? near : body[1];
+        const h = dir > 0 ? body[1] + body[3] - near : near - body[1];
         if (!(w >= 1) || !(h > OVERLAP)) {
             bar.setMenuGrowth(this, null, 0);
             if (content)
@@ -311,10 +320,10 @@ export class BarGrowth {
             return;
         const t = Math.min(Math.max((p - CONTENT_FROM) / (CONTENT_TO - CONTENT_FROM), 0), 1);
         content.opacity = Math.round(255 * t * t * (3 - 2 * t));
-        // Above the rest at first, then down with the glass, past the rest on its swing and back. Only while it moves:
-        // at rest the manager owns the content's translation.
+        // On the glass's side of the rest at first, then out with the glass, past the rest on its swing and back. Only
+        // while it moves: at rest the manager owns the content's translation.
         if (this._tickId)
-            this._setSlide(-CONTENT_SLIDE * (1 - p));
+            this._setSlide(-CONTENT_SLIDE * (1 - p) * dir);
         if (p >= 1 && Math.abs(this._slide) < 0.5) {
             content.remove_clip();
             return;

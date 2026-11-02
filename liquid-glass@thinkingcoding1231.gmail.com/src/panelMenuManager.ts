@@ -26,6 +26,13 @@ function menusOf(name: string, button: any): [string, any][] {
   return [[name, button.menu]];
 }
 
+// Whether `actor` sits in Dash to Dock's dash. Some status area entries are not actors.
+function inDock(actor: Clutter.Actor): boolean {
+  for (let a: Clutter.Actor | null = actor; typeof a?.get_parent === 'function'; a = a.get_parent())
+    if (a.get_name() === 'dashtodockDashContainer') return true;
+  return false;
+}
+
 export class PanelMenuManager {
   private _signals: { target: any; id: number }[] = [];
   private _buttons = new Map<any, number[]>();
@@ -81,7 +88,8 @@ export class PanelMenuManager {
     const reserved = new Set([panel.statusArea.dateMenu?.menu, panel.statusArea.quickSettings?.menu]);
 
     for (const [name, button] of Object.entries<any>(panel.statusArea)) {
-      if (!button || !panel.contains(button.container ?? button)) continue;
+      // On the bar, or moved into Dash to Dock (as Dock Tray does with the tray icons).
+      if (!button || !(panel.contains(button.container ?? button) || inDock(button.container ?? button))) continue;
       buttons.add(button);
       this._watchButton(button);
       for (const [menuName, menu] of menusOf(name, button)) {

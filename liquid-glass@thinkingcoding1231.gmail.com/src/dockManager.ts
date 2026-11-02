@@ -13,9 +13,15 @@ import {
   isFrameSyncFrozen, SAME_FRAME_WINDOW_US, startStageLoop, stopStageLoop, hexToColorArray
 } from './animation.js';
 import type { IconStyler } from './iconStyle/iconStyler.js';
+import { MAX_GLASS_GROWTHS } from './rendering/glassRenderer.js';
+import { addGrowthBar, removeGrowthBar, cornerReach, layoutGrowths, type GrowthBar } from './growthBars.js';
 
 // Room around the glass rect for the shader's edge effects.
 export const SHADER_PADDING = 20;
+// How far past the glass (and the menus grown out of it) the dock glass draws, for its shadow.
+const DOCK_CLIP_PADDING = 200;
+// The setting a menu's BarGrowth asks with, which the dock answers by dock-menus-grow.
+const MENUS_GROW_KEY = 'top-bar-menus-grow';
 
 // The dock glass's look, from the dock-* settings, for every kind of dock.
 const DOCK_MATERIAL: [string, (glass: BackdropGlass, settings: Gio.Settings) => void][] = [
@@ -61,7 +67,7 @@ export function attachDockGlass(glass: BackdropGlass, settings: Gio.Settings, re
     : { rect, side: null };
 }
 
-export class DashManager {
+export class DashManager implements GrowthBar {
   private extensionPath: string;
   private targetActor: St.Widget;
   private _settings: Gio.Settings;
@@ -116,6 +122,14 @@ export class DashManager {
 
   private _logger: Logger;
 
+  // The menus grown out of the dock (the tray icons' menus Dock Tray puts in it), by the BarGrowth that holds each:
+  // [x, y, w, h] on the stage and the radius of their free corners. The latest are drawn.
+  private _growths = new Map<object, { rect: number[], radius: number }>();
+  private _drewGrowths = false;
+  // The glass rect last placed (monitor-local, padded) and the screen edge the dock is on.
+  private _glassRect: number[] | null = null;
+  private _side: DockSide | null = null;
+
   constructor(extensionPath: string, targetActor: St.Widget, settings: Gio.Settings, logger: Logger) {
     this.extensionPath = extensionPath;
     this.targetActor = targetActor;
@@ -168,6 +182,11 @@ export class DashManager {
       this._marginValue = this._effectiveMargin();
     };
     connectSetting('dock-margin-bottom', remargin);
+    connectSetting('dock-menus-grow', () => {
+      this._growths.clear();
+      if (this._glassRect) this._placeGlassRect(this._glassRect);
+      this.glass?.queue_redraw();
+    });
     connectSetting('dock-attach-to-edge', remargin);
 
     this._settingsSignals.push(...followDockMaterial(this._settings, () => this.glass));
@@ -243,6 +262,7 @@ export class DashManager {
 
     const glass = createDockGlass(this.extensionPath, this._settings, this._logger, 'dock');
     this.glass = glass;
+    addGrowthBar(this);
     glass.set_size(1.0, 1.0);
 
     this._applyMargin();
@@ -326,7 +346,7 @@ export class DashManager {
     let rect = [ref.rect[0] + (nx - ref.rawX), ref.rect[1] + (ny - ref.rawY), ref.rect[2], ref.rect[3]];
     // The dock's move must not lift the attached side off the edge.
     if (ref.side) rect = attachRectToEdge(rect, ref.side, ref.monitorW, ref.monitorH, SHADER_PADDING);
-    this.glass.setGlassGeometry(rect[0], rect[1], rect[2], rect[3]);
+    this._placeGlassRect(rect);
   }
 
   _syncGeometry() {
@@ -353,7 +373,8 @@ export class DashManager {
     this.glass.show();
     this.glass.opacity = this.targetActor.opacity;
     this._syncDockVisibility(bounds, monitor);
-    this._syncDockGlass(bounds, monitor, dockSide(edges));
+    this._side = dockSide(edges);
+    this._syncDockGlass(bounds, monitor, this._side);
   }
 
   private _actorBounds(actor: Clutter.Actor): DockBounds {
@@ -494,20 +515,10 @@ export class DashManager {
     const attachment = attachDockGlass(this.glass!, this._settings, [localBgX, localBgY, bgW, bgH], side, screenW, screenH);
     const [rectX, rectY, rectW, rectH] = attachment.rect;
 
-    // Limit drawing to the dock plus room for its shadow (not
-    // clip_to_allocation, which would cut the shadow off).
-    const CLIP_PADDING = 200;
-
-    setClipIfChanged(
-      this.glass,
-      rectX - CLIP_PADDING, rectY - CLIP_PADDING,
-      rectW + CLIP_PADDING * 2, rectH + CLIP_PADDING * 2
-    );
-    const SHADOW_MAX_RADIUS = CLIP_PADDING - 20;
-    this.glass?.setShadowMaxRadius(SHADOW_MAX_RADIUS);
-
+    const placed = this._layoutGlassRect([rectX, rectY, rectW, rectH]);
+    this.glass?.setShadowMaxRadius(DOCK_CLIP_PADDING - 20);
     this.glass?.setResolution(screenW, screenH);
-    this.glass?.setGlassGeometry(rectX, rectY, rectW, rectH);
+    if (placed) this.glass?.setGlassGeometry(placed[0], placed[1], placed[2], placed[3]);
 
     const source = this._liveSource;
     this._liveRef = source ? {
@@ -521,6 +532,81 @@ export class DashManager {
     this.glass!.syncSources();
   }
 
+  // Sets the glass to `rect` (monitor-local, padded), widened for the menus growing out of it.
+  private _placeGlassRect(rect: number[]): void {
+    const placed = this._layoutGlassRect(rect);
+    if (placed) this.glass!.setGlassGeometry(placed[0], placed[1], placed[2], placed[3]);
+  }
+
+  // Draws the menus growing out of the glass at `rect` (monitor-local, padded) and returns the glass's rect, widened
+  // for them. Drawing is limited to the glass and the menus plus room for the shadow (not clip_to_allocation, which
+  // would cut the shadow off).
+  private _layoutGlassRect(rect: number[]): number[] | null {
+    const glass = this.glass;
+    if (!glass) return null;
+    this._glassRect = rect;
+    let [x, y, w, h] = rect;
+    let [x1, y1, x2, y2] = [x, y, x + w, y + h];
+    const menus = this._growsMenus() ? [...this._growths.values()].slice(-MAX_GLASS_GROWTHS) : [];
+    if (menus.length > 0 || this._drewGrowths) {
+      const p = SHADER_PADDING;
+      const ox = glass.x, oy = glass.y;
+      const radius = this._settings.get_double('dock-corner-radius');
+      const smoothing = this._settings.get_double('glass-corner-smoothing');
+      const { bodies, growths } = layoutGrowths([[x + p + ox, y + p + oy, w - p * 2, h - p * 2]], menus, {
+        minX: ox, maxX: ox + glass.width,
+        fillet: this._settings.get_double('dock-edge-radius'),
+        reach: bh => cornerReach(radius, smoothing, bh),
+        direction: this.growDirection,
+      });
+      // A menu reaching past the dock's end takes the end out with it.
+      x = bodies[0][0] - ox - p;
+      w = bodies[0][2] + p * 2;
+      const local = growths.map(g => ({ ...g, x: g.x - ox, y: g.y - oy }));
+      glass.setGrowths(local);
+      this._drewGrowths = local.length > 0;
+      for (const g of local) {
+        x1 = Math.min(x1, g.x); y1 = Math.min(y1, g.y);
+        x2 = Math.max(x2, g.x + g.w); y2 = Math.max(y2, g.y + g.h);
+      }
+    }
+    const c = DOCK_CLIP_PADDING;
+    x1 = Math.min(x1, x); x2 = Math.max(x2, x + w);
+    setClipIfChanged(glass, x1 - c, y1 - c, x2 - x1 + c * 2, y2 - y1 + c * 2);
+    return [x, y, w, h];
+  }
+
+  // Menus grow out of a dock along the top or bottom of the screen, by dock-menus-grow.
+  private _growsMenus(): boolean {
+    return (this._side === 'top' || this._side === 'bottom') && this._settings.get_boolean('dock-menus-grow');
+  }
+
+  /** Out of a dock at the bottom things grow up; out of one at the top, down. */
+  get growDirection(): 1 | -1 {
+    return this._side === 'top' ? 1 : -1;
+  }
+
+  growsFrom(source: Clutter.Actor, key: string): boolean {
+    return key === MENUS_GROW_KEY && this._isEffectActive && this._growsMenus() && this._glassRect !== null &&
+      !!this.glass?.visible && this.glass.opacity > 0 && isActorValid(source) && source.mapped &&
+      isActorValid(this.targetActor) && this.targetActor.contains(source);
+  }
+
+  /** The stage y of the glass's side facing the screen: its top for a dock at the bottom, its bottom for one at the top. */
+  glassEdge(): number {
+    const [, y, , h] = this._glassRect ?? [0, 0, 0, 0];
+    const oy = this.glass?.y ?? 0;
+    return this.growDirection > 0 ? oy + y + h - SHADER_PADDING : oy + y + SHADER_PADDING;
+  }
+
+  setMenuGrowth(owner: object, rect: number[] | null, radius: number): void {
+    this._growths.delete(owner);
+    if (rect) this._growths.set(owner, { rect, radius });
+    if (!this.glass || !this._glassRect) return;
+    this._placeGlassRect(this._glassRect);
+    this.glass.syncSources();
+  }
+
   private get _frameSlot() {
     return { get: () => this._frameSyncId, set: (id: number) => { this._frameSyncId = id; } };
   }
@@ -532,6 +618,7 @@ export class DashManager {
   // The next sync shows it again and updates everything.
   private _hideGlass(): void {
     this.glass?.hide();
+    this._glassRect = null;
     this._lastBgW = undefined;
     this._lastBgH = undefined;
     this._lastBgX = undefined;
@@ -566,6 +653,10 @@ export class DashManager {
     if (isActorValid(this._dockParent))
       this._dockParent!.remove_style_class_name('liquid-glass-transparent');
     this._dockParent = null;
+    removeGrowthBar(this);
+    this._growths.clear();
+    this._drewGrowths = false;
+    this._glassRect = null;
     const glass = this.glass;
     this.glass = null;
     if (glass) {
