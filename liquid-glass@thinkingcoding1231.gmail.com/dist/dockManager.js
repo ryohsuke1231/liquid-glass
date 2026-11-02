@@ -44,18 +44,13 @@ export function followDockMaterial(settings, glass) {
     return ids;
 }
 
-/** Whether the dock glass grows out of the screen edge (dock-attach-to-edge), and its flare radius. */
-function dockAttachment(settings) {
-    return { attached: settings.get_boolean('dock-attach-to-edge'), radius: settings.get_double('dock-edge-radius') };
-}
-
 /**
  * Grows `glass` out of `side` when the dock is attached. Returns `rect` (monitor-local, padded by SHADER_PADDING)
  * reaching that edge and the side, or `rect` unchanged and null while the dock floats.
  */
 export function attachDockGlass(glass, settings, rect, side, monitorW, monitorH) {
-    const { attached, radius } = dockAttachment(settings);
-    glass.setAttachedEdge(attached ? side : 'none', radius);
+    const attached = settings.get_boolean('dock-attach-to-edge');
+    glass.setAttachedEdge(attached ? side : 'none', settings.get_double('dock-edge-radius'));
     return attached
         ? { rect: attachRectToEdge(rect, side, monitorW, monitorH, SHADER_PADDING), side }
         : { rect, side: null };
@@ -153,7 +148,7 @@ export class DashManager {
     }
 
     _effectiveMargin() {
-        return dockAttachment(this._settings).attached ? 0 : this._settings.get_int('dock-margin-bottom') || 0;
+        return this._settings.get_boolean('dock-attach-to-edge') ? 0 : this._settings.get_int('dock-margin-bottom') || 0;
     }
 
     // Moves the dock away from the screen edge it is closest to by

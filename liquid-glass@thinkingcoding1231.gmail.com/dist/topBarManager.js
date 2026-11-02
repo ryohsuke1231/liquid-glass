@@ -221,12 +221,9 @@ export class TopBarManager {
         glass.setSaturation(this._settings.get_double(this._key('saturation')));
     }
 
-    _attached() {
-        return this._settings.get_boolean(this._key('attach-to-edge'));
-    }
-
     _applyAttach() {
-        this._glass?.setAttachedEdge(this._attached() ? 'top' : 'none', this._settings.get_double(this._key('edge-radius')));
+        const attached = this._settings.get_boolean(this._key('attach-to-edge'));
+        this._glass?.setAttachedEdge(attached ? 'top' : 'none', this._settings.get_double(this._key('edge-radius')));
     }
 
     _insets(kind) {
@@ -407,7 +404,7 @@ export class TopBarManager {
             const sections = this._sections();
             const margin = this._margin = this._insets('margin');
             // Grown out of the screen's top, the glass starts at it.
-            if (this._attached())
+            if (this._settings.get_boolean(this._key('attach-to-edge')))
                 margin.top = 0;
             const padding = this._padding = this._insets('padding');
             const top = margin.top + padding.top;
