@@ -2,13 +2,11 @@ import type Gio from 'gi://Gio';
 import Cogl from 'gi://Cogl';
 
 import type { Logger } from '../logger.js';
-import { MaterialSettings } from './material.js';
-import { OutlineBinding } from './outline.js';
-import { BlurRenderer, type BlurMethod } from './blur.js';
-import { ShaderPipelines, configureSamplerLayer, SHAPE_LAYER } from './pipelines.js';
-import { GlassGeometry } from './geometry.js';
-import { UniformState } from './uniforms.js';
-import { RenderPasses } from './passes.js';
+import {
+  BlurRenderer, type BlurMethod, ShaderPipelines, configureSamplerLayer, SHAPE_LAYER, RenderPasses
+} from './pipelines.js';
+import { setUniformArray } from '../shellVersion.js';
+import { hexToColorArray } from '../animation.js';
 
 // Must match glass.frag's `#define MAX_GLASS_REGIONS 16`.
 export const MAX_GLASS_REGIONS = 16;
@@ -328,5 +326,529 @@ export class GlassRenderer {
   setSaturation(saturation: number): void {
     this.uniforms.set('saturation', saturation);
     this._repaintIfDirty();
+  }
+}
+
+export class GlassGeometry {
+  constructor(private _uniforms: ReadonlyMap<string, number>) {
+    this.blurEnabled = GlassGeometry.USE_BLUR_RECT;
+    this.compositeEnabled = GlassGeometry.USE_COMPOSITE_RECT;
+  }
+
+  // The glass rect [x, y, w, h] last given to the shader, in the space of
+  // setResolution()/setGlassGeometry().
+  public rect: number[] = [0, 0, 0, 0];
+  public regions: number[][] = [];
+  public multiRegion: boolean = false;
+
+  // Per-instance switches (global._lgGlass.blurRect()/compositeRect()).
+  public blurEnabled: boolean;
+  public compositeEnabled: boolean;
+
+  // Copy and blur only the part of the backdrop the glass can sample.
+  static USE_BLUR_RECT = true;
+
+  // Must match EDGE_LENS_REACH in glass.frag (the refraction's maximum
+  // displacement), or the rim samples past the blurred region and streaks.
+  static readonly EDGE_LENS_REACH = 96;
+
+  static readonly EDGE_FOOTPRINT_SPREAD = 0.9 * 32;
+
+  // Extra margin for the edge feather, the 4-tap RGSS spread and rounding.
+  static BLUR_RECT_MIN_MARGIN = 12;
+
+  // A rect covering more than this share of the actor saves nothing. Kept
+  // close to 1 so application windows (around 0.8) still benefit.
+  static BLUR_RECT_MIN_SAVING = 0.95;
+
+  // The texture pool is keyed on the rect's size, so the size is rounded up
+  // to this quantum; otherwise an opening menu would reallocate the pool
+  // every frame.
+  static BLUR_RECT_QUANTUM = 64;
+
+  // Run glass.frag only where it can draw something: the glass body and the
+  // drop shadow's reach. Everywhere else the source is fully transparent,
+  // which the premultiplied "over" blend leaves unchanged, so skipping those
+  // pixels changes nothing. Refraction moves where a pixel samples, not where
+  // it is drawn, so no refraction margin is needed.
+  static USE_COMPOSITE_RECT = true;
+
+  static COMPOSITE_RECT_MIN_SAVING = 0.95;
+
+  /**
+   * The rect [x, y, w, h] (shader space) the composite has to cover, or null
+   * for the whole actor. glass.frag draws no shadow beyond
+   * min(shadow_radius, max(shadow_max_radius, 5)) from the body, and none in
+   * multi-region mode.
+   */
+  compositeRect(): number[] | null {
+    if (!this.compositeEnabled) return null;
+
+    // Debug views are easier to read unclipped.
+    if ((this._uniforms.get('debug_view') ?? 0) > 0.5) return null;
+
+    const resW = this._uniforms.get('resolution_x') ?? 0;
+    const resH = this._uniforms.get('resolution_y') ?? 0;
+    if (!(resW >= 1) || !(resH >= 1)) return null;
+
+    const body = this._glassBodyUnion();
+    if (!body) return null;
+    let [x0, y0, x1, y1] = body;
+
+    const shadowMax = Math.max(this._uniforms.get('shadow_max_radius') ?? 0, 5);
+    const shadowRadius = Math.max(this._uniforms.get('shadow_radius') ?? 0, 0);
+    const shadowIntensity = this._uniforms.get('shadow_intensity') ?? 0;
+    const reach = (this.multiRegion || !(shadowIntensity > 0))
+      ? 0
+      : Math.min(shadowRadius, shadowMax);
+
+    // The feather widens the body; the rim and AO lie inside it.
+    const feather = Math.max(this._uniforms.get('edge_smoothing') ?? 0, 0.75);
+    const m = Math.ceil(reach + feather + 2);
+
+    x0 -= m; y0 -= m; x1 += m; y1 += m;
+
+    const maxW = Math.round(resW);
+    const maxH = Math.round(resH);
+    const bx = Math.max(0, Math.floor(x0));
+    const by = Math.max(0, Math.floor(y0));
+    const bw = Math.min(maxW, Math.ceil(x1)) - bx;
+    const bh = Math.min(maxH, Math.ceil(y1)) - by;
+    if (!(bw >= 2) || !(bh >= 2)) return null;
+    if (bw * bh >= maxW * maxH * GlassGeometry.COMPOSITE_RECT_MIN_SAVING) return null;
+
+    return [bx, by, bw, bh];
+  }
+
+  /**
+   * The union [x0, y0, x1, y1] of the glass bodies, or null. The rect a
+   * manager passes is the background box; the shader insets the body by
+   * `padding` (the shadow margin for application windows), and an attached
+   * glass flares out of it by its fillet radius.
+   */
+  private _glassBodyUnion(): number[] | null {
+    const pad = Math.max(this._uniforms.get('padding') ?? 0, 0);
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    const rects = this.multiRegion ? this.regions : [this.rect];
+    for (const r of rects) {
+      const [rx, ry, rw, rh] = r;
+      if (!(rw > 0) || !(rh > 0)) continue;
+      // The shader clamps the half-size to 1px, so the inset never inverts
+      // the box.
+      const ix = Math.min(pad, Math.max(rw / 2 - 1, 0));
+      const iy = Math.min(pad, Math.max(rh / 2 - 1, 0));
+      if (rx + ix < x0) x0 = rx + ix;
+      if (ry + iy < y0) y0 = ry + iy;
+      if (rx + rw - ix > x1) x1 = rx + rw - ix;
+      if (ry + rh - iy > y1) y1 = ry + rh - iy;
+    }
+    if (!(x1 > x0) || !(y1 > y0)) return null;
+    // The fillets only widen the side on the edge, but growing every side keeps this simple and costs little.
+    const flare = (this._uniforms.get('attach_edge') ?? 0) > 0.5 ? Math.max(this._uniforms.get('attach_radius') ?? 0, 0) : 0;
+    return [x0 - flare, y0 - flare, x1 + flare, y1 + flare];
+  }
+
+  private _samplingReachPx(resW: number, resH: number): number {
+    // The color separation moves blue further along the refraction, by up
+    // to this fraction of it.
+    const chroma = Math.min(Math.max(this._uniforms.get('chroma_strength') ?? 0, 0), 1);
+    const minRes = Math.max(Math.min(resW, resH), 1);
+    return Math.min(0.30 * minRes,
+      GlassGeometry.EDGE_LENS_REACH * (1 + chroma) + GlassGeometry.EDGE_FOOTPRINT_SPREAD);
+  }
+
+  /**
+   * The part of the actor that has to be blurred, [x, y, w, h] in shader
+   * space, or null for all of it. The margin is how far a visible pixel's
+   * sample can travel from the glass (_samplingReachPx()): the refraction
+   * (EDGE_LENS_REACH), stretched by the chromatic aberration, and the edge
+   * footprint taps (EDGE_FOOTPRINT_SPREAD), capped at 0.30 of the shorter
+   * side, plus the RGSS spread, the feather and BLUR_RECT_MIN_MARGIN. The
+   * drop shadow does not sample the blur.
+   */
+  blurRect(): number[] | null {
+    if (!this.blurEnabled) return null;
+
+    const resW = this._uniforms.get('resolution_x') ?? 0;
+    const resH = this._uniforms.get('resolution_y') ?? 0;
+    if (!(resW >= 1) || !(resH >= 1)) return null;
+
+    const body = this._glassBodyUnion();
+    if (!body) return null;
+    const [x0, y0, x1, y1] = body;
+
+    const dispPx = this._samplingReachPx(resW, resH);
+
+    const feather = Math.max(this._uniforms.get('edge_smoothing') ?? 0, 0.75);
+    const extra = GlassGeometry.BLUR_RECT_MIN_MARGIN + feather + 2.5;
+
+    const mx = Math.ceil(dispPx + extra);
+    const my = Math.ceil(dispPx + extra);
+
+    const maxW = Math.round(resW);
+    const maxH = Math.round(resH);
+    let bx = Math.max(0, Math.floor(x0 - mx));
+    let by = Math.max(0, Math.floor(y0 - my));
+    let bw = Math.min(maxW, Math.ceil(x1 + mx)) - bx;
+    let bh = Math.min(maxH, Math.ceil(y1 + my)) - by;
+    if (!(bw >= 2) || !(bh >= 2)) return null;
+
+    // Round the size up and pull the origin back so the rect still covers
+    // the region.
+    const q = GlassGeometry.BLUR_RECT_QUANTUM;
+    bw = Math.min(maxW, Math.ceil(bw / q) * q);
+    bh = Math.min(maxH, Math.ceil(bh / q) * q);
+    bx = Math.max(0, Math.min(bx, maxW - bw));
+    by = Math.max(0, Math.min(by, maxH - bh));
+
+    if (bw * bh >= resW * resH * GlassGeometry.BLUR_RECT_MIN_SAVING) return null;
+
+    return [bx, by, bw, bh];
+  }
+}
+
+export class UniformState {
+  private _pipeline: Cogl.Pipeline | null = null;
+
+  get values(): ReadonlyMap<string, number> { return this._pendingUniforms; }
+
+  attach(pipeline: Cogl.Pipeline | null): void {
+    this._pipeline = pipeline;
+    this._compUniforms.clear();
+    this._compUniformArrays.clear();
+    // A new pipeline holds none of the buffered values yet.
+    this._appliedUniforms.clear();
+    this._appliedUniformArrays.clear();
+    if (pipeline) this.flush();
+  }
+
+  takeDirty(): boolean {
+    const changed = this._uniformsDirty;
+    this._uniformsDirty = false;
+    return changed;
+  }
+
+  clear(): void {
+    this.attach(null);
+    this._pendingUniforms.clear();
+    this._pendingUniformArrays.clear();
+    this._uniformsDirty = false;
+  }
+
+  // Uniform locations in the current pipeline.
+  private _compUniforms: Map<string, number> = new Map();
+  private _compUniformArrays: Map<string, number> = new Map();
+
+  // Every value set so far, kept so a new pipeline can be seeded with them.
+  private _pendingUniforms: Map<string, number> = new Map();
+  private _pendingUniformArrays: Map<string, number[]> = new Map();
+
+  // What the pipeline currently holds, so flush() (every paint) writes only
+  // changed values instead of about 60 scalars and 8 arrays.
+  private _appliedUniforms: Map<string, number> = new Map();
+
+  private _appliedUniformArrays: Map<string, number[]> = new Map();
+
+  // Set when a value actually changed; the glass repaints only then.
+  // Changes behind the glass arrive through the relays, not here.
+  private _uniformsDirty: boolean = false;
+
+  // Sets a float uniform, buffered until attach() provides a pipeline.
+  set(name: string, value: number): void {
+    if (this._pendingUniforms.get(name) === value) return;
+
+    this._pendingUniforms.set(name, value);
+    this._uniformsDirty = true;
+    if (this._pipeline) {
+      this._applyUniform(name, value);
+    }
+  }
+
+  private _applyUniform(name: string, value: number): void {
+    if (!this._pipeline) return;
+
+    if (this._appliedUniforms.get(name) === value) return;
+
+    let loc = this._compUniforms.get(name);
+    if (loc === undefined) {
+      loc = this._pipeline.get_uniform_location(name);
+      this._compUniforms.set(name, loc);
+    }
+    this._pipeline.set_uniform_1f(loc, value);
+    this._appliedUniforms.set(name, value);
+  }
+
+  flush(): void {
+    for (const [name, value] of this._pendingUniforms) {
+      this._applyUniform(name, value);
+    }
+    for (const [name, values] of this._pendingUniformArrays) {
+      this._applyUniformArray(name, values);
+    }
+  }
+
+  // Sets a float array uniform (e.g. region_x[16]), buffered like set().
+  setArray(name: string, values: number[]): void {
+    const prev = this._pendingUniformArrays.get(name);
+    if (prev && prev.length === values.length) {
+      let same = true;
+      for (let i = 0; i < values.length; i++) {
+        if (prev[i] !== values[i]) { same = false; break; }
+      }
+      if (same) return;
+    }
+
+    // Callers reuse their arrays, so keep a copy to compare against.
+    this._pendingUniformArrays.set(name, values.slice());
+    this._uniformsDirty = true;
+    if (this._pipeline) {
+      this._applyUniformArray(name, values);
+    }
+  }
+
+  private _applyUniformArray(name: string, values: number[]): void {
+    if (!this._pipeline) return;
+
+    const applied = this._appliedUniformArrays.get(name);
+    if (applied && applied.length === values.length) {
+      let same = true;
+      for (let i = 0; i < values.length; i++) {
+        if (applied[i] !== values[i]) { same = false; break; }
+      }
+      if (same) return;
+    }
+
+    let loc = this._compUniformArrays.get(name);
+    if (loc === undefined) {
+      loc = this._pipeline.get_uniform_location(name);
+      this._compUniformArrays.set(name, loc);
+    }
+    setUniformArray(this._pipeline, loc, name, values);
+    this._appliedUniformArrays.set(name, values.slice());
+  }
+}
+
+export class MaterialSettings {
+  private _settingsIds: number[] = [];
+
+  constructor(
+    private _settings: Gio.Settings | undefined, private _uniforms: UniformState,
+    private _blur: BlurRenderer, private _setDiagnostics: (enabled: boolean) => void,
+    private _repaintIfDirty: () => void,
+  ) {}
+
+  initialize(): void {
+    // Buffered until the pipeline exists.
+    this._uniforms.set('resolution_x', 0.0);
+    this._uniforms.set('resolution_y', 0.0);
+    this._uniforms.set('corner_radius', 60.0);
+    this._uniforms.set('brightness', 1.0);
+    this._uniforms.set('contrast', 1.0);
+    this._uniforms.set('saturation', 1.0);
+    this._uniforms.set('padding', 20.0);
+    // How far the drop shadow can extend before the glass actor's clip,
+    // unlike the small optical 'padding'. The managers set the real value.
+    this._uniforms.set('shadow_max_radius', 180.0);
+    this._uniforms.set('isDock', 0.0);
+    // Rim, specular and sheen highlights. Application windows turn them off
+    // and keep only the drop shadow and the inner AO.
+    this._uniforms.set('surface_light_enabled', 1.0);
+    // Application windows turn continuous corners off to match the window.
+    this._uniforms.set('corner_smoothing_enabled', 1.0);
+    // No outline until a surface's settings ask for one.
+    this._uniforms.set('outline_width', 0.0);
+    this._uniforms.set('outline_r', 1.0);
+    this._uniforms.set('outline_g', 1.0);
+    this._uniforms.set('outline_b', 1.0);
+
+    // Where the glass sits inside the actor, which for the UI glass covers
+    // the monitor.
+    this._uniforms.set('dock_x', 0.0);
+    this._uniforms.set('dock_y', 0.0);
+    this._uniforms.set('dock_w', 0.0);
+    this._uniforms.set('dock_h', 0.0);
+    // Floating, not grown out of a screen edge.
+    this._uniforms.set('attach_edge', 0.0);
+    this._uniforms.set('attach_radius', 0.0);
+
+    // One glass per region, for Quick Settings' toggle-button mode.
+    this._uniforms.set('multi_region_mode', 0.0);
+    this._uniforms.set('region_count', 0.0);
+
+    // An unset uniform reads 0.0, which would disable these.
+    this._uniforms.set('early_exit_enabled', 1.0);
+    this._uniforms.set('debug_view', 0.0);
+
+    // Zero means the whole actor until the paint path computes the rect.
+    this._uniforms.set('blur_rect_x', 0.0);
+    this._uniforms.set('blur_rect_y', 0.0);
+    this._uniforms.set('blur_rect_w', 0.0);
+    this._uniforms.set('blur_rect_h', 0.0);
+    // Set on every paint, once layer 1's size is known.
+    this._uniforms.set('blur_tex_w', 0.0);
+    this._uniforms.set('blur_tex_h', 0.0);
+    this._uniforms.set('edge_taps_enabled', 1.0);
+
+    this._settingsIds = [];
+    if (this._settings) {
+      this._bindSettings();
+    } else {
+      // Without settings, the schema's defaults.
+      this._uniforms.set('max_z', 88.0);
+      this._uniforms.set('displacement_scale', 10.5);
+      this._uniforms.set('edge_smoothing', 0.5);
+      this._uniforms.set('profile_shape_n', 3.6);
+      this._uniforms.set('ior', 2.40);
+      this._uniforms.set('chroma_strength', 0.0);
+      this._uniforms.set('corner_smoothing', 0.6);
+      this._uniforms.set('highlight_backdrop_color', 1.0);
+      this._uniforms.set('specular_intensity', 0.0);
+      this._uniforms.set('shininess', 42.0);
+      this._uniforms.set('rim_width', 2.3);
+      this._uniforms.set('rim_intensity', 0.5);
+      this._uniforms.set('rim_directional_power', 1.9);
+      this._uniforms.set('rim_power', 3.0);
+      this._uniforms.set('rim_light_color_intensity', 1.0);
+      this._uniforms.set('sheen_intensity', 0.0);
+      this._uniforms.set('light_angle_deg', 90.0);
+      this._uniforms.set('shadow_radius', 50.0);
+      this._uniforms.set('shadow_intensity', 0.22);
+      this._uniforms.set('ao_intensity', 0.65);
+      this._uniforms.set('ao_radius', 1.0);
+      this._uniforms.set('tint_strength', 0.0);
+      this._uniforms.set('tint_r', 1.0);
+      this._uniforms.set('tint_g', 1.0);
+      this._uniforms.set('tint_b', 1.0);
+    }
+  }
+
+  clear(): void {
+    if (this._settings) this._settingsIds.forEach(id => this._settings?.disconnect(id));
+    this._settingsIds = [];
+  }
+
+  private _bindSettings(): void {
+    const mappings: { key: string; uniform: string }[] = [
+      { key: 'glass-max-z', uniform: 'max_z' },
+      { key: 'glass-displacement-scale', uniform: 'displacement_scale' },
+      { key: 'glass-edge-smoothing', uniform: 'edge_smoothing' },
+      { key: 'glass-profile-shape-n', uniform: 'profile_shape_n' },
+      { key: 'glass-ior', uniform: 'ior' },
+      { key: 'glass-chroma-strength', uniform: 'chroma_strength' },
+      { key: 'glass-specular-intensity', uniform: 'specular_intensity' },
+      { key: 'glass-shininess', uniform: 'shininess' },
+      { key: 'glass-rim-width', uniform: 'rim_width' },
+      { key: 'glass-rim-intensity', uniform: 'rim_intensity' },
+      { key: 'glass-rim-directional-power', uniform: 'rim_directional_power' },
+      { key: 'glass-rim-power', uniform: 'rim_power' },
+      { key: 'glass-rim-light-color-intensity', uniform: 'rim_light_color_intensity' },
+      { key: 'glass-sheen-intensity', uniform: 'sheen_intensity' },
+      { key: 'glass-light-angle-deg', uniform: 'light_angle_deg' },
+      { key: 'shadow-radius', uniform: 'shadow_radius' },
+      { key: 'shadow-intensity', uniform: 'shadow_intensity' },
+      { key: 'glass-ao-intensity', uniform: 'ao_intensity' },
+      { key: 'glass-ao-radius', uniform: 'ao_radius' },
+      { key: 'glass-corner-smoothing', uniform: 'corner_smoothing' },
+    ];
+
+    const settings = this._settings;
+    if (!settings) return;
+
+    mappings.forEach(map => {
+      this._uniforms.set(map.uniform, settings.get_double(map.key));
+      // Without a repaint only the parts of the glass that something else
+      // damaged would pick up the new value.
+      const id = settings.connect(`changed::${map.key}`, () => {
+        this._uniforms.set(map.uniform, settings.get_double(map.key));
+        this._repaintIfDirty();
+      });
+      this._settingsIds.push(id);
+    });
+
+    const applyBackdropHighlights = () => {
+      this._uniforms.set('highlight_backdrop_color', settings.get_boolean('glass-backdrop-highlights') ? 1.0 : 0.0);
+    };
+    applyBackdropHighlights();
+    const highlightsId = settings.connect('changed::glass-backdrop-highlights', () => {
+      applyBackdropHighlights();
+      this._repaintIfDirty();
+    });
+    this._settingsIds.push(highlightsId);
+
+    // 2 = half resolution, 4 = quarter. Read before blur-method, since the
+    // Gaussian kernel is expressed in texels of that level.
+    const applyDownscale = () => {
+      const factor = settings.get_int('glass-blur-downscale') >= 4 ? 4 : 2;
+      this._blur.setDownscale(factor);
+    };
+    applyDownscale();
+    const downscaleId = settings.connect('changed::glass-blur-downscale', applyDownscale);
+    this._settingsIds.push(downscaleId);
+
+    // 0 = Gaussian, 1 = Dual Kawase.
+    const applyBlurMethod = () => {
+      const raw = settings.get_int('blur-method');
+      this._blur.setBlurMethod(raw === 0 ? 0 : 1);
+    };
+    applyBlurMethod();
+    const blurMethodId = settings.connect('changed::blur-method', applyBlurMethod);
+    this._settingsIds.push(blurMethodId);
+
+    // Cached, so the paint path does not query GSettings.
+    const applyDiagFlag = () => {
+      this._setDiagnostics(settings.get_boolean('glass-debug-diagnostics'));
+    };
+    applyDiagFlag();
+    const diagId = settings.connect('changed::glass-debug-diagnostics', applyDiagFlag);
+    this._settingsIds.push(diagId);
+  }
+
+  setAnimationScale(scale: number): boolean {
+    const settings = this._settings;
+    if (!settings) return false;
+    this._uniforms.set('displacement_scale',
+      settings.get_double('glass-displacement-scale') * scale);
+    this._uniforms.set('max_z',
+      settings.get_double('glass-max-z') * scale);
+    // The color separation is a fraction of the displacement, so it already
+    // scales with it.
+    return true;
+  }
+}
+
+// Keeps the outline uniforms of one glass in step with its surface's
+// `<prefix>-outline-*` settings. A width of 0 is how the shader turns the
+// outline off.
+export class OutlineBinding {
+  private _ids: number[] = [];
+
+  constructor(
+    private _settings: Gio.Settings, private _prefix: string, private _uniforms: UniformState,
+    private _repaintIfDirty: () => void,
+  ) {}
+
+  initialize(): void {
+    this._apply();
+    for (const suffix of ['enabled', 'width', 'color']) {
+      this._ids.push(this._settings.connect(`changed::${this._prefix}-outline-${suffix}`, () => {
+        this._apply();
+        this._repaintIfDirty();
+      }));
+    }
+  }
+
+  clear(): void {
+    this._ids.forEach(id => this._settings.disconnect(id));
+    this._ids = [];
+  }
+
+  private _apply(): void {
+    const s = this._settings;
+    const p = this._prefix;
+    const [r, g, b] = hexToColorArray(s.get_string(`${p}-outline-color`));
+    this._uniforms.set('outline_width', s.get_boolean(`${p}-outline-enabled`) ? s.get_double(`${p}-outline-width`) : 0.0);
+    this._uniforms.set('outline_r', r);
+    this._uniforms.set('outline_g', g);
+    this._uniforms.set('outline_b', b);
   }
 }

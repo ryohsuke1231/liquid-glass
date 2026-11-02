@@ -83,7 +83,7 @@ test('a moved menu does not inherit the previous region color decision', async (
   assert.equal((await sampler.chooseColorsForActors([actor])).get(actor), config.darkTextColor);
 });
 
-const colorHelpers = load('animation/colors.js', 'hexToRgb, hexToColorArray, rgbToHex');
+const colorHelpers = load('animation.js', 'hexToRgb, hexToColorArray, rgbToHex');
 
 class Actor {
   constructor(style = 'font-weight: bold; padding: 4px;') { this.style = style; this.visible = true; }

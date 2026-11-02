@@ -6,9 +6,22 @@ const ts = require('../../liquid-glass@thinkingcoding1231.gmail.com/node_modules
 // use real implementations; bindings replace only dependencies supplied by a test.
 // Each fixture gets a fresh cache, so module-owned settings never leak between tests.
 // shellVersion.ts reads the shell version when it loads; tests get GNOME 50
-// unless they bind their own Config.
+// unless they bind their own Config. Modules register their GObject classes when
+// they load, and actors.ts keeps GObject's toString, so the classes they extend
+// are always there; a test's own GObject, Clutter, St or Shell adds to them.
+const LOAD_TIME = {
+  Config: { PACKAGE_VERSION: '50.0' },
+  GObject: { Object: { prototype: { toString: () => '' } }, registerClass: (...args) => args.at(-1) },
+  Clutter: { Actor: class {}, Clone: class {}, Effect: class {}, OffscreenEffect: class {} },
+  St: { Widget: class {} },
+  Shell: {},
+};
+
 function createModuleLoader(bindings = {}) {
-  bindings = { Config: { PACKAGE_VERSION: '50.0' }, ...bindings };
+  const merged = { ...LOAD_TIME, ...bindings };
+  for (const name of ['GObject', 'Clutter', 'St', 'Shell'])
+    if (bindings[name]) merged[name] = { ...LOAD_TIME[name], ...bindings[name] };
+  bindings = merged;
   const cache = new Map();
   function load(file) {
     file = path.resolve(file);

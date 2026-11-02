@@ -17,7 +17,7 @@
 # 保存済みの記録を集計し直す:  tools/perf/glass-monitor.sh --summary <ファイル>
 # journal から拾い直す:  journalctl --user -o cat --since '<開始時刻>' _COMM=gnome-shell | grep -F '[monitor]' > 記録.log
 #
-# 1 行の項目（src/diagnostics/monitor.ts 参照）:
+# 1 行の項目（src/diagnostics.ts 参照）:
 #   gpu    amdgpu の使用率（そのときのクロックに対する割合なので、sclk・power と併せて見る）
 #   sclk   GPU のシェーダクロック、power  消費電力（APU ではチップ全体、CPU を含む）
 #   cpu    gnome-shell プロセスの CPU 使用率（全スレッド、1 コア = 100%）

@@ -988,6 +988,11 @@
       <summary>Where desktop items were dragged</summary>
       <description>JSON: item id to the fraction [x, y] of the work area its center was dropped at.</description>
     </key>
+    <key name="desktop-items-first-workspace-only" type="b">
+      <default>false</default>
+      <summary>Show the glass clock and the widgets only on the first workspace</summary>
+      <description>They slide away with the first workspace when another one is shown.</description>
+    </key>
     <key name="weather-place" type="(sdd)">
       <default>("", 0.0, 0.0)</default>
       <summary>Place for the weather widget</summary>

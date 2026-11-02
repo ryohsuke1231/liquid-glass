@@ -4,8 +4,8 @@ const path = require('node:path');
 const { loadModule } = require('./helpers/load-module.cjs');
 const { dist } = require('./helpers/gpu.cjs');
 
-const { pinnedGrid } = loadModule(path.join(dist, 'launcher/pinnedGrid.js'), {});
-const { softwareDesktopId } = loadModule(path.join(dist, 'launcher/software.js'), {});
+const { pinnedGrid } = loadModule(path.join(dist, 'launcherManager.js'), {});
+const { softwareDesktopId } = loadModule(path.join(dist, 'launcherManager.js'), {});
 
 test('a tile keeps room for the pin at each side of its icon', () => {
   for (let width = 300; width <= 1400; width += 7) {

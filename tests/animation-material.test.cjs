@@ -5,7 +5,7 @@ const { loadModule } = require('./helpers/load-module.cjs');
 const dist = path.join(__dirname, '../liquid-glass@thinkingcoding1231.gmail.com/dist');
 
 test('shared menu spring sub-steps its Euler integration and clamps the frame time', () => {
-  const { Spring } = loadModule(path.join(dist, 'animation/spring.js'));
+  const { Spring } = loadModule(path.join(dist, 'animation.js'));
   const spring = new Spring(120, 8, 1);
   spring.target = 1;
   spring.update(16);
@@ -22,7 +22,7 @@ test('shared menu spring sub-steps its Euler integration and clamps the frame ti
 });
 
 test('analytical spring converges for under-, critically- and over-damped motion', () => {
-  const { SwiftSpring } = loadModule(path.join(dist, 'animation/spring.js'));
+  const { SwiftSpring } = loadModule(path.join(dist, 'animation.js'));
   for (const damping of [0.7, 1, 1.4]) {
     const spring = new SwiftSpring(0.4, damping);
     spring.target = 1;
@@ -37,8 +37,8 @@ test('analytical spring converges for under-, critically- and over-damped motion
 });
 
 function materialFixture(settings) {
-  const { UniformState } = loadModule(path.join(dist, 'rendering/uniforms.js'));
-  const { MaterialSettings } = loadModule(path.join(dist, 'rendering/material.js'));
+  const { UniformState } = loadModule(path.join(dist, 'rendering/glassRenderer.js'));
+  const { MaterialSettings } = loadModule(path.join(dist, 'rendering/glassRenderer.js'));
   const state = new UniformState(), events = [];
   const blur = { setDownscale: n => events.push(['downscale', n]), setBlurMethod: n => events.push(['method', n]) };
   const material = new MaterialSettings(settings, state, blur, enabled => events.push(['diagnostics', enabled]),
@@ -91,8 +91,8 @@ test('material settings initialize downscale before method and disconnect every 
 });
 
 test('an outline follows its surface\'s settings, and a width of 0 is how it is turned off', () => {
-  const { UniformState } = loadModule(path.join(dist, 'rendering/uniforms.js'));
-  const { OutlineBinding } = loadModule(path.join(dist, 'rendering/outline.js'),
+  const { UniformState } = loadModule(path.join(dist, 'rendering/glassRenderer.js'));
+  const { OutlineBinding } = loadModule(path.join(dist, 'rendering/glassRenderer.js'),
     { GLib: {}, Meta: {}, GObject: { Object: { prototype: {} } } });
   const handlers = new Map(); let next = 1; let repaints = 0;
   const values = { 'menu-outline-enabled': false, 'menu-outline-width': 2.5, 'menu-outline-color': '#ff8000' };

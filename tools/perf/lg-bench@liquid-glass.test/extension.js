@@ -715,7 +715,7 @@ class Bench {
     }
 
     async _launcher() {
-        this._launcherModule ??= await import(`file://${Extension.lookupByUUID(LG_UUID).path}/dist/launcher/launcher.js`);
+        this._launcherModule ??= await import(`file://${Extension.lookupByUUID(LG_UUID).path}/dist/launcherManager.js`);
         return this._launcherModule.Launcher.instance;
     }
 

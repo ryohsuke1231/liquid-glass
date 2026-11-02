@@ -24,7 +24,7 @@
 //              ($LG_DRV_WALLPAPER); LG_DRV_FEATURES picks parts (comma
 //              separated: morph, topbar, widgets, clock, launcher; default all;
 //              also morphtrace, qssub, clockshot, media, guides, launcherpointer,
-//              launchercolor, iconstyle, iconglass, fullshot, popupfreeze, redrawclip, prefshover, bannerintro, stalefreeze, dockgrow, nanrelay; fullshot to prefshover and the last three need LG_DTD_DIR; qsheight, the calendar matched
+//              launchercolor, iconstyle, iconglass, workspaces, fullshot, popupfreeze, redrawclip, prefshover, bannerintro, stalefreeze, dockgrow, nanrelay; fullshot to prefshover and the last three need LG_DTD_DIR; qsheight, the calendar matched
 //              to Quick Settings' height; qsflicker, the Quick Settings glass rect while adaptive colour samples;
 //              adaptiveoff, adaptive colour turned off and on while each surface is shown);
 //              also scale (the calendar, Quick Settings in both modes and the launcher
@@ -904,7 +904,7 @@ export default class LgDriver extends Extension {
 
     // The buttons springing out as the menu opens, slowed down 8 times, and
     // the least gap between two buttons' glass over a full-speed opening.
-    const {ToggleIntro} = await this._lgModule('animation/toggleIntro.js');
+    const {ToggleIntro} = await this._lgModule('animation.js');
     const frame = ToggleIntro.prototype.frame;
     let slow = 8, least = Infinity;
     // Per frame of a full-speed opening: its time and each button's width.
@@ -1567,7 +1567,7 @@ export default class LgDriver extends Extension {
 
   // Runs the menus' morphs `factor` times slower, so shots catch them midway.
   async _slowMorph(factor) {
-    const {MenuMorphMotion} = await this._lgModule('animation/menuMorph.js');
+    const {MenuMorphMotion} = await this._lgModule('animation.js');
     const step = MenuMorphMotion.prototype._drvStep ?? MenuMorphMotion.prototype.step;
     MenuMorphMotion.prototype._drvStep = step;
     MenuMorphMotion.prototype.step = function (elapsed) {
@@ -1583,6 +1583,46 @@ export default class LgDriver extends Extension {
         await sleep(wait);
       await shot(`${tag}-${t}`, rect);
     }
+  }
+
+  // The clock and the widgets in the workspace switch animation: copies of them on every workspace's
+  // wallpaper, or only on the first one's with desktop-items-first-workspace-only, and the real
+  // ones shown afterwards only where they belong.
+  async _workspaces(settings, m) {
+    new Gio.Settings({schema_id: 'org.gnome.mutter'}).set_boolean('dynamic-workspaces', false);
+    new Gio.Settings({schema_id: 'org.gnome.desktop.wm.preferences'}).set_int('num-workspaces', 3);
+    settings.set_string('desktop-item-positions', '{}');
+    settings.set_boolean('enable-glass-clock', true);
+    settings.set_strv('desktop-widgets', ['weather', 'events']);
+    settings.set_boolean('enable-desktop-widgets', true);
+    await sleep(4000);
+    const desktop = findActor(Main.layoutManager.uiGroup, 'liquid-glass-desktop');
+    const wm = global.workspace_manager;
+    const clones = () => findActors(Main.layoutManager.uiGroup, a => a instanceof Clutter.Clone && a.source === desktop);
+    St.Settings.get().slow_down_factor = 10;
+    for (const firstOnly of [false, true]) {
+      settings.set_boolean('desktop-items-first-workspace-only', firstOnly);
+      wm.get_workspace_by_index(0).activate(global.get_current_time());
+      await sleep(4000);
+      log(`workspaces: first-only=${firstOnly} start visible=${desktop.visible}`);
+      for (const to of [1, 2, 0]) {
+        const from = wm.get_active_workspace_index();
+        wm.get_workspace_by_index(to).activate(global.get_current_time());
+        await sleep(1200);
+        const midway = clones();
+        const on = midway.map(c => c.get_parent()?.get_parent()?.workspace?.index() ?? '?').join(',');
+        log(`workspaces: first-only=${firstOnly} ${from}->${to} midway clones=${midway.length} on=[${on}] ` +
+          `size=${midway[0]?.width ?? 0}x${midway[0]?.height ?? 0} visible=${desktop.visible}`);
+        await shot(`workspaces-${firstOnly ? 'first' : 'all'}-${from}-${to}-midway`, [m.x, m.y, m.width, m.height]);
+        await sleep(3500);
+        const want = !firstOnly || to === 0;
+        log(`workspaces: first-only=${firstOnly} ${from}->${to} after clones=${clones().length} visible=${desktop.visible} ` +
+          `${desktop.visible === want && clones().length === 0 ? 'OK' : 'NG'}`);
+        await shot(`workspaces-${firstOnly ? 'first' : 'all'}-${from}-${to}-after`, [m.x, m.y, m.width, m.height]);
+      }
+    }
+    St.Settings.get().slow_down_factor = 1;
+    settings.set_boolean('desktop-items-first-workspace-only', false);
   }
 
   // Moves the weather card through its menu until its centre is a few px
@@ -1677,7 +1717,7 @@ export default class LgDriver extends Extension {
     settings.set_string('icon-style-mode', 'clear');
     settings.set_string('launcher-pinned-transition', 'morph');
     await sleep(500);
-    const launcher = (await this._lgModule('launcher/launcher.js')).Launcher.instance;
+    const launcher = (await this._lgModule('launcherManager.js')).Launcher.instance;
     for (let round = 0; round < 3; round++) {
       launcher.open();
       await sleep(1500);
@@ -1984,7 +2024,7 @@ export default class LgDriver extends Extension {
       await sleep(1500);
     }
     const t = () => GLib.get_monotonic_time();
-    const {Launcher} = await this._lgModule('launcher/launcher.js');
+    const {Launcher} = await this._lgModule('launcherManager.js');
     const launcher = Launcher.instance;
     const activated = [];
     launcher._activateResult = result => {
@@ -2119,7 +2159,7 @@ export default class LgDriver extends Extension {
   async _launcherColor(settings, m) {
     settings.set_boolean('enable-launcher', true);
     await sleep(500);
-    const {Launcher} = await this._lgModule('launcher/launcher.js');
+    const {Launcher} = await this._lgModule('launcherManager.js');
     const launcher = Launcher.instance;
     const dark = new St.Widget({style: 'background-color: #202020;', x: m.x, y: m.y, width: m.width, height: m.height});
     const splitY = Math.round(m.height * 0.2) + 110;
@@ -2347,7 +2387,7 @@ export default class LgDriver extends Extension {
     }
     const probe = styled()[0];
     if (probe) {
-      const {rectInOffscreen} = await this._lgModule('rendering/contentLens.js');
+      const {rectInOffscreen} = await this._lgModule('rendering/pipelines.js');
       const image = probe.get_first_child();
       const box = image?.get_allocation_box();
       const effect = probe.get_effect(EFFECT);
@@ -2423,7 +2463,7 @@ export default class LgDriver extends Extension {
     settings.set_boolean('enable-launcher', true);
     settings.set_boolean('icon-style-launcher', true);
     await sleep(500);
-    const {Launcher} = await this._lgModule('launcher/launcher.js');
+    const {Launcher} = await this._lgModule('launcherManager.js');
     const launcher = Launcher.instance;
     launcher.open();
     launcher.setText(GLib.getenv('LG_DRV_LAUNCHER_QUERY') ?? 'set');
@@ -2869,7 +2909,7 @@ export default class LgDriver extends Extension {
     Main.overview.hide();
     await sleep(1500);
     await check('after the app grid');
-    const {Launcher} = await this._lgModule('launcher/launcher.js');
+    const {Launcher} = await this._lgModule('launcherManager.js');
     settings.set_boolean('enable-launcher', true);
     await sleep(500);
     Launcher.instance?.open();
@@ -3071,7 +3111,7 @@ export default class LgDriver extends Extension {
     settings.set_boolean('enable-launcher', true);
     settings.set_boolean('icon-style-launcher', true);
     await sleep(500);
-    const {Launcher} = await this._lgModule('launcher/launcher.js');
+    const {Launcher} = await this._lgModule('launcherManager.js');
     const launcher = Launcher.instance;
     launcher.open();
     launcher.setText(GLib.getenv('LG_DRV_LAUNCHER_QUERY') ?? 'set');
@@ -3156,7 +3196,7 @@ export default class LgDriver extends Extension {
     }
     if (parts.includes('morphtrace')) {
       // Every frame of the calendar's glass at full speed.
-      const {MenuMorphMotion} = await this._lgModule('animation/menuMorph.js');
+      const {MenuMorphMotion} = await this._lgModule('animation.js');
       const step = MenuMorphMotion.prototype.step;
       const t0 = GLib.get_monotonic_time();
       MenuMorphMotion.prototype.step = function (elapsed) {
@@ -3291,7 +3331,7 @@ export default class LgDriver extends Extension {
         const [cw, ch] = card.get_transformed_size();
         if (GLib.getenv('LG_DRV_MEDIA_BARS')) {
           // Bars that jump between silent and loudest, without a sound server.
-          const {MediaWidget} = await this._lgModule('desktop/media.js');
+          const {MediaWidget} = await this._lgModule('desktop/widgets.js');
           const draw = MediaWidget.prototype._drawBars;
           let loud = false;
           MediaWidget.prototype._drawBars = function () {
@@ -3488,6 +3528,8 @@ export default class LgDriver extends Extension {
       }
       await this._editClock(settings, m);
     }
+    if (parts.includes('workspaces'))
+      await this._workspaces(settings, m);
     if (parts.includes('launcherglass'))
       await this._launcherGlass(settings);
     if (parts.includes('clockcull'))
@@ -3692,7 +3734,7 @@ export default class LgDriver extends Extension {
       settings.set_boolean('enable-launcher', true);
       settings.set_boolean('enable-desktop-widgets', true);
       await sleep(5000);
-      const {Launcher} = await this._lgModule('launcher/launcher.js');
+      const {Launcher} = await this._lgModule('launcherManager.js');
       Launcher.instance?.open();
       await sleep(1500);
       const rect = a => a.get_transformed_extents();
@@ -3712,7 +3754,7 @@ export default class LgDriver extends Extension {
     if (parts.includes('launcher')) {
       settings.set_boolean('enable-launcher', true);
       await sleep(1000);
-      const {Launcher} = await this._lgModule('launcher/launcher.js');
+      const {Launcher} = await this._lgModule('launcherManager.js');
       const launcher = Launcher.instance;
       launcher?.open();
       await sleep(1200);
@@ -3751,7 +3793,7 @@ export default class LgDriver extends Extension {
     if (parts.includes('nanrelay'))
       await this._nanRelay(settings);
     // Everything switched on, the launcher open: disabling has to leave nothing.
-    (await this._lgModule('launcher/launcher.js')).Launcher.instance?.open();
+    (await this._lgModule('launcherManager.js')).Launcher.instance?.open();
     await sleep(500);
     Main.extensionManager.disableExtension(LG_UUID);
     await sleep(1000);
@@ -3766,7 +3808,7 @@ export default class LgDriver extends Extension {
   // inside the tile), and a search taller than the screen (the results scroll, and the panel stays on it), with a
   // stand-in for GNOME Software's provider that finds one application that is installed and one that is not.
   async _launcherLayout(settings, m) {
-    const {Launcher} = await this._lgModule('launcher/launcher.js');
+    const {Launcher} = await this._lgModule('launcherManager.js');
     settings.set_boolean('enable-launcher', true);
     await sleep(1000);
     const launcher = Launcher.instance;

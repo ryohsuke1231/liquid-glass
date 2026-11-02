@@ -1,6 +1,6 @@
 // An icon redrawn from its style map (src/iconStyle/styleMap.ts) as glass
 // plates under a symbol. A Cogl fragment snippet for
-// src/iconStyle/iconEffect.ts; the contact sheet (tools/icon-sheet) runs it in
+// src/iconStyle/iconStyler.ts; the contact sheet (tools/icon-sheet) runs it in
 // WebGL too. With LG_ICON_GLASS (the clear look) each plate is glass drawn
 // the way shaders/glass.frag draws it, with the same settings, over what is
 // behind the icon and the plates under it.

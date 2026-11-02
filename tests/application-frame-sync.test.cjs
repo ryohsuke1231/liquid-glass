@@ -129,7 +129,7 @@ function windowFixture() {
     get_int: () => 10, get_string: () => '#ffffff', connect: () => 1, disconnect() {},
   };
   const writes = loadModule(path.join(__dirname,
-    '../liquid-glass@thinkingcoding1231.gmail.com/dist/actors/writes.js'), { utilsLog() {} });
+    '../liquid-glass@thinkingcoding1231.gmail.com/dist/actors.js'), { utilsLog() {} });
   const { ApplicationManager } = loadModule(path.join(__dirname,
     '../liquid-glass@thinkingcoding1231.gmail.com/dist/applicationManager.js'), {
     Meta: { WindowType: { NORMAL: 0, DIALOG: 1, MODAL_DIALOG: 2, DESKTOP: 9, DROPDOWN_MENU: 5, POPUP_MENU: 6, MENU: 7 },

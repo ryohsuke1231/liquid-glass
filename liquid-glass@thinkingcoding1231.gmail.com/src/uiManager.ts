@@ -1,7 +1,8 @@
-import { stepMenuSpring, applyMenuFrame, showMenuAtRest } from './animation/menuSpring.js';
-import { addFrameTicker, removeFrameTicker, normalizeAnimationIntervalMs } from './animation/frameTicker.js';
-import { Spring, SwiftSpring } from './animation/spring.js';
-import { MenuMorphMotion, type MorphFrame } from './animation/menuMorph.js';
+import {
+  stepMenuSpring, applyMenuFrame, showMenuAtRest, Spring, SwiftSpring, addFrameTicker, removeFrameTicker,
+  normalizeAnimationIntervalMs, startSyncLoop, stopStageLoop, MenuMorphMotion, type MorphFrame,
+  resolveCrossFade, adaptiveColorTweener, hexToColorArray, hexToRgb, rgbToHex
+} from './animation.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import Clutter from 'gi://Clutter';
 import St from 'gi://St';
@@ -9,15 +10,12 @@ import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import Gio from 'gi://Gio';
 import { BackdropGlass } from './rendering/backdropGlass.js';
-import { ContentLens } from './rendering/contentLens.js';
+import { ContentLens } from './rendering/pipelines.js';
 import { StageContrastSampler, AdaptiveContrastConfig, sanitizeColorPreference } from './contrastSampler.js';
-import { UnpickableWidget } from './actors/unpickable.js';
-import { ensureGlassAllocated } from './actors/allocation.js';
-import { resolveMonitorGeometry, getAllocatedSize } from './actors/geometry.js';
-import { isActorValid } from './actors/lifecycle.js';
-import { startSyncLoop, stopStageLoop } from './animation/frameLoops.js';
-import { placeScreenGlass, resolveGlassOrigin, applyGlassScale, GLASS_SHADOW_MAX_RADIUS } from './actors/glassBounds.js';
-import { resolveCrossFade, adaptiveColorTweener, hexToColorArray, hexToRgb, rgbToHex } from './animation/colors.js';
+import {
+  UnpickableWidget, ensureGlassAllocated, resolveMonitorGeometry, getAllocatedSize, isActorValid,
+  placeScreenGlass, resolveGlassOrigin, applyGlassScale, GLASS_SHADOW_MAX_RADIUS
+} from './actors.js';
 
 import { MENU_NO_ANIMATION, accentColors } from './shellVersion.js';
 import { Logger } from './logger.js';
@@ -1734,6 +1732,7 @@ export class UIManager {
       this.menu.disconnect(this._animSignalId);
       this._animSignalId = 0;
     }
+    this._openedFrom = null;
     if (this._destroySignalId) {
       this.targetActor.disconnect(this._destroySignalId);
       this._destroySignalId = 0;

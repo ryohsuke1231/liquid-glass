@@ -48,7 +48,7 @@ function fixture() {
   const uiGroup = new UiGroup();
   const mainDateMenu = new DateMenuButton();
   uiGroup.add_child(mainDateMenu.menu.actor);
-  const C = loadModule(path.join(__dirname, '../liquid-glass@thinkingcoding1231.gmail.com/dist/extraDateMenuManager.js'), {
+  const C = loadModule(path.join(__dirname, '../liquid-glass@thinkingcoding1231.gmail.com/dist/panelMenuManager.js'), {
     Main: { layoutManager: { uiGroup }, panel: { statusArea: { dateMenu: mainDateMenu } } },
     DateMenu: { DateMenuButton }, PopupMenu: { PopupMenu: Popup }, GLib, UIManager: Manager,
   }).ExtraDateMenuManager;

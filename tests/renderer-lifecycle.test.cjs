@@ -5,7 +5,7 @@ const { loadModule } = require('./helpers/load-module.cjs');
 const { gpuFixture, dist } = require('./helpers/gpu.cjs');
 
 test('uniform state buffers before compilation and skips unchanged scalar and array writes', () => {
-  const { UniformState } = loadModule(path.join(dist, 'rendering/uniforms.js'));
+  const { UniformState } = loadModule(path.join(dist, 'rendering/glassRenderer.js'));
   const state = new UniformState();
   const writes = [], locations = [];
   const pipeline = { get_uniform_location: name => { locations.push(name); return name; },
@@ -38,7 +38,7 @@ test('uniform state buffers before compilation and skips unchanged scalar and ar
 });
 
 test('geometry clipping remains conservative for shadows, blur reach and multiple regions', () => {
-  const { GlassGeometry } = loadModule(path.join(dist, 'rendering/geometry.js'));
+  const { GlassGeometry } = loadModule(path.join(dist, 'rendering/glassRenderer.js'));
   const uniforms = new Map(Object.entries({ resolution_x: 1920, resolution_y: 1080,
     padding: 10, shadow_radius: 20, shadow_max_radius: 30, shadow_intensity: 1,
     edge_smoothing: 2, displacement_scale: 0 }));
@@ -59,7 +59,7 @@ test('geometry clipping remains conservative for shadows, blur reach and multipl
 });
 
 test('refraction margins cover the shader sampling reach on both axes and nothing more', () => {
-  const { GlassGeometry } = loadModule(path.join(dist, 'rendering/geometry.js'));
+  const { GlassGeometry } = loadModule(path.join(dist, 'rendering/glassRenderer.js'));
   const reach = GlassGeometry.EDGE_LENS_REACH + GlassGeometry.EDGE_FOOTPRINT_SPREAD;
   const margins = extra => {
     const uniforms = new Map(Object.entries({ resolution_x: 3840, resolution_y: 2160,
@@ -80,14 +80,14 @@ test('refraction margins cover the shader sampling reach on both axes and nothin
 });
 
 test('the lens reach constant matches the shader clamp', () => {
-  const { GlassGeometry } = loadModule(path.join(dist, 'rendering/geometry.js'));
+  const { GlassGeometry } = loadModule(path.join(dist, 'rendering/glassRenderer.js'));
   const shader = require('node:fs').readFileSync(path.join(dist, '../shaders/glass.frag'), 'utf8');
   assert.equal(Number(shader.match(/#define EDGE_LENS_REACH ([\d.]+)/)[1]), GlassGeometry.EDGE_LENS_REACH);
   assert.match(shader, /min\(footprintPx, 64\.0\) \* 0\.5/, 'footprint spread still caps at 32 px');
 });
 
 test('invalid, empty and almost-fullscreen geometry falls back to the whole glass', () => {
-  const { GlassGeometry } = loadModule(path.join(dist, 'rendering/geometry.js'));
+  const { GlassGeometry } = loadModule(path.join(dist, 'rendering/glassRenderer.js'));
   const uniforms = new Map();
   const geometry = new GlassGeometry(uniforms);
   for (const operation of [() => geometry.blurRect(), () => geometry.compositeRect()]) assert.equal(operation(), null);
@@ -100,7 +100,7 @@ test('invalid, empty and almost-fullscreen geometry falls back to the whole glas
 function blurFixture() {
   const f = gpuFixture();
   f.bases.initialize(f.context);
-  const { BlurRenderer } = f.load(path.join(dist, 'rendering/blur.js'));
+  const { BlurRenderer } = f.load(path.join(dist, 'rendering/pipelines.js'));
   let repaints = 0;
   const blur = new BlurRenderer(f.bases, f.passes, () => repaints++);
   return { ...f, blur, repaints: () => repaints };

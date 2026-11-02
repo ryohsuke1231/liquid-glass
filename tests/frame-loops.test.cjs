@@ -16,8 +16,8 @@ function fixture() {
     global: { compositor: { get_laters: () => laters }, stage },
     reportFrameLoopError: (tag, e) => errors.push([tag, String(e)]),
   });
-  const loops = load(path.join(dist, 'animation/frameLoops.js'));
-  const sync = load(path.join(dist, 'animation/frameSync.js'));
+  const loops = load(path.join(dist, 'animation.js'));
+  const sync = load(path.join(dist, 'animation.js'));
   const run = () => { const cbs = [...pending.values()]; pending.clear(); cbs.forEach(fn => fn()); };
   const slot = () => { let id = 0; return { get: () => id, set: v => { id = v; } }; };
   const frame = () => { clock.now += 16000; for (const h of [...handlers.values()]) h.fn(); };

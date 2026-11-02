@@ -176,7 +176,7 @@ Widgets that were moved one above the other stay a stack: when one grows, shrink
 
 While one is moved, dotted guides show where it lines up with the others and the clock (the same edge, or the same center line), with the middle of the screen, and where it sits as far from one item as that item is from the next; near such a place it snaps onto it. Their text takes the light or dark color set as preferred in the preferences for as long as that stays readable on the wallpaper behind it, so it does not keep flipping on a busy background.
 
-The widgets and the clock are hidden in the overview, together with the windows. With desktop icons ([Desktop Icons NG](https://gitlab.com/rastersoft/desktop-icons-ng)) they sit above the icons, so they can be clicked.
+The widgets and the clock are hidden in the overview, together with the windows. When you switch workspaces, they slide with the workspace instead of disappearing until the switch ends. **Desktop → Workspaces → Only on the first workspace** keeps them to the first workspace. With desktop icons ([Desktop Icons NG](https://gitlab.com/rastersoft/desktop-icons-ng)) they sit above the icons, so they can be clicked.
 
 Their right-click menu just appears; under **Appearance → Desktop widgets** it can instead grow out of a drop of glass where you clicked, or open on a spring.
 
@@ -196,7 +196,7 @@ Point at a result and a pin appears on its left: click it to pin the result (app
 
 - **Appearance** — shared blur, corners, tint and outline; animations, adaptive color and matching menu heights; **Backup**, which exports every setting to a file and imports it again.
 - **Effects** — choose where glass appears: top bar, dock, menus, popups (and whether quick settings get one sheet or one per button), application icons and application windows. The advanced view lists every surface on its own here, the top bar included.
-- **Desktop** — the glass clock (whether it shows, the time format and the date), the desktop widgets and the launcher (its shortcut). The clock's place, size, font and glass (blur, tint color and strength, brightness, contrast, saturation), and the launcher's width, the height of the pinned items, their icon size and how it changes to them, are surfaces of the advanced **Appearance** page.
+- **Desktop** — the glass clock (whether it shows, the time format and the date), the desktop widgets, whether they show only on the first workspace, and the launcher (its shortcut). The clock's place, size, font and glass (blur, tint color and strength, brightness, contrast, saturation), and the launcher's width, the height of the pinned items, their icon size and how it changes to them, are surfaces of the advanced **Appearance** page.
 - **Rendering** — rendering quality, refraction, edge lighting, shadows and diagnostics.
 
 Opening the window preserves your configuration. **Custom** means your existing
@@ -321,6 +321,7 @@ A significant part of this codebase was written with the help of AI coding assis
 - [x] Outline for the glass of each element, and settings that fold away under their switch in the advanced preferences
 - [x] Add Dhruva dock support, an opening animation for Quick Settings' Individual buttons mode, and an override for Blur my Shell's blur where there is glass
 - [x] Centered top bar pill that shrinks the bar to its buttons
+- [x] The clock and the widgets slide with their workspace when switching, and can be kept to the first workspace
 
 ### Next
 - [ ] Publish to extensions.gnome.org

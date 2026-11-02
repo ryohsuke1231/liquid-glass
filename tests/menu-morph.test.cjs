@@ -4,7 +4,7 @@ const path = require('node:path');
 const { loadModule } = require('./helpers/load-module.cjs');
 const { dist } = require('./helpers/gpu.cjs');
 
-const { MenuMorphMotion } = loadModule(path.join(dist, 'animation/menuMorph.js'), {});
+const { MenuMorphMotion } = loadModule(path.join(dist, 'animation.js'), {});
 
 // The date button in the middle of the top bar and the calendar under it.
 const BUTTON = [860, 4, 200, 26];

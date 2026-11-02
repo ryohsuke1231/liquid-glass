@@ -4,15 +4,13 @@ import GLib from 'gi://GLib';
 import Pango from 'gi://Pango';
 import St from 'gi://St';
 import { BackdropGlass } from '../rendering/backdropGlass.js';
-import { ensureGlassAllocated } from '../actors/allocation.js';
-import { isActorValid } from '../actors/lifecycle.js';
-import { hexToColorArray } from '../animation/colors.js';
-import { AdaptiveTextColor } from '../adaptiveText.js';
-import { sanitizeColorPreference } from '../contrastSampler.js';
-import { connectClicks, PREFERRED_MIN_CONTRAST } from './desktopItem.js';
-import { FIELD_RANGE } from './digits.js';
-import { DigitsSource } from './digitsSource.js';
+import { ensureGlassAllocated, isActorValid } from '../actors.js';
+import { hexToColorArray } from '../animation.js';
+import { AdaptiveTextColor, sanitizeColorPreference } from '../contrastSampler.js';
+import { connectClicks, PREFERRED_MIN_CONTRAST } from './widgets.js';
+import { FIELD_RANGE, DigitsMaker } from './glassText.js';
 import { coglContext } from '../shellVersion.js';
+import { WorkerProcess } from '../workers/workerProcess.js';
 // The drop shadow's reach (px), a little inside the distance field's.
 const SHADOW_REACH = 40;
 // New digits are made once the preferences stop changing them; until then
@@ -20,6 +18,8 @@ const SHADOW_REACH = 40;
 const FONT_DELAY_MS = 120;
 // The date sits this far (px) above the glass digits' outline.
 const DATE_GAP = 6;
+// The date's font size relative to the clock's digits.
+const DATE_SIZE_RATIO = 0.13;
 const SIZE_KEYS = ['glass-clock-size', 'glass-clock-stretch', 'glass-clock-height'];
 
 // The [min, max] the schema allows for a number key.
@@ -177,7 +177,7 @@ export class GlassClock {
             return;
         this._font = next;
         this._prepared.clear();
-        this._date.set_style(`font-size: ${Math.max(11, Math.round(next.size * 0.13))}px;`);
+        this._date.set_style(`font-size: ${Math.max(11, Math.round(next.size * DATE_SIZE_RATIO))}px;`);
         this._text = '';
         this._tick();
     }
@@ -230,7 +230,7 @@ export class GlassClock {
         const now = GLib.DateTime.new_now_local();
         this._date.visible = this._env.settings.get_boolean('glass-clock-show-date');
         this._date.text = new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
-        this._setText(this._timeText(now));
+        this._setText(this._timeText(now)); // Set glass clock's text
         this._sizeChanged = true;
         const wait = 60 - now.get_seconds() + 0.05;
         this._timerId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, Math.ceil(wait * 1000), () => {
@@ -362,5 +362,63 @@ export class GlassClock {
         this._glass.cleanup();
         if (isActorValid(this.actor))
             this.actor.destroy();
+    }
+}
+
+// Where the glass clock gets its digits from: a worker process
+// (digitsWorker.js) that makes them while the shell goes on drawing, started
+// on first use. Where gjs cannot be found or the worker keeps failing, they
+// are made in the shell instead, a step at a time.
+export class DigitsSource {
+    _logger;
+    _worker;
+    _local = null;
+    _cancellable = new Gio.Cancellable();
+
+    constructor(extensionPath, _logger) {
+        this._logger = _logger;
+        this._worker = new WorkerProcess(`${extensionPath}/dist/workers/digitsWorker.js`, 'clock\'s worker', _logger);
+    }
+
+    /** Rejects when the digits cannot be made. */
+    async make(request) {
+        if (!this._local && !this._worker.available) {
+            this._logger.log('[Liquid Glass] The clock\'s digits are made in the shell');
+            this._local = new DigitsMaker();
+        }
+        if (this._local)
+            return this._local.make(request);
+        const message = await this._worker.request(request);
+        const file = Gio.File.new_for_path(message.path);
+        try {
+            const bytes = await new Promise((resolve, reject) => {
+                file.load_contents_async(this._cancellable, (_f, res) => {
+                    try {
+                        resolve(file.load_contents_finish(res)[1]);
+                    }
+                    catch (e) {
+                        reject(e);
+                    }
+                });
+            });
+            return { bytes, width: message.width, height: message.height, band: message.band, digitHeight: message.digitHeight };
+        }
+        finally {
+            file.delete_async(GLib.PRIORITY_DEFAULT, null, (_f, res) => {
+                // Throws a GError when the file is already gone; nothing is left behind then.
+                try {
+                    file.delete_finish(res);
+                }
+                catch {
+                }
+            });
+        }
+    }
+
+    destroy() {
+        this._cancellable.cancel();
+        this._worker.destroy();
+        this._local?.destroy();
+        this._local = null;
     }
 }

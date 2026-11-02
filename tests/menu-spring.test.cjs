@@ -3,8 +3,8 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const { loadModule } = require('./helpers/load-module.cjs');
 const dist = path.join(__dirname, '../liquid-glass@thinkingcoding1231.gmail.com/dist');
-const { Spring, SwiftSpring } = loadModule(path.join(dist, 'animation/spring.js'));
-const { stepMenuSpring } = loadModule(path.join(dist, 'animation/menuSpring.js'));
+const { Spring, SwiftSpring } = loadModule(path.join(dist, 'animation.js'));
+const { stepMenuSpring } = loadModule(path.join(dist, 'animation.js'));
 
 function referenceStep(scaleSpring, elapsedMs) {
   const isClosing = scaleSpring.target === 0;

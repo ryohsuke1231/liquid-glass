@@ -4,7 +4,7 @@ const path = require('node:path');
 const { loadModule } = require('./helpers/load-module.cjs');
 const { dist } = require('./helpers/gpu.cjs');
 
-const { ToggleIntro, introProgress, MIN_GLASS_GAP } = loadModule(path.join(dist, 'animation/toggleIntro.js'), {});
+const { ToggleIntro, introProgress, MIN_GLASS_GAP } = loadModule(path.join(dist, 'animation.js'), {});
 
 // Quick Settings as laid out: the system buttons, a slider and two rows of toggles, 12px apart.
 const RECTS = [[0, 0, 80, 40], [100, 0, 40, 40], [150, 0, 40, 40], [200, 0, 40, 40], [250, 0, 40, 40],

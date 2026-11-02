@@ -4,7 +4,7 @@ const path = require('node:path');
 const { loadModule } = require('./helpers/load-module.cjs');
 const { dist } = require('./helpers/gpu.cjs');
 
-const { evaluate, formatNumber } = loadModule(path.join(dist, 'launcher/calculator.js'), {});
+const { evaluate, formatNumber } = loadModule(path.join(dist, 'launcherManager.js'), {});
 
 test('arithmetic is worked out, with or without a trailing equals sign', () => {
   assert.equal(evaluate('3*8='), 24);

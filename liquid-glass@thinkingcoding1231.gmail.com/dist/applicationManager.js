@@ -1,15 +1,10 @@
 import Meta from 'gi://Meta';
 import GLib from 'gi://GLib';
 import { BackdropGlass } from './rendering/backdropGlass.js';
-import { getWindowActors } from './actors/windows.js';
-import { isActorValid } from './actors/lifecycle.js';
-import { getAllocatedSize } from './actors/geometry.js';
-import { setActorVisible, ensureGlassAllocated, ensureWindowActorAllocated, clearStranded } from './actors/allocation.js';
-import { setPositionIfChanged, setSizeIfChanged } from './actors/writes.js';
-import { isFrameSyncFrozen, SAME_FRAME_WINDOW_US } from './animation/frameSync.js';
-import { hexToColorArray } from './animation/colors.js';
-import { noteStrandEntry } from './diagnostics/glass.js';
-import { reportFrameLoopError } from './diagnostics/logging.js';
+import { getWindowActors, isActorValid, getAllocatedSize, setActorVisible, ensureGlassAllocated, ensureWindowActorAllocated, clearStranded, setPositionIfChanged, setSizeIfChanged } from './actors.js';
+import { isFrameSyncFrozen, SAME_FRAME_WINDOW_US, hexToColorArray } from './animation.js';
+import { noteStrandEntry } from './diagnostics.js';
+import { reportFrameLoopError } from './logger.js';
 // How far the glass extends past the window on each side. It is both the
 // sampling headroom for refraction and blur and the only room the drop shadow
 // has to render into, so it grows with the shadow settings instead of

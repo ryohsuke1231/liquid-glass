@@ -4,7 +4,7 @@ const path = require('node:path');
 const { loadModule } = require('./helpers/load-module.cjs');
 const { dist } = require('./helpers/gpu.cjs');
 
-const { snapMove } = loadModule(path.join(dist, 'desktop/guides.js'), {});
+const { snapMove } = loadModule(path.join(dist, 'desktop/placement.js'), {});
 const rect = (x, y, width, height) => ({ x, y, width, height });
 const AREA = rect(0, 32, 1920, 1048);
 

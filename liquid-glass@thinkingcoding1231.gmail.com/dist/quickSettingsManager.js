@@ -1,26 +1,14 @@
-import { ToggleStyles } from './quickSettings/toggleStyles.js';
-import { stepMenuSpring, applyMenuFrame, showMenuAtRest } from './animation/menuSpring.js';
-import { addFrameTicker, removeFrameTicker, normalizeAnimationIntervalMs } from './animation/frameTicker.js';
-import { Spring } from './animation/spring.js';
-import { MenuMorphMotion } from './animation/menuMorph.js';
-import { ToggleIntro } from './animation/toggleIntro.js';
+import { ToggleStyles, ToggleBackdropGlass } from './quickSettingsToggles.js';
+import { stepMenuSpring, applyMenuFrame, showMenuAtRest, Spring, addFrameTicker, removeFrameTicker, normalizeAnimationIntervalMs, startSyncLoop, stopStageLoop, MenuMorphMotion, ToggleIntro, resolveCrossFade, adaptiveColorTweener, hexToColorArray, hexToRgb } from './animation.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import Clutter from 'gi://Clutter';
 import St from 'gi://St';
 import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import { BackdropGlass } from './rendering/backdropGlass.js';
-import { ContentLens } from './rendering/contentLens.js';
-import { ToggleBackdropGlass } from './rendering/toggleGlass.js';
+import { ContentLens } from './rendering/pipelines.js';
 import { StageContrastSampler, AdaptiveContrastConfig, sanitizeColorPreference } from './contrastSampler.js';
-import { LayoutOpaqueActor } from './actors/unpickable.js';
-import { ensureGlassAllocated } from './actors/allocation.js';
-import { isActorValid } from './actors/lifecycle.js';
-import { resolveMonitorGeometry, getAllocatedSize, getTransformedRect } from './actors/geometry.js';
-import { startSyncLoop, stopStageLoop } from './animation/frameLoops.js';
-import { placeScreenGlass, resolveGlassOrigin, applyGlassScale, GLASS_SHADOW_MAX_RADIUS } from './actors/glassBounds.js';
-import { setPositionIfChanged, setScaleIfChanged } from './actors/writes.js';
-import { resolveCrossFade, adaptiveColorTweener, hexToColorArray, hexToRgb } from './animation/colors.js';
+import { LayoutOpaqueActor, ensureGlassAllocated, isActorValid, resolveMonitorGeometry, getAllocatedSize, getTransformedRect, placeScreenGlass, resolveGlassOrigin, applyGlassScale, GLASS_SHADOW_MAX_RADIUS, setPositionIfChanged, setScaleIfChanged } from './actors.js';
 import { MENU_NO_ANIMATION } from './shellVersion.js';
 // Room around the glass rect for the shader's edge effects.
 const SHADER_PADDING = 20;
@@ -108,7 +96,7 @@ export class QuickSettingsManager {
     animActor;
     // Monitor-sized. In toggle mode it sits inside the menu, which is drawn
     // through an offscreen, and reads the stage through a reader outside the
-    // menu (see rendering/toggleGlass.ts).
+    // menu (see quickSettingsToggles.ts).
     glass;
     // Toggle mode. The menu's ancestor that is a direct child of uiGroup, and
     // the zero-size host that puts the glass inside the menu box (see
@@ -174,8 +162,6 @@ export class QuickSettingsManager {
     _adaptiveConfig;
     _stableBaseW;
     _stableBaseH;
-    _lastValidAnimAbsX;
-    _lastValidAnimAbsY;
     _lastBgW;
     _lastBoundsSpace;
     _lastHostX;
@@ -599,11 +585,11 @@ export class QuickSettingsManager {
             Main.layoutManager.uiGroup.insert_child_below(glass.reader, menuRoot);
         else
             Main.layoutManager.uiGroup.add_child(glass.reader);
-        let blurRadius = this._settings.get_int('quick-settings-blur-radius');
-        let tintStrength = this._settings.get_double('quick-settings-tint-strength');
-        let brightness = this._settings.get_double('quick-settings-brightness');
-        let saturation = this._settings.get_double('quick-settings-saturation');
-        let contrast = this._settings.get_double('quick-settings-contrast');
+        const blurRadius = this._settings.get_int('quick-settings-blur-radius');
+        const tintStrength = this._settings.get_double('quick-settings-tint-strength');
+        const brightness = this._settings.get_double('quick-settings-brightness');
+        const saturation = this._settings.get_double('quick-settings-saturation');
+        const contrast = this._settings.get_double('quick-settings-contrast');
         glass.setPadding(SHADER_PADDING);
         this._tintColorArray = hexToColorArray(this._settings.get_string('quick-settings-tint-color'));
         glass.setTintColor(...this._tintColorArray);
@@ -1896,6 +1882,7 @@ export class QuickSettingsManager {
             this.menu.disconnect(this._animSignalId);
             this._animSignalId = 0;
         }
+        this._openedFrom = null;
         if (this._tickId !== 0) {
             removeFrameTicker(this._tickId);
             this._tickId = 0;

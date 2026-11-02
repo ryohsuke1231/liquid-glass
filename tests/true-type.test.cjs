@@ -5,7 +5,7 @@ const path = require('node:path');
 const { loadModule } = require('./helpers/load-module.cjs');
 const { dist } = require('./helpers/gpu.cjs');
 
-const { TrueTypeFont, traceGlyph } = loadModule(path.join(dist, 'desktop/trueType.js'), {});
+const { TrueTypeFont, traceGlyph } = loadModule(path.join(dist, 'desktop/fonts.js'), {});
 const fonts = path.join(__dirname, '../liquid-glass@thinkingcoding1231.gmail.com/fonts');
 const load = name => new TrueTypeFont(new Uint8Array(fs.readFileSync(path.join(fonts, name))));
 

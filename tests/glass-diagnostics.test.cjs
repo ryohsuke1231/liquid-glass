@@ -9,7 +9,7 @@ test('helper actors use the native hidden-from-pick flag used by GNOME drag and 
     constructor(params = {}) { this._init(params); }
     _init(params = {}) { Object.assign(this, params); }
   }
-  const unpickable = loadModule(path.join(dist, 'actors/unpickable.js'), {
+  const unpickable = loadModule(path.join(dist, 'actors.js'), {
     GObject: { registerClass: (...args) => args.at(-1) },
     Clutter: { Actor }, St: { Widget: Actor },
     Shell: { util_set_hidden_from_pick(actor, hidden) { actor.hiddenFromPick = hidden; } },
@@ -23,7 +23,7 @@ test('disabled diagnostic recorder has no timer and re-arming cannot multiply ti
   const GLib = { PRIORITY_DEFAULT_IDLE: 0, SOURCE_CONTINUE: true,
     timeout_add(_, __, fn) { const id = next++; pending.set(id, fn); return id; },
     Source: { remove(id) { assert.ok(pending.delete(id)); } } };
-  const ring = loadModule(path.join(dist, 'diagnostics/glass.js'), { GLib });
+  const ring = loadModule(path.join(dist, 'diagnostics.js'), { GLib });
   ring.startGlassRingSampler();
   assert.equal(pending.size, 0);
   ring.setGlassRingArmed(true);

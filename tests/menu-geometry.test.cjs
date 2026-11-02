@@ -5,7 +5,6 @@ const path = require('node:path');
 const dist = path.join(__dirname, '../liquid-glass@thinkingcoding1231.gmail.com/dist');
 
 const { loadModule } = require('./helpers/load-module.cjs');
-const { getAllocatedSize } = loadModule(path.join(dist, 'actors/geometry.js'));
 
 function fixture() {
   const monitor = { x: 1920, y: 0, width: 1920, height: 1200 };
@@ -13,8 +12,7 @@ function fixture() {
   const bindings = {
     St: { Side: { LEFT: 0, RIGHT: 1, TOP: 2, BOTTOM: 3 } },
     Main: { layoutManager: { primaryMonitor: monitor }, panel: { height: 28 } },
-    getAllocatedSize, setClipIfChanged() {},
-    ...loadModule(path.join(dist, 'actors/glassBounds.js'), { setClipIfChanged() {} }),
+    ...loadModule(path.join(dist, 'actors.js')),
   };
   const code = fs.readFileSync(path.join(dist, 'uiManager.js'), 'utf8')
     .replace(/^import[\s\S]*?;\n/gm, '').replace(/^export /gm, '');
@@ -37,7 +35,7 @@ function fixture() {
   };
   const glass = {
     visible: true, show() { this.visible = true; }, hide() { this.visible = false; },
-    remove_transition() {}, set_position() {}, set_size() {},
+    remove_transition() {}, set_position() {}, set_size() {}, set_clip() {},
     setShadowMaxRadius() {}, setResolution() {}, setCornerRadius() {},
     setAnimationScale() {}, setGlassGeometry(...rect) { geometry.push(rect); }, syncSources() {},
   };

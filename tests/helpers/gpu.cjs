@@ -70,7 +70,7 @@ function gpuFixture() {
   const load = createModuleLoader(bindings);
   const logger = { log() {}, warn() {}, error: message => errors.push(message) };
   const { ShaderPipelines } = load(path.join(dist, 'rendering/pipelines.js'));
-  const { RenderPasses } = load(path.join(dist, 'rendering/passes.js'));
+  const { RenderPasses } = load(path.join(dist, 'rendering/pipelines.js'));
   const bases = new ShaderPipelines(logger), passes = new RenderPasses(logger);
   const root = () => ({ children: [], add_child(child) { this.children.push(child); } });
   return { bindings, load, logger, context, bases, passes, root, texture, textures, pipelines, layers, errors, stageHandlers };

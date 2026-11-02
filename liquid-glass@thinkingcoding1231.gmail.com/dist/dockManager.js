@@ -1,14 +1,10 @@
-import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import St from 'gi://St';
 import GLib from 'gi://GLib';
+import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { BackdropGlass } from './rendering/backdropGlass.js';
-import { reportFrameLoopError } from './diagnostics/logging.js';
-import { ensureGlassAllocated } from './actors/allocation.js';
-import { isFrameSyncFrozen, SAME_FRAME_WINDOW_US } from './animation/frameSync.js';
-import { startStageLoop, stopStageLoop } from './animation/frameLoops.js';
-import { setClipIfChanged } from './actors/writes.js';
-import { isActorValid } from './actors/lifecycle.js';
-import { hexToColorArray } from './animation/colors.js';
-import { clipDockBounds, dockEdges, dockSide, balanceDockBounds, insetDockBounds, visibleDockSize, attachRectToEdge } from './actors/dockGeometry.js';
+import { reportFrameLoopError } from './logger.js';
+import { ensureGlassAllocated, setClipIfChanged, isActorValid, placeScreenGlass, GLASS_SHADOW_MAX_RADIUS } from './actors.js';
+import { isFrameSyncFrozen, SAME_FRAME_WINDOW_US, startStageLoop, stopStageLoop, hexToColorArray } from './animation.js';
 // Room around the glass rect for the shader's edge effects.
 export const SHADER_PADDING = 20;
 // The dock glass's look, from the dock-* settings, for every kind of dock.
@@ -551,5 +547,450 @@ export class DashManager {
                 return found;
         }
         return null;
+    }
+}
+
+export function clipDockBounds(bounds, target) {
+    let { absX, absY, baseW, baseH } = bounds;
+    const { absX: tX, absY: tY, baseW: tW, baseH: tH } = target;
+    // Cut off whatever sticks out of the target.
+    if (absX < tX) {
+        baseW -= (tX - absX);
+        absX = tX;
+    }
+    if (absY < tY) {
+        baseH -= (tY - absY);
+        absY = tY;
+    }
+    if (absX + baseW > tX + tW)
+        baseW = (tX + tW) - absX;
+    if (absY + baseH > tY + tH)
+        baseH = (tY + tH) - absY;
+    return { absX, absY, baseW, baseH };
+}
+
+export function dockEdges(bounds, monitor) {
+    let minCenterDist = -1;
+    let distLeftCenter = 0, distRightCenter = 0, distTopCenter = 0, distBottomCenter = 0;
+    if (monitor) {
+        const dockCenterX = bounds.absX + bounds.baseW / 2;
+        const dockCenterY = bounds.absY + bounds.baseH / 2;
+        distLeftCenter = dockCenterX - monitor.x;
+        distRightCenter = monitor.x + monitor.width - dockCenterX;
+        distTopCenter = dockCenterY - monitor.y;
+        distBottomCenter = monitor.y + monitor.height - dockCenterY;
+        minCenterDist = Math.min(distLeftCenter, distRightCenter, distTopCenter, distBottomCenter);
+    }
+    return { minCenterDist, distLeftCenter, distRightCenter, distTopCenter, distBottomCenter };
+}
+
+// The gaps before and after the reference rect. On a flipped axis (a dock
+// placed at the top, or a mirrored left/right dock) the reference's origin is
+// at its far edge, so its real start is refStart - refSize.
+function referenceGaps(start, size, refStart, refSize) {
+    let before = refStart - start;
+    let after = start + size - (refStart + refSize);
+    if (before < 0 || after < 0) {
+        const trueStart = refStart - refSize;
+        before = trueStart - start;
+        after = start + size - (trueStart + refSize);
+    }
+    return [before, after];
+}
+
+export function balanceDockBounds(bounds, reference, edges) {
+    let { absX, absY, baseW, baseH } = bounds;
+    const { absX: refX, absY: refY, baseW: refW, baseH: refH } = reference;
+    if (Number.isNaN(refX) || Number.isNaN(refY) || !(refW > 0) || !(refH > 0))
+        return bounds;
+    const [topGap, bottomGap] = referenceGaps(absY, baseH, refY, refH);
+    const [leftGap, rightGap] = referenceGaps(absX, baseW, refX, refW);
+    if (baseW >= baseH) {
+        // Horizontal dock (top or bottom). A difference larger than half the
+        // height is bogus and ignored. Trim the larger gap: the bottom by
+        // shrinking, the top by also moving the start down.
+        const diff = Math.abs(bottomGap - topGap);
+        if (diff > 0 && diff < baseH / 2) {
+            if (!(bottomGap > topGap))
+                absY += diff;
+            baseH -= diff;
+        }
+    }
+    else {
+        // Vertical dock. Only the gap facing the screen center is trimmed: for a
+        // left dock that is the right gap, and the start is never moved right.
+        const diff = Math.abs(rightGap - leftGap);
+        if (diff > 0 && diff < baseW / 2 &&
+            (edges.minCenterDist !== edges.distLeftCenter || rightGap > leftGap)) {
+            if (!(rightGap > leftGap))
+                absX += diff;
+            baseW -= diff;
+        }
+    }
+    return { absX, absY, baseW, baseH };
+}
+
+// The screen edge the dock is closest to.
+export function dockSide(edges) {
+    const { minCenterDist, distBottomCenter, distTopCenter, distRightCenter } = edges;
+    if (minCenterDist === distBottomCenter)
+        return 'bottom';
+    if (minCenterDist === distTopCenter)
+        return 'top';
+    if (minCenterDist === distRightCenter)
+        return 'right';
+    return 'left';
+}
+
+// Trims the dock to `margin` from the screen edge it is closest to.
+export function insetDockBounds(bounds, monitor, edges, margin, stableBaseW, stableBaseH) {
+    let { absX, absY, baseW, baseH } = bounds;
+    switch (dockSide(edges)) {
+        case 'bottom':
+            [absY, baseH] = insetSpan(absY, baseH, monitor.y + monitor.height - margin, stableBaseH, false);
+            break;
+        case 'top':
+            [absY, baseH] = insetSpan(absY, baseH, monitor.y + margin, stableBaseH, true);
+            break;
+        case 'right':
+            [absX, baseW] = insetSpan(absX, baseW, monitor.x + monitor.width - margin, stableBaseW, false);
+            break;
+        case 'left':
+            [absX, baseW] = insetSpan(absX, baseW, monitor.x + margin, stableBaseW, true);
+            break;
+    }
+    return { absX, absY, baseW, baseH };
+}
+
+/**
+ * The monitor-local glass rect [x, y, w, h], padded by `pad` on every side, with its side on `side` moved onto the
+ * monitor's edge so the glass grows out of it. The opposite side stays where it is, so a dock sliding out of the
+ * screen draws its glass back into the edge.
+ */
+export function attachRectToEdge(rect, side, monitorW, monitorH, pad) {
+    const [x, y, w, h] = rect;
+    switch (side) {
+        case 'top': return [x, -pad, w, y + h + pad];
+        case 'bottom': return [x, y, w, monitorH + pad - y];
+        case 'left': return [-pad, y, x + w + pad, h];
+        case 'right': return [x, y, monitorW + pad - x, h];
+    }
+}
+
+function insetSpan(start, size, edge, stableSize, leading) {
+    if (leading) {
+        if (start < edge) {
+            size -= edge - start;
+            start = edge;
+        }
+    }
+    else if (start + size > edge) {
+        size -= (start + size) - edge;
+    }
+    // Never grow past the last stable size.
+    if (size > stableSize)
+        size = stableSize;
+    return [start, size];
+}
+
+export function visibleDockSize(bounds, monitor) {
+    const { absX, absY, baseW, baseH } = bounds;
+    let visibleW = baseW, visibleH = baseH;
+    if (monitor) {
+        if (absX < monitor.x)
+            visibleW -= monitor.x - absX;
+        if (absY < monitor.y)
+            visibleH -= monitor.y - absY;
+        if (absX + baseW > monitor.x + monitor.width)
+            visibleW -= (absX + baseW) - (monitor.x + monitor.width);
+        if (absY + baseH > monitor.y + monitor.height)
+            visibleH -= (absY + baseH) - (monitor.y + monitor.height);
+    }
+    return [visibleW, visibleH];
+}
+
+/**
+ * The glass of a Dhruva dock (dhruva@narkagni). Dhruva draws the dock's
+ * background as one widget, DhruvaBackground, and while the pointer magnifies
+ * the icons it widens that widget with a scale and a translation rather than
+ * a new size. The glass takes the widget's rect on screen every frame, and
+ * the widget is left in place, transparent, as Dhruva's drop target.
+ */
+export class DhruvaDock {
+    _path;
+    _container;
+    _settings;
+    _logger;
+    _glass = null;
+    _background = null;
+    _settingsIds = [];
+    _mapId = 0;
+    _frameSyncId = 0;
+    _frameSignalId = 0;
+    _lastTickUs = 0;
+
+    constructor(_path, _container, _settings, _logger) {
+        this._path = _path;
+        this._container = _container;
+        this._settings = _settings;
+        this._logger = _logger;
+    }
+
+    setup() {
+        this._settingsIds.push(this._settings.connect('changed::enable-dock-glass', () => {
+            if (this._settings.get_boolean('enable-dock-glass'))
+                this._apply();
+            else
+                this._remove();
+        }));
+        this._settingsIds.push(this._settings.connect('changed::dock-glass-expand', () => this._glass?.queue_redraw()));
+        this._settingsIds.push(...followDockMaterial(this._settings, () => this._glass));
+        if (this._settings.get_boolean('enable-dock-glass'))
+            this._apply();
+    }
+
+    _apply() {
+        if (this._glass)
+            return;
+        this._background = this._container.get_children().find(child => child.get_name() === 'DhruvaBackground') ?? null;
+        if (this._background)
+            this._background.opacity = 0;
+        const glass = createDockGlass(this._path, this._settings, this._logger, 'dock:dhruva');
+        this._glass = glass;
+        // Below the dock, so the glass reads the stage before the dock is drawn.
+        const uiGroup = Main.layoutManager.uiGroup;
+        if (this._container.get_parent() === uiGroup)
+            uiGroup.insert_child_below(glass, this._container);
+        else
+            uiGroup.add_child(glass);
+        glass.setShadowMaxRadius(GLASS_SHADOW_MAX_RADIUS);
+        // Dhruva's animations move the background between the frame tick and the paint.
+        glass.setLiveGeometryHook(() => this._place(false));
+        this._mapId = this._container.connect('notify::mapped', () => {
+            if (this._container.mapped) {
+                this._startFrameSync();
+            }
+            else {
+                stopStageLoop(this._frameSignalSlot, this._frameSlot);
+                this._glass?.hide();
+            }
+        });
+        if (this._container.mapped)
+            this._startFrameSync();
+        else
+            glass.hide();
+    }
+
+    _startFrameSync() {
+        startStageLoop(this._frameSignalSlot, this._frameSlot, () => {
+            const glass = this._glass;
+            if (!glass || !this._container.mapped || isFrameSyncFrozen())
+                return;
+            // Two stage views would step it twice in one frame.
+            const nowUs = GLib.get_monotonic_time();
+            if (nowUs - this._lastTickUs < SAME_FRAME_WINDOW_US)
+                return;
+            this._lastTickUs = nowUs;
+            try {
+                ensureGlassAllocated(glass);
+                this._place(true);
+            }
+            catch (e) {
+                reportFrameLoopError('DhruvaDock', e);
+            }
+        });
+    }
+
+    // Puts the glass where the background is on screen. With `sync`, also
+    // places the glass on its monitor and its sample area, which must happen
+    // in the frame tick; the paint-time call only moves the glass rect.
+    _place(sync) {
+        const glass = this._glass;
+        if (!glass)
+            return;
+        const box = (this._background ?? this._container).get_transformed_extents();
+        const [x, y, w, h] = [box.get_x(), box.get_y(), box.get_width(), box.get_height()];
+        if (![x, y].every(Number.isFinite) || !(w > 1) || !(h > 1)) {
+            if (sync)
+                glass.hide();
+            return;
+        }
+        const monitor = Main.layoutManager.monitors[Main.layoutManager.findIndexForActor(this._container)]
+            ?? Main.layoutManager.primaryMonitor;
+        if (!monitor)
+            return;
+        const pad = SHADER_PADDING + this._settings.get_int('dock-glass-expand');
+        const side = dockSide(dockEdges({ absX: x, absY: y, baseW: w, baseH: h }, monitor));
+        const [rx, ry, rw, rh] = attachDockGlass(glass, this._settings, [x - pad - monitor.x, y - pad - monitor.y, w + pad * 2, h + pad * 2], side, monitor.width, monitor.height).rect;
+        const rect = { x: rx, y: ry, w: rw, h: rh };
+        if (sync) {
+            glass.show();
+            // Dhruva fades the whole dock in and out as it hides.
+            glass.opacity = this._container.get_paint_opacity();
+            placeScreenGlass(glass, monitor.x, monitor.y, monitor.width, monitor.height, rect);
+            glass.setResolution(monitor.width, monitor.height);
+        }
+        glass.setGlassGeometry(rect.x, rect.y, rect.w, rect.h);
+        // After the geometry setters, so the relays cover this frame's rect.
+        if (sync)
+            glass.syncSources();
+    }
+
+    _remove() {
+        stopStageLoop(this._frameSignalSlot, this._frameSlot);
+        // Dhruva may have destroyed its dock already.
+        if (this._mapId && isActorValid(this._container))
+            this._container.disconnect(this._mapId);
+        this._mapId = 0;
+        if (this._background && isActorValid(this._background))
+            this._background.opacity = 255;
+        this._background = null;
+        const glass = this._glass;
+        this._glass = null;
+        if (glass) {
+            glass.cleanup();
+            if (isActorValid(glass))
+                glass.destroy();
+        }
+    }
+
+    cleanup() {
+        this._remove();
+        for (const id of this._settingsIds)
+            this._settings.disconnect(id);
+        this._settingsIds = [];
+    }
+
+    get _frameSlot() {
+        return { get: () => this._frameSyncId, set: (id) => { this._frameSyncId = id; } };
+    }
+
+    get _frameSignalSlot() {
+        return { get: () => this._frameSignalId, set: (id) => { this._frameSignalId = id; } };
+    }
+}
+
+const SEARCH_DELAY_MS = 2000;
+const RESCAN_IDLE_TICKS = 2;
+const RESCAN_INTERVAL_MS = 2000;
+// The actors Dash to Dock and Dhruva add to the UI group for each dock.
+const DOCK_ROOTS = ['dashtodockContainer', 'DhruvaContainer'];
+
+/**
+ * Finds Dash to Dock's and Dhruva's docks and gives each its glass. Either may create its dock after we are enabled,
+ * and recreates it when monitors change, when it is enabled again and for some of its settings, so it is looked for
+ * after a delay and again whenever one may have appeared.
+ */
+export class DockWatcher {
+    _path;
+    _settings;
+    _logger;
+    _icons;
+    _docks = [];
+    _searchId = 0;
+    _rescanId = 0;
+    _monitorsChangedId = 0;
+    _childAddedId = 0;
+
+    constructor(_path, _settings, _logger, _icons) {
+        this._path = _path;
+        this._settings = _settings;
+        this._logger = _logger;
+        this._icons = _icons;
+    }
+
+    setup() {
+        this._monitorsChangedId = Main.layoutManager.connect('monitors-changed', () => this._scheduleRescan());
+        this._childAddedId = Main.layoutManager.uiGroup.connect('child-added', (_group, child) => {
+            if (DOCK_ROOTS.includes(child.get_name() ?? ''))
+                this._scheduleRescan();
+        });
+        this._searchId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, SEARCH_DELAY_MS, () => {
+            this._searchId = 0;
+            this._find();
+            this._scheduleRescan();
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
+    cleanup() {
+        Main.layoutManager.disconnect(this._monitorsChangedId);
+        Main.layoutManager.uiGroup.disconnect(this._childAddedId);
+        if (this._searchId)
+            GLib.Source.remove(this._searchId);
+        this._searchId = 0;
+        if (this._rescanId)
+            GLib.Source.remove(this._rescanId);
+        this._rescanId = 0;
+        for (const entry of [...this._docks])
+            this._release(entry);
+    }
+
+    _containers() {
+        const found = [];
+        const walk = (actor) => {
+            if (actor === global.window_group)
+                return;
+            if (actor instanceof St.Widget && actor.get_name() === 'dashtodockDashContainer') {
+                found.push({ container: actor, dhruva: false });
+                return;
+            }
+            if (actor.get_name() === 'DhruvaContainer') {
+                found.push({ container: actor, dhruva: true });
+                return;
+            }
+            for (const child of actor.get_children())
+                walk(child);
+        };
+        walk(Main.layoutManager.uiGroup);
+        return found;
+    }
+
+    // True when a dock was found that had no glass yet.
+    _find() {
+        let added = 0;
+        for (const { container, dhruva } of this._containers()) {
+            if (this._docks.some(entry => entry.container === container))
+                continue;
+            const manager = dhruva
+                ? new DhruvaDock(this._path, container, this._settings, this._logger)
+                : new DashManager(this._path, container, this._settings, this._logger);
+            manager.setup();
+            this._icons.watchDock(container);
+            const entry = { container, manager, destroyId: 0 };
+            entry.destroyId = container.connect('destroy', () => {
+                entry.destroyId = 0;
+                this._release(entry);
+                this._scheduleRescan();
+            });
+            this._docks.push(entry);
+            added++;
+        }
+        if (added > 0)
+            this._logger.log(`[Liquid Glass] Docks with glass: ${this._docks.length}`);
+        return added > 0;
+    }
+
+    _release(entry) {
+        this._docks = this._docks.filter(e => e !== entry);
+        if (entry.destroyId)
+            entry.container.disconnect(entry.destroyId);
+        entry.destroyId = 0;
+        entry.manager.cleanup();
+        this._icons.unwatchDock(entry.container);
+    }
+
+    // Keeps looking until RESCAN_IDLE_TICKS scans in a row find nothing new.
+    _scheduleRescan() {
+        if (this._rescanId)
+            GLib.Source.remove(this._rescanId);
+        let idleTicks = 0;
+        this._rescanId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, RESCAN_INTERVAL_MS, () => {
+            idleTicks = this._find() ? 0 : idleTicks + 1;
+            if (idleTicks < RESCAN_IDLE_TICKS)
+                return GLib.SOURCE_CONTINUE;
+            this._rescanId = 0;
+            return GLib.SOURCE_REMOVE;
+        });
     }
 }

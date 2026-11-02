@@ -5,7 +5,7 @@ const { loadModule, createModuleLoader } = require('./helpers/load-module.cjs');
 const dist = path.join(__dirname, '../liquid-glass@thinkingcoding1231.gmail.com/dist');
 
 test('shader parsing preserves declarations and nested main blocks', () => {
-  const { splitShader } = loadModule(path.join(dist, 'rendering/shaderSource.js'));
+  const { splitShader } = loadModule(path.join(dist, 'rendering/pipelines.js'));
   const decl = 'uniform float radius;\n';
   const body = '\n if (radius > 0.) { gl_FragColor = vec4(1.); }\n';
   assert.deepEqual(splitShader(`${decl}void main() {${body}}`), { decl, body });
@@ -15,7 +15,7 @@ test('shader parsing preserves declarations and nested main blocks', () => {
 });
 
 test('Gaussian tap merging preserves normalization, offsets and shader direction', () => {
-  const { computeGaussianKernel, buildGaussianSnippet } = loadModule(path.join(dist, 'rendering/shaderSource.js'));
+  const { computeGaussianKernel, buildGaussianSnippet } = loadModule(path.join(dist, 'rendering/pipelines.js'));
   for (const sigma of [0.5, 1, 3, 12]) for (const pairs of [1, 2, 4, 8]) {
     const kernel = computeGaussianKernel(sigma, pairs);
     assert.equal(kernel.offsets.length, pairs + 1);
@@ -36,7 +36,7 @@ test('Gaussian tap merging preserves normalization, offsets and shader direction
 
 test('every registered glass is counted and the debug API goes with the last disable', () => {
   const globalThis = { global: {} };
-  const registry = createModuleLoader({ globalThis, global: globalThis.global })(path.join(dist, 'diagnostics/glass.js'));
+  const registry = createModuleLoader({ globalThis, global: globalThis.global })(path.join(dist, 'diagnostics.js'));
   registry.installGlassDiagnostics();
   const glasses = [{}, {}];
   glasses.forEach(glass => registry.registerGlass(glass));
@@ -60,7 +60,7 @@ function passesFixture() {
     } },
     PipelineNode: { new(pipeline) { return { pipeline, add_texture_rectangle(...rect) { this.rect = rect; } }; } },
   };
-  const module = loadModule(path.join(dist, 'rendering/passes.js'), { Clutter });
+  const module = loadModule(path.join(dist, 'rendering/pipelines.js'), { Clutter });
   const passes = new module.RenderPasses();
   return { ...module, passes, nodes };
 }

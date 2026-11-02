@@ -12,7 +12,7 @@ function fixture(layout, scale, fbSize) {
   class Rectangle { constructor(r) { Object.assign(this, r); } }
   const handlers = new Map();
   const stage = { connect: (name, handler) => { handlers.set(name, handler); return handlers.size; }, disconnect() {} };
-  const { StageCopier, trackViewPaints } = loadModule(path.join(dist, 'rendering/stageCopy.js'), {
+  const { StageCopier, trackViewPaints } = loadModule(path.join(dist, 'rendering/backdropGlass.js'), {
     global: { stage },
     Clutter: { BlitNode: { new: () => ({ add_blit_rectangle: (...r) => blits.push(r) }) } },
     Cogl: { Offscreen, Texture2D: { new_with_size: (_ctx, w, h) => ({ w, h }) } },

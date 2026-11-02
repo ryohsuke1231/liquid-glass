@@ -47,15 +47,6 @@ function fixture() {
     idle_add: (_, fn) => { pending.set(++timerId, fn); return timerId; },
     Source: { remove: id => pending.delete(id) }, SOURCE_REMOVE: false, PRIORITY_DEFAULT_IDLE: 0,
   };
-  const built = [];
-  class Manager {
-    constructor(_p, _s, _l, panel, panelBox, owner) {
-      Object.assign(this, { panel, panelBox, owner, cleaned: 0 });
-      built.push(this);
-    }
-    setup() { }
-    cleanup() { this.cleaned++; }
-  }
   const uiGroup = new Widget();
   const mainBox = new Widget();
   const mainPanel = bar();
@@ -66,8 +57,15 @@ function fixture() {
     layoutManager: Object.assign(new Signals(), { uiGroup, panelBox: mainBox }),
     extensionManager: new Signals(),
   };
-  const C = loadModule(path.join(dist, 'extraTopBarManager.js'), { Main, St, GLib, TopBarManager: Manager })
-    .ExtraTopBarManager;
+  const { TopBarManager, ExtraTopBarManager: C } = loadModule(path.join(dist, 'topBarManager.js'),
+    { Main, St, GLib, AdaptiveTextColor: class {} });
+  // Each bar's own glass is TopBarManager's to test; here it only records what it was given.
+  const built = [];
+  TopBarManager.prototype.setup = function () {
+    Object.assign(this, { panel: this._panel, panelBox: this._panelBox, owner: this._owner, cleaned: 0 });
+    built.push(this);
+  };
+  TopBarManager.prototype.cleanup = function () { this.cleaned++; };
   const manager = new C('', {}, { log() { } });
   return {
     manager, uiGroup, Main, built,

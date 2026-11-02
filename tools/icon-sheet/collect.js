@@ -9,9 +9,8 @@ import GLib from 'gi://GLib';
 import St from 'gi://St';
 
 import {analyzeIcon, oklabToSrgb, plateColor, shapeDistance} from '../../liquid-glass@thinkingcoding1231.gmail.com/dist/iconStyle/iconAnalysis.js';
-import {drawIcon} from '../../liquid-glass@thinkingcoding1231.gmail.com/dist/iconStyle/iconRaster.js';
+import {drawIcon, encodePngRgba} from '../../liquid-glass@thinkingcoding1231.gmail.com/dist/imaging.js';
 import {buildStyleMap} from '../../liquid-glass@thinkingcoding1231.gmail.com/dist/iconStyle/styleMap.js';
-import {encodePngRgba} from '../../liquid-glass@thinkingcoding1231.gmail.com/dist/imaging/png.js';
 
 const SIZE = 128;
 const [theme, outPath] = ARGV;

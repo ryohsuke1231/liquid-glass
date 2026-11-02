@@ -4,7 +4,7 @@ const path = require('node:path');
 const { loadModule } = require('./helpers/load-module.cjs');
 const { dist } = require('./helpers/gpu.cjs');
 
-const { RectTween } = loadModule(path.join(dist, 'animation/tween.js'), {});
+const { RectTween } = loadModule(path.join(dist, 'animation.js'), {});
 
 test('a tween reaches its target in its time and never passes it', () => {
   const tween = new RectTween(200);
@@ -41,7 +41,7 @@ test('a tween counts down to landing from its last restart', () => {
   assert.equal(tween.remaining(400000), 0);
 });
 
-const { RectSpring } = loadModule(path.join(dist, 'animation/spring.js'), {});
+const { RectSpring } = loadModule(path.join(dist, 'animation.js'), {});
 
 test('a rect spring swings a little past its target and settles on it', () => {
   const spring = new RectSpring([0, 0, 100, 100]);

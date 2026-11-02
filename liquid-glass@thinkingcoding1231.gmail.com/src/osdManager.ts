@@ -3,17 +3,15 @@ import Clutter from 'gi://Clutter';
 import St from 'gi://St';
 import GLib from 'gi://GLib';
 import { BackdropGlass } from './rendering/backdropGlass.js';
-import { isActorValid } from './actors/lifecycle.js';
+import { isActorValid, ensureGlassAllocated, setClipIfChanged } from './actors.js';
 import { StageContrastSampler, AdaptiveContrastConfig, sanitizeColorPreference } from './contrastSampler.js';
 import Gio from 'gi://Gio';
-import { reportFrameLoopError } from './diagnostics/logging.js';
-import { ensureGlassAllocated } from './actors/allocation.js';
-import { isFrameSyncFrozen, SAME_FRAME_WINDOW_US } from './animation/frameSync.js';
-import { startStageLoop, stopStageLoop } from './animation/frameLoops.js';
-import { setClipIfChanged } from './actors/writes.js';
-import { resolveCrossFade, adaptiveColorTweener, hexToColorArray, hexToRgb, rgbToHex } from './animation/colors.js';
+import { reportFrameLoopError, Logger } from './logger.js';
+import {
+  isFrameSyncFrozen, SAME_FRAME_WINDOW_US, startStageLoop, stopStageLoop, resolveCrossFade,
+  adaptiveColorTweener, hexToColorArray, hexToRgb, rgbToHex
+} from './animation.js';
 
-import { Logger } from './logger.js';
 
 interface CustomBannerActor extends St.Widget {
   _colorTweenId?: number;
