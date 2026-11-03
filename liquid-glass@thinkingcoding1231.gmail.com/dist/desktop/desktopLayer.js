@@ -214,14 +214,16 @@ export class DesktopLayer {
 
     // The topmost window of desktop icons (DING and the like): it covers the
     // whole desktop and would take every click meant for the items. DING hides
-    // its window from global.get_window_actors(), hence the window group.
+    // its window from global.get_window_actors(), hence the window group. DING
+    // marks every window of its own, its menus and dialogs too, so only the ones
+    // it keeps at the bottom count; the items would go above the windows otherwise.
     _desktopWindow() {
         let top = null;
         for (const actor of global.window_group.get_children()) {
             if (!(actor instanceof Meta.WindowActor))
                 continue;
             const window = actor.get_meta_window();
-            if (window && (window.customJS_ding || window.get_window_type() === Meta.WindowType.DESKTOP))
+            if (window && (window.customJS_ding?.keepAtBottom || window.get_window_type() === Meta.WindowType.DESKTOP))
                 top = actor;
         }
         return top;
