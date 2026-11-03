@@ -57,7 +57,6 @@ class ClockGlass {
     glass.setIsDock(false);
     glass.setShadowMaxRadius(GLASS_SHADOW_MAX_RADIUS);
     this.applyMaterial();
-    // Below the clock, so the glass reads the stage before the clock is drawn.
     Main.layoutManager.uiGroup.insert_child_below(glass, _clock);
 
     startSyncLoop(this._frameSignalSlot, this._frameSlot, {
@@ -79,6 +78,9 @@ class ClockGlass {
   private _sync(): void {
     const glass = this._glass;
     const clock = this._clock;
+    // Right below the clock, so the glass reads the stage before the clock is drawn. The clock restacks itself after
+    // it is added (below its panel), which would leave the glass on top of its text: follow it.
+    if (glass.get_next_sibling() !== clock) Main.layoutManager.uiGroup.set_child_below_sibling(glass, clock);
     const shown = clock.visible && clock.mapped && clock.opacity > 0 && this._body.mapped;
     const [x, y] = this._body.get_transformed_position();
     const [w, h] = this._body.get_transformed_size();
