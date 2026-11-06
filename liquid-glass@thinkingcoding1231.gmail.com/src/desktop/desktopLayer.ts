@@ -58,7 +58,7 @@ export class DesktopLayer {
   private _edit: EditFrame | null = null;
 
   constructor(private _path: string, private _settings: Gio.Settings, private _logger: Logger,
-              private _openPreferences: () => void) {
+    private _openPreferences: () => void) {
     this._env = {
       path: _path, settings: _settings, logger: _logger,
       menu: (item, x, y) => this._openMenu(item, x, y),
@@ -88,10 +88,10 @@ export class DesktopLayer {
 
   private _create(id: string): DesktopItem {
     switch (id) {
-    case 'clock': return new GlassClock(this._env);
-    case 'weather': return new WeatherWidget(this._env);
-    case 'events': return new EventsWidget(this._env);
-    default: return new MediaWidget(this._env);
+      case 'clock': return new GlassClock(this._env);
+      case 'weather': return new WeatherWidget(this._env);
+      case 'events': return new EventsWidget(this._env);
+      default: return new MediaWidget(this._env);
     }
   }
 
@@ -137,9 +137,9 @@ export class DesktopLayer {
       }),
     });
     // The workspace switch animation covers the desktop with pictures of the workspaces until it ends.
-    this._signals.push({ target: Main.uiGroup, id: Main.uiGroup.connect('child-added', (_group, actor) => this._addToSwitch(actor)) });
+    this._signals.push({ target: Main.layoutManager.uiGroup, id: Main.layoutManager.uiGroup.connect('child-added', (_group, actor) => this._addToSwitch(actor)) });
     this._signals.push({
-      target: Main.uiGroup, id: Main.uiGroup.connect('child-removed', (_group, actor) => {
+      target: Main.layoutManager.uiGroup, id: Main.layoutManager.uiGroup.connect('child-removed', (_group, actor) => {
         if (actor instanceof MonitorGroup) this._syncWorkspace();
       }),
     });
@@ -213,13 +213,15 @@ export class DesktopLayer {
 
   // The topmost window of desktop icons (DING and the like): it covers the
   // whole desktop and would take every click meant for the items. DING hides
-  // its window from global.get_window_actors(), hence the window group.
+  // its window from global.get_window_actors(), hence the window group. DING
+  // marks every window of its own, its menus and dialogs too, so only the ones
+  // it keeps at the bottom count; the items would go above the windows otherwise.
   private _desktopWindow(): Clutter.Actor | null {
     let top: Clutter.Actor | null = null;
     for (const actor of global.window_group.get_children()) {
       if (!(actor instanceof Meta.WindowActor)) continue;
       const window = actor.get_meta_window() as any;
-      if (window && (window.customJS_ding || window.get_window_type() === Meta.WindowType.DESKTOP)) top = actor;
+      if (window && (window.customJS_ding?.keepAtBottom || window.get_window_type() === Meta.WindowType.DESKTOP)) top = actor;
     }
     return top;
   }

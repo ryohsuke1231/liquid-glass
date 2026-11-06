@@ -639,7 +639,7 @@ export class WeatherWidget extends GlassCard {
         `?latitude=${place.lat}&longitude=${place.lon}&timezone=auto&forecast_days=2` +
         '&current=temperature_2m,weather_code,is_day&hourly=temperature_2m,weather_code,is_day' +
         `&daily=temperature_2m_max,temperature_2m_min${fahrenheit ? '&temperature_unit=fahrenheit' : ''}`,
-      cancellable);
+        cancellable);
       const current = json.current;
       const [summary, icon] = wmo(current.weather_code, current.is_day === 1);
       // The hourly times are local to the place, as is current.time.
@@ -647,8 +647,10 @@ export class WeatherWidget extends GlassCard {
       const hours: Hour[] = [];
       for (let i = Math.max(start, 0); i < json.hourly.time.length && hours.length < HOURS; i++) {
         const [, hourIcon] = wmo(json.hourly.weather_code[i], json.hourly.is_day[i] === 1);
-        hours.push({ label: (json.hourly.time[i] as string).slice(11, 16), icon: hourIcon,
-          temp: degrees(json.hourly.temperature_2m[i]) });
+        hours.push({
+          label: (json.hourly.time[i] as string).slice(11, 16), icon: hourIcon,
+          temp: degrees(json.hourly.temperature_2m[i])
+        });
       }
       this._show({
         place: place.name, temp: degrees(current.temperature_2m), summary, icon, hours,
@@ -731,8 +733,10 @@ export class MediaWidget extends GlassCard {
     for (const label of [this._title, this._artist]) label.clutter_text.ellipsize = Pango.EllipsizeMode.END;
     text.add_child(this._title);
     text.add_child(this._artist);
-    this._bars = new St.DrawingArea({ width: BAR_COUNT * BAR_WIDTH + (BAR_COUNT - 1) * BAR_GAP, height: BAR_MAX,
-      y_align: Clutter.ActorAlign.CENTER });
+    this._bars = new St.DrawingArea({
+      width: BAR_COUNT * BAR_WIDTH + (BAR_COUNT - 1) * BAR_GAP, height: BAR_MAX,
+      y_align: Clutter.ActorAlign.CENTER
+    });
     this._bars.connect('repaint', () => this._drawBars());
     // The bars are drawn in the title's color, which automatic contrast sets
     // on the labels only.
@@ -748,8 +752,10 @@ export class MediaWidget extends GlassCard {
 
     const controls = new St.BoxLayout({ style_class: 'lg-controls', x_align: Clutter.ActorAlign.CENTER });
     const button = (icon: string, method: string) => {
-      const b = new St.Button({ style_class: 'lg-control', can_focus: true,
-        child: new St.Icon({ icon_name: icon, icon_size: 20 }) });
+      const b = new St.Button({
+        style_class: 'lg-control', can_focus: true,
+        child: new St.Icon({ icon_name: icon, icon_size: 20 })
+      });
       b.connect('clicked', () => this._call(method));
       controls.add_child(b);
       return b;
