@@ -314,7 +314,7 @@ export class EventsWidget extends GlassCard {
 const HOURS = 5;
 // Open-Meteo is asked again after this long.
 const REFRESH_S = 30 * 60;
-const CONTACT = 'https://github.com/AlessandroTelesca/liquid-glass';
+const CONTACT = 'https://github.com/ryohsuke1231/liquid-glass';
 const USER_AGENT = `Liquid Glass GNOME Shell extension (${CONTACT})`;
 
 interface Hour { label: string; icon: string; temp: string; }
