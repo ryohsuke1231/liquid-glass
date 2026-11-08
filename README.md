@@ -149,6 +149,16 @@ Chosen with **Apply quick settings glass to** under **Effects → Show glass on*
 - **Whole menu** applies the glass as one continuous sheet behind the whole quick settings panel. Corner radius, X/Y offset and the spring animation apply to that sheet.
 - **Individual buttons** gives each toggle button its own glass shape, tracked individually. With **Animations** on (the switch the quick settings surface of the advanced **Appearance** page shows in this mode, also set by Behavior → Animations), the menu opens with every button's glass already there, gathered towards the middle of the menu and at 70% of its size; the buttons then all spring out to their places at once — those nearest the panel button fastest — swinging once a little past their size, and their labels and icons fade in as they go. The glass of two buttons is never let closer than 3 px (or than at rest). The menu closes with the shell's own fade. "Button corners" sets the roundness of each shape, and "Button base color" controls how much of the toggle's own original color (for example the blue of an active toggle) is kept, independently of the custom tint color. The menu keeps the theme's own background behind the buttons, so this mode is meant for themes whose quick settings menu is transparent, such as [MacTahoe](https://github.com/vinceliuice/MacTahoe-gtk-theme) (Dark). On a theme with an opaque menu (most light themes) the buttons have nothing to refract and look flat; use **Whole menu** there. The sliders and the header are not touched.
 
+### Growing Out of the Screen Edge and the Bar
+
+Each of these is off by default, and is set in the top bar or dock surface of the advanced **Appearance** page.
+
+- **Grow out of the screen edge** (top bar and dock) — the glass reaches the screen edge and curves outwards into it instead of floating, with the rim, bevel and shadow following the curve. **Edge flare radius** sets the size of that curve. The dock's glass draws back into the edge as the dock hides, and its icons sit closer to the edge. The top bar's top margin and the dock's bottom margin are not used while this is on.
+- **Menus grow out of the bar** — the bar's glass grows down into the calendar, Quick Settings (Whole menu) and the other top bar menus on springs, so bar and menu are one piece of glass. The bar widens for a menu wider than it. The menus then take the top bar's glass settings.
+- **Menus grow out of the dock** — the same for Dash to Dock's app menus and for top bar buttons placed in the dock, such as the tray icons of Dock Tray, on a dock at the top or bottom of the screen. Side docks keep floating menus.
+- **Notifications grow out of the bar** — banners grow out of the bar under the clock. While the bar is hidden (Hide Top Bar), their own glass grows out of the top of the screen.
+- **Volume and brightness popups grow out of the bar** — the popup moves under the system indicators and grows out of the bar. While the bar is hidden, it sits at the top of the screen and its glass grows out of the edge.
+- **Glass behind the hidden-panel clock** — with [Hide Top Bar: Multi Monitors](https://github.com/AlessandroTelesca/hidetopbar-multimonitor), the clock shown while a panel is hidden gets the top bar's glass, attached to the top of the screen, in place of its dark tab.
 
 ### Using it with Blur my Shell
 
@@ -322,6 +332,7 @@ A significant part of this codebase was written with the help of AI coding assis
 - [x] Add Dhruva dock support, an opening animation for Quick Settings' Individual buttons mode, and an override for Blur my Shell's blur where there is glass
 - [x] Centered top bar pill that shrinks the bar to its buttons
 - [x] The clock and the widgets slide with their workspace when switching, and can be kept to the first workspace
+- [x] Top bar and dock that grow out of the screen edge, and menus, notifications and popups that grow out of them
 
 ### Next
 - [ ] Publish to extensions.gnome.org

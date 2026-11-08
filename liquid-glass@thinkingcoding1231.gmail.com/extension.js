@@ -3,7 +3,7 @@ import GLib from 'gi://GLib';
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 
 import {UIManager} from './dist/uiManager.js';
-import {PanelMenuManager, ExtraDateMenuManager} from './dist/panelMenuManager.js';
+import {PanelMenuManager, ExtraDateMenuManager, DockMenuManager} from './dist/panelMenuManager.js';
 import {BlurMyShellWatch} from './dist/blurMyShell.js';
 import {DockWatcher} from './dist/dockManager.js';
 import {NotificationManager} from './dist/notificationManager.js';
@@ -12,6 +12,7 @@ import {OsdManager} from './dist/osdManager.js';
 import {ApplicationManager} from './dist/applicationManager.js';
 import {WindowListService} from './dist/windowListService.js';
 import {TopBarManager, ExtraTopBarManager} from './dist/topBarManager.js';
+import {HiddenClockGlass} from './dist/hiddenClockGlass.js';
 import {DesktopLayer} from './dist/desktop/desktopLayer.js';
 import {Launcher} from './dist/launcherManager.js';
 import {IconStyler} from './dist/iconStyle/iconStyler.js';
@@ -44,11 +45,17 @@ export default class LiquidGlassExtension extends Extension {
     this._panelMenuManager = new PanelMenuManager(path, this._settings, this._logger);
     this._panelMenuManager.setup();
 
+    this._dockMenuManager = new DockMenuManager(path, this._settings, this._logger);
+    this._dockMenuManager.setup();
+
     this._topBarManager = new TopBarManager(path, this._settings, this._logger);
     this._topBarManager.setup();
 
     this._extraTopBarManager = new ExtraTopBarManager(path, this._settings, this._logger);
     this._extraTopBarManager.setup();
+
+    this._hiddenClockGlass = new HiddenClockGlass(path, this._settings, this._logger);
+    this._hiddenClockGlass.setup();
 
     this._desktopLayer = new DesktopLayer(path, this._settings, this._logger, () => this.openPreferences());
     this._desktopLayer.setup();
@@ -106,12 +113,17 @@ export default class LiquidGlassExtension extends Extension {
 
     this._panelMenuManager.cleanup();
     this._panelMenuManager = null;
+    this._dockMenuManager.cleanup();
+    this._dockMenuManager = null;
 
     this._topBarManager.cleanup();
     this._topBarManager = null;
 
     this._extraTopBarManager.cleanup();
     this._extraTopBarManager = null;
+
+    this._hiddenClockGlass.cleanup();
+    this._hiddenClockGlass = null;
 
     this._desktopLayer.cleanup();
     this._desktopLayer = null;

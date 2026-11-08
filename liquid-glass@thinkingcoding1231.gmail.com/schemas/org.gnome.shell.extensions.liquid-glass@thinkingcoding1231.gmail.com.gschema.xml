@@ -21,6 +21,22 @@
       <default>8</default>
       <summary>Bottom margin</summary>
     </key>
+    <key name="dock-attach-to-edge" type="b">
+      <default>false</default>
+      <summary>Grow out of the screen edge</summary>
+      <description>The glass reaches the screen edge the dock sits on and flares into it, instead of floating above it. The bottom margin is not used while this is on.</description>
+    </key>
+    <key name="dock-edge-radius" type="d">
+      <range min="0.0" max="64.0"/>
+      <default>16.0</default>
+      <summary>Edge flare radius (px)</summary>
+      <description>Radius of the outward-curved corners where the glass meets the screen edge.</description>
+    </key>
+    <key name="dock-menus-grow" type="b">
+      <default>false</default>
+      <summary>Menus grow out of the dock</summary>
+      <description>The dock's glass grows into the menus of top bar buttons placed in the dock (such as the tray icons Dock Tray moves there) instead of the menus floating with glass of their own: up out of a dock at the bottom of the screen, down out of one at the top. The menus then take the dock's glass settings, and the edge flare radius rounds the join.</description>
+    </key>
     <key name="dock-tint-color" type="s">
       <default>"#ffffff"</default>
       <summary>Tint color (Hex)</summary>
@@ -898,6 +914,37 @@
       <default>6</default>
       <summary>Margin right (px)</summary>
       <description>Space between the pills and the screen's edge; the bar grows to make room for it.</description>
+    </key>
+    <key name="top-bar-attach-to-edge" type="b">
+      <default>false</default>
+      <summary>Grow out of the screen edge</summary>
+      <description>The glass reaches the top of the screen and flares into it, instead of floating below it. The top margin is not used while this is on.</description>
+    </key>
+    <key name="top-bar-edge-radius" type="d">
+      <range min="0.0" max="64.0"/>
+      <default>12.0</default>
+      <summary>Edge flare radius (px)</summary>
+      <description>Radius of the outward-curved corners where the glass meets the top of the screen.</description>
+    </key>
+    <key name="top-bar-notifications-grow" type="b">
+      <default>false</default>
+      <summary>Notifications grow out of the bar</summary>
+      <description>Notification banners grow out of the top bar's glass under the clock, as the menus do with top-bar-menus-grow, while the bar is shown; while it is hidden (Hide Top Bar), their own glass grows out of the screen's top edge with the edge flare radius.</description>
+    </key>
+    <key name="top-bar-osd-grow" type="b">
+      <default>false</default>
+      <summary>Volume and brightness popups grow out of the bar</summary>
+      <description>The volume and brightness popup moves from the bottom of the screen to under the top bar's system indicators, on each monitor whose top bar has glass, and grows out of the bar's glass with the menus' springs; while the bar is hidden (Hide Top Bar), it sits at the top of the screen and its own glass grows out of the top edge.</description>
+    </key>
+    <key name="enable-hidden-clock-glass" type="b">
+      <default>false</default>
+      <summary>Glass behind Hide Top Bar: Multi Monitors' clock</summary>
+      <description>Draws glass, with the top bar's look, behind the clock Hide Top Bar: Multi Monitors shows on a monitor while that monitor's panel is hidden, in place of its own dark tab. The glass grows out of the screen edge like an attached top bar, with the edge flare radius.</description>
+    </key>
+    <key name="top-bar-menus-grow" type="b">
+      <default>false</default>
+      <summary>Menus grow out of the bar</summary>
+      <description>The top bar's glass grows down into the menus opened from it (the calendar, Quick Settings in whole-menu mode and the other top bar menus) instead of the menus floating below it with glass of their own. The menus then take the top bar's glass settings, and the edge flare radius rounds the join.</description>
     </key>
     <key name="top-bar-padding-top" type="i">
       <range min="0" max="100"/>

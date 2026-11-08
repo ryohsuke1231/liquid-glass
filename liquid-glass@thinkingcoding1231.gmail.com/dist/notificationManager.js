@@ -1,4 +1,5 @@
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import * as MessageTray from 'resource:///org/gnome/shell/ui/messageTray.js';
 import Clutter from 'gi://Clutter';
 import St from 'gi://St';
 import GLib from 'gi://GLib';
@@ -7,6 +8,10 @@ import { isActorValid, ensureGlassAllocated, getTransformedRect, resolveMonitorG
 import { addFrameTicker, removeFrameTicker, addBeforeRedraw, removeBeforeRedraw, startSyncLoop, stopStageLoop, resolveCrossFade, adaptiveColorTweener, hexToColorArray, hexToRgb } from './animation.js';
 import { StageContrastSampler, AdaptiveContrastConfig, sanitizeColorPreference } from './contrastSampler.js';
 import { BANNER_TRANSPARENT_CLASS } from './shellVersion.js';
+import { BarGrowth } from './barGrowth.js';
+import { attachRectToEdge } from './dockManager.js';
+// GNOME's own slide-in of a banner, which is held while it grows out of the bar instead.
+const BANNER_EASED = ['y', 'opacity', 'scale-x', 'scale-y'];
 // Room around the glass rect for the shader's edge effects.
 const SHADER_PADDING = 20;
 
@@ -46,6 +51,12 @@ export class NotificationManager {
     _lastScreenH;
     // The monitor origin from the last _syncGeometry(), for _syncGlassGeometryLive().
     _liveMonitorOrigin = null;
+    // With top-bar-notifications-grow: the banner grows out of the shown top bar, under the clock, or while the bar
+    // is hidden, its own glass grows out of the screen's top edge (`_edgeAttached`). `_grew` notes that this banner
+    // was the bar's, so its own glass does not flash up as it slides away.
+    _growth;
+    _edgeAttached = false;
+    _grew = false;
     _contrastSampler;
     _adaptiveConfig;
     _adaptiveTimerId;
@@ -80,6 +91,39 @@ export class NotificationManager {
         this._baseTint = 0.08;
         this._currentTint = 0.08;
         this._notificationYOffset = 10;
+        this._growth = new BarGrowth({
+            key: 'top-bar-notifications-grow',
+            content: () => this.currentBanner,
+            shown: () => !!this.currentBanner?.mapped && this.tray.visible,
+            // @ts-expect-error: shell-owned container
+            scale: () => this.tray._bannerBin?.scale_y || 1,
+            // Banners belong to the clock, and grow out of the bar under it.
+            source: () => Main.panel.statusArea.dateMenu ?? null,
+            button: () => {
+                const clock = Main.panel.statusArea.dateMenu?._clockDisplay;
+                if (!clock?.mapped)
+                    return null;
+                const rect = getTransformedRect(clock);
+                return rect.every(Number.isFinite) && rect[2] > 0 ? rect : null;
+            },
+            expand: () => this._glassExpand,
+            radius: () => this._settings.get_double('notification-corner-radius'),
+            intervalMs: () => 16,
+            speed: () => 1,
+            // GNOME slides a banner in from above; the growth brings it instead. Its slide out is left as it is.
+            hold: opening => {
+                // @ts-expect-error: shell-owned container
+                const bin = this.tray._bannerBin;
+                if (!opening || !bin)
+                    return;
+                for (const name of BANNER_EASED) {
+                    const ease = bin.get_transition(name);
+                    if (ease)
+                        ease.set_from(ease.get_interval().peek_final_value());
+                }
+            },
+            closed: () => { },
+        });
     }
 
     setup() {
@@ -278,6 +322,7 @@ export class NotificationManager {
         // The banner slides in by relayout, so the frame tick sees last frame's
         // position; the paint-time hook corrects it.
         glass.setLiveGeometryHook(() => this._syncGlassGeometryLive());
+        this._grew = this._growth.start(true);
         // The first geometry sync shows the glass.
         stopStageLoop(this._frameSignalSlot, this._frameSlot);
         startSyncLoop(this._frameSignalSlot, this._frameSlot, {
@@ -346,6 +391,17 @@ export class NotificationManager {
         const offset = Math.fround(this._originalBannerOffset + this._notificationYOffset);
         if (bannerBin.translation_y !== offset)
             bannerBin.translation_y = offset;
+        // Grown out of the bar, the bar draws the glass; it runs back in as GNOME slides the banner away.
+        // @ts-expect-error: internal state
+        const hiding = this.tray._notificationState === MessageTray.State.HIDING;
+        if (hiding && this._growth.holding && this._growth.opening)
+            this._growth.start(false);
+        const barHolds = hiding ? this._growth.holding : this._growth.holdAtRest();
+        this._grew ||= barHolds;
+        if (barHolds || (hiding && this._grew)) {
+            this.glass.hide();
+            return;
+        }
         // GNOME animates opacity and scale on _bannerBin, not on the banner.
         // Both the origin and size must include that ancestor transform.
         const [absX, absY, w, h] = getTransformedRect(this.currentBanner);
@@ -374,6 +430,16 @@ export class NotificationManager {
         let localBgY = bgY_abs - monitorY;
         // The only part of the rect the paint-time hook cannot derive on its own.
         this._liveMonitorOrigin = [monitorX, monitorY];
+        // While the top bar is hidden, the banner's glass grows out of the screen's top edge instead of the bar.
+        const edgeAttached = this._settings.get_boolean('top-bar-notifications-grow') && this._topBarHidden(monitorY);
+        if (edgeAttached !== this._edgeAttached) {
+            this._edgeAttached = edgeAttached;
+            this._lastBgW = undefined;
+        }
+        this.glass.setAttachedEdge(edgeAttached ? 'top' : 'none', this._settings.get_double('top-bar-edge-radius'));
+        if (edgeAttached)
+            [localBgX, localBgY] = attachRectToEdge([localBgX, localBgY, bgW, bgH], 'top', screenW, screenH, SHADER_PADDING);
+        const glassH = edgeAttached ? bgY_abs - monitorY + bgH - localBgY : bgH;
         if (this._lastBgW !== bgW || this._lastBgH !== bgH ||
             this._lastBgX !== bgX_abs || this._lastBgY !== bgY_abs ||
             this._lastScreenW !== screenW || this._lastScreenH !== screenH) {
@@ -385,11 +451,11 @@ export class NotificationManager {
             this.glass.remove_transition('position');
             // Limit drawing to the glass plus room for its shadow.
             const CLIP_PADDING = 200;
-            setClipIfChanged(this.glass, localBgX - CLIP_PADDING, localBgY - CLIP_PADDING, bgW + CLIP_PADDING * 2, bgH + CLIP_PADDING * 2);
+            setClipIfChanged(this.glass, localBgX - CLIP_PADDING, localBgY - CLIP_PADDING, bgW + CLIP_PADDING * 2, glassH + CLIP_PADDING * 2);
             const SHADOW_MAX_RADIUS = CLIP_PADDING - 20;
             this.glass.setShadowMaxRadius(SHADOW_MAX_RADIUS);
             this.glass.setResolution(screenW, screenH);
-            this.glass.setGlassGeometry(localBgX, localBgY, bgW, bgH);
+            this.glass.setGlassGeometry(localBgX, localBgY, bgW, glassH);
             this._lastBgW = bgW;
             this._lastBgH = bgH;
             this._lastBgX = bgX_abs;
@@ -416,10 +482,27 @@ export class NotificationManager {
             return;
         const bgW = w + this._glassExpand * 2 + SHADER_PADDING * 2;
         const bgH = h + this._glassExpand * 2 + SHADER_PADDING * 2;
-        this.glass.setGlassGeometry(absX - this._glassExpand - SHADER_PADDING - origin[0], absY - this._glassExpand - SHADER_PADDING - origin[1], bgW, bgH);
+        let rect = [absX - this._glassExpand - SHADER_PADDING - origin[0],
+            absY - this._glassExpand - SHADER_PADDING - origin[1], bgW, bgH];
+        if (this._edgeAttached)
+            rect = attachRectToEdge(rect, 'top', 0, 0, SHADER_PADDING);
+        this.glass.setGlassGeometry(rect[0], rect[1], rect[2], rect[3]);
+    }
+
+    // Whether the top bar is off the screen, as Hide Top Bar slides it, above the monitor's top at `monitorY`.
+    _topBarHidden(monitorY) {
+        const box = Main.layoutManager.panelBox;
+        if (!box.visible || !box.mapped)
+            return true;
+        const [, y] = box.get_transformed_position();
+        return y + box.height <= monitorY + 1;
     }
 
     _cleanupCurrentBanner() {
+        // A banner the shell removes at once (dismissed) leaves its glass to run back into the bar.
+        this._growth.retract();
+        this._grew = false;
+        this._edgeAttached = false;
         this._bannerGeneration++;
         this._contrastSampler.invalidate();
         this._stopAdaptiveColorSampling();
@@ -475,6 +558,8 @@ export class NotificationManager {
             this._settings.disconnect(sigId);
         this._settingsSignals = [];
         this._removeEffect();
+        // Not left to run back after the extension is gone.
+        this._growth.release();
     }
 
     _collectAdaptiveTextTargets(actor = this.currentBanner, targets = []) {

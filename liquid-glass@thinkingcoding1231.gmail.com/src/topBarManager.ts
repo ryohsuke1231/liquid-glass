@@ -6,11 +6,12 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
 import { BackdropGlass } from './rendering/backdropGlass.js';
-import type { GlassRegion } from './rendering/glassRenderer.js';
+import { MAX_GLASS_GROWTHS, type GlassGrowth, type GlassRegion } from './rendering/glassRenderer.js';
 import { ensureGlassAllocated, isActorValid } from './actors.js';
 import { startSyncLoop, stopStageLoop, hexToColorArray } from './animation.js';
 import { sanitizeColorPreference, AdaptiveTextColor } from './contrastSampler.js';
 import type { Logger } from './logger.js';
+import { addGrowthBar, removeGrowthBar, cornerReach, layoutGrowths, type GrowthBar } from './growthBars.js';
 
 export type TopBarStyle = 'off' | 'pill' | 'islands' | 'center';
 
@@ -22,6 +23,27 @@ const SIDES = ['top', 'bottom', 'left', 'right'] as const;
 type Insets = Record<typeof SIDES[number], number>;
 // PopupMenu keeps the alignment it hands its box pointer on open in a field the shell's typings leave out.
 type ArrowAlignedMenu = { _arrowAlignment: number };
+
+// The bars with glass, which the menus opened from them can grow out of.
+const liveBars = new Set<TopBarManager>();
+
+/**
+ * The bar whose button `source` is, while what opens from it grows out of the bar by the boolean setting `key`
+ * (top-bar-menus-grow, top-bar-notifications-grow), or null while it floats.
+ */
+export function barGrowingFrom(source: Clutter.Actor | null, key: string): TopBarManager | null {
+  if (!source) return null;
+  for (const bar of liveBars)
+    if (bar.growsFrom(source, key)) return bar;
+  return null;
+}
+
+/** The bar with glass on monitor `index`, or null. */
+export function barOnMonitor(index: number): TopBarManager | null {
+  for (const bar of liveBars)
+    if (bar.monitorIndex === index) return bar;
+  return null;
+}
 
 function sanitizeStyle(value: string): TopBarStyle {
   return value === 'pill' || value === 'islands' || value === 'center' ? value : 'off';
@@ -45,7 +67,8 @@ export interface TopBarPanel extends St.Widget {
 }
 
 /** Glass behind the top bar: one pill, separate islands for its three button groups, or one pill the bar shrinks to. */
-export class TopBarManager {
+export class TopBarManager implements GrowthBar {
+  readonly growDirection = 1 as const;
   private _style: TopBarStyle = 'off';
   private _glass: BackdropGlass | null = null;
   private _settingsIds: number[] = [];
@@ -71,6 +94,13 @@ export class TopBarManager {
   private _centeredWidth = 0;
   private _savedXAlign: Clutter.ActorAlign = 0;
   private _savedQuickSettingsAlignment = 0;
+  // The menus grown out of this bar, by the manager that holds each: [x, y, w, h] on the stage and the radius of
+  // the corners that are free of the bar. The latest are drawn.
+  private _growths = new Map<object, { rect: number[], radius: number }>();
+  // The bar's glass bodies on the stage, [x, y, w, h], before the menus widen them, and the glass actor's size and
+  // the bar's height.
+  private _bodies: number[][] = [];
+  private _glassSize: number[] = [0, 0, 0];
 
   constructor(private _path: string, private _settings: Gio.Settings, private _logger: Logger,
     // The panel's boxes are not part of the shell's typings.
@@ -94,6 +124,22 @@ export class TopBarManager {
       watch(`top-bar-margin-${side}`, () => this._applyLayout());
       watch(`top-bar-padding-${side}`, () => this._applyLayout());
     }
+    watch('top-bar-attach-to-edge', () => {
+      this._applyAttach();
+      this._applyLayout();
+    });
+    watch('top-bar-edge-radius', () => {
+      this._applyAttach();
+      this._applyGrowths();
+    });
+    for (const key of ['top-bar-menus-grow', 'top-bar-notifications-grow', 'top-bar-osd-grow'])
+      watch(key, () => {
+        // The glass reaches down the monitor only while something grows out of it.
+        this._lastKey = '';
+        this._growths.clear();
+        this._restack();
+        this._applyGrowths();
+      });
     this._apply();
   }
 
@@ -118,14 +164,17 @@ export class TopBarManager {
       extensionPath: this._path, settings: this._settings, logger: this._logger, owner: this._owner, outline: 'top-bar',
     } as any);
     this._glass = glass;
+    liveBars.add(this);
+    addGrowthBar(this);
     glass.reactive = false;
     glass.setPadding(SHADER_PADDING);
     glass.setIsDock(false);
     glass.setMultiRegionMode(this._style === 'islands');
     glass.setShadowMaxRadius(SHADOW_ROOM - 8);
-    // Draw the glass below the panel.
     Main.layoutManager.uiGroup.insert_child_below(glass, panelBox);
+    this._restack();
     this._applyMaterial();
+    this._applyAttach();
     this._lastKey = '';
     this._lastIslandRects = [];
     this._islandGeometryHoldFrames = 0;
@@ -217,6 +266,11 @@ export class TopBarManager {
     glass.setBrightness(this._settings.get_double(this._key('brightness')));
     glass.setContrast(this._settings.get_double(this._key('contrast')));
     glass.setSaturation(this._settings.get_double(this._key('saturation')));
+  }
+
+  private _applyAttach(): void {
+    const attached = this._settings.get_boolean(this._key('attach-to-edge'));
+    this._glass?.setAttachedEdge(attached ? 'top' : 'none', this._settings.get_double(this._key('edge-radius')));
   }
 
   private _insets(kind: 'margin' | 'padding'): Insets {
@@ -384,6 +438,8 @@ export class TopBarManager {
       const panel = this._panel;
       const sections: St.Widget[] = this._sections();
       const margin = this._margin = this._insets('margin');
+      // Grown out of the screen's top, the glass starts at it.
+      if (this._settings.get_boolean(this._key('attach-to-edge'))) margin.top = 0;
       const padding = this._padding = this._insets('padding');
       const top = margin.top + padding.top;
       const bottom = margin.bottom + padding.bottom;
@@ -534,26 +590,110 @@ export class TopBarManager {
       this._lastIslandRects = rects.map(rect => [...rect]);
     }
 
-    const key = `${x},${y},${width},${height},${rects.flat().join(',')}`;
+    this._bodies = rects.map(([rx, ry, rw, rh]) => [x + rx, y + ry, rw, rh]);
+    // Menus and banners grown out of the bar reach down the monitor, so the glass does too.
+    let glassHeight = height + SHADOW_ROOM;
+    if (['menus-grow', 'notifications-grow', 'osd-grow'].some(key => this._settings.get_boolean(this._key(key)))) {
+      const monitor = Main.layoutManager.findMonitorForActor(panelBox);
+      if (monitor) glassHeight = Math.max(glassHeight, Math.round(monitor.y + monitor.height - y));
+    }
+    const key = `${x},${y},${width},${glassHeight},${rects.flat().join(',')}`;
     if (key !== this._lastKey) {
       this._lastKey = key;
       glass.set_position(x, y);
-      glass.set_size(width, height + SHADOW_ROOM);
-      glass.setResolution(width, height + SHADOW_ROOM);
-      const p = SHADER_PADDING;
-      if (this._style !== 'islands') {
-        const [rx, ry, rw, rh] = rects[0];
-        glass.setGlassGeometry(rx - p, ry - p, rw + p * 2, rh + p * 2);
-      } else {
-        const regions: GlassRegion[] = rects.map(([rx, ry, rw, rh]) => ({
-          x: rx - p, y: ry - p, w: rw + p * 2, h: rh + p * 2, tintR: 1, tintG: 1, tintB: 1,
-        }));
-        glass.setGlassRegions(regions);
-        glass.setGlassGeometry(0, 0, width, height);
-      }
+      glass.set_size(width, glassHeight);
+      glass.setResolution(width, glassHeight);
+      this._glassSize = [width, glassHeight, height];
+      this._applyGrowths();
       this._text.invalidate();
     }
     glass.syncSources();
+  }
+
+  // Below the panel. While notification banners grow out of the main bar, also below the message tray, which the
+  // shell keeps far below the panel: the banners are drawn over the glass then, not under it.
+  private _restack(): void {
+    const glass = this._glass;
+    const uiGroup = Main.layoutManager.uiGroup;
+    if (!glass || glass.get_parent() !== uiGroup) return;
+    let below: Clutter.Actor = this._panelBox;
+    const tray = Main.messageTray as unknown as Clutter.Actor;
+    if (this._owner === 'top-bar' && this._settings.get_boolean(this._key('notifications-grow')) &&
+      tray.get_parent() === uiGroup && uiGroup.get_children().indexOf(tray) < uiGroup.get_children().indexOf(below))
+      below = tray;
+    uiGroup.set_child_below_sibling(glass, below);
+  }
+
+  /** The monitor the bar is on: Multi Monitors Bar's panels carry it, and the shell's own bar is the primary's. */
+  get monitorIndex(): number {
+    return (this._panel as unknown as { monitorIndex?: number }).monitorIndex ?? Main.layoutManager.primaryIndex;
+  }
+
+  /** The bar's status area button `name` (dateMenu, quickSettings…), or null. */
+  button(name: string): St.Widget | null {
+    return (this._panel as unknown as { statusArea?: Record<string, St.Widget> }).statusArea?.[name] ?? null;
+  }
+
+  /** Whether what opens from `source`, a button on this bar, grows out of it by the setting `key`. */
+  growsFrom(source: Clutter.Actor, key: string): boolean {
+    return !!this._glass?.visible && this._bodies.length > 0 && this._settings.get_boolean(key) &&
+      isActorValid(source) && source.mapped && this._panel.contains(source);
+  }
+
+  /** The bottom of the bar's glass, a stage y. */
+  glassBottom(): number {
+    return Math.max(...this._bodies.map(([, y, , h]) => y + h));
+  }
+
+  /** Things grow down out of the bar's bottom. */
+  glassEdge(): number {
+    return this.glassBottom();
+  }
+
+  /**
+   * Grows the menu `owner` holds out of the bar as `rect` ([x, y, w, h] on the stage, its top inside the bar's
+   * glass), its free corners rounded by `radius`; null takes it back into the bar.
+   */
+  setMenuGrowth(owner: object, rect: number[] | null, radius: number): void {
+    this._growths.delete(owner);
+    if (rect) this._growths.set(owner, { rect, radius });
+    this._applyGrowths();
+  }
+
+  // Draws the bar, widened for the menus growing out of it, and the menus.
+  private _applyGrowths(): void {
+    const glass = this._glass;
+    if (!glass || this._bodies.length === 0) return;
+    const { bodies, growths } = this._layoutGrowths([...this._growths.values()].slice(-MAX_GLASS_GROWTHS));
+
+    const p = SHADER_PADDING;
+    const [width, , height] = this._glassSize;
+    const local = bodies.map(([x, y, w, h]) => [x - glass.x, y - glass.y, w, h]);
+    if (this._style !== 'islands') {
+      const [rx, ry, rw, rh] = local[0];
+      glass.setGlassGeometry(rx - p, ry - p, rw + p * 2, rh + p * 2);
+    } else {
+      const regions: GlassRegion[] = local.map(([rx, ry, rw, rh]) => ({
+        x: rx - p, y: ry - p, w: rw + p * 2, h: rh + p * 2, tintR: 1, tintG: 1, tintB: 1,
+      }));
+      glass.setGlassRegions(regions);
+      glass.setGlassGeometry(0, 0, width, height);
+    }
+    glass.setGrowths(growths.map(g => ({ ...g, x: g.x - glass.x, y: g.y - glass.y })));
+    glass.syncSources();
+  }
+
+  // The bar's bodies and the glass of each menu in `menus`, joined as layoutGrowths() describes.
+  private _layoutGrowths(menus: { rect: number[], radius: number }[]): { bodies: number[][], growths: GlassGrowth[] } {
+    const minX = this._glass!.x;
+    const radius = this._settings.get_double(this._key('corner-radius'));
+    const smoothing = this._settings.get_double('glass-corner-smoothing');
+    return layoutGrowths(this._bodies, menus, {
+      minX, maxX: minX + this._glassSize[0],
+      fillet: this._settings.get_double(this._key('edge-radius')),
+      reach: h => cornerReach(radius, smoothing, h),
+      direction: 1,
+    });
   }
 
   private _fitCenteredWidth(maxWidth: number): number {
@@ -580,6 +720,10 @@ export class TopBarManager {
     this._text.clear();
     const glass = this._glass;
     this._glass = null;
+    liveBars.delete(this);
+    removeGrowthBar(this);
+    this._growths.clear();
+    this._bodies = [];
     this._disconnectBoxSignals();
     this._disconnectContainerSignals();
     if (glass) {

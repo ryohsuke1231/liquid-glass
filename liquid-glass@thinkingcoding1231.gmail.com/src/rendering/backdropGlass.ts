@@ -13,7 +13,7 @@ import Meta from 'gi://Meta';
 import Mtk from 'gi://Mtk';
 
 import type { Logger } from '../logger.js';
-import { GlassRenderer, type GlassRegion } from './glassRenderer.js';
+import { GlassRenderer, type AttachedEdge, type GlassGrowth, type GlassRegion } from './glassRenderer.js';
 import type { BlurMethod } from './pipelines.js';
 import {
   coglContext, paintNodeWithContext, canCloneSource, undoCloneScale, newRootNode, offscreenFormat
@@ -328,6 +328,8 @@ export const GlassActor = GObject.registerClass(
     setTintColor(r: number, g: number, b: number): void { this._renderer.setTintColor(r, g, b); }
     setTintStrength(strength: number): void { this._renderer.setTintStrength(strength); }
     setCornerRadius(radius: number): void { this._renderer.setCornerRadius(radius); }
+    setAttachedEdge(edge: AttachedEdge, radius: number): void { this._renderer.setAttachedEdge(edge, radius); }
+    setGrowths(growths: GlassGrowth[]): void { this._renderer.setGrowths(growths); }
     setAnimationScale(scale: number): void { this._renderer.setAnimationScale(scale); }
     // The glass's size in shader space; normally its own size.
     setResolution(width: number, height: number): void { this._renderer.setResolution(width, height); }
