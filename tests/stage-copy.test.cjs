@@ -48,6 +48,17 @@ test('glass at the edge of a fractionally scaled monitor off the stage origin is
   assert.ok(f.take([3500, 0, 3900, 400]).fresh);
 });
 
+test('glass at the edge of a monitor whose scale is stored below its value is still copied', () => {
+  // 2880x1600 at 166 %: 5/3 is stored as 1.6666666, so 1600 px come out as 960.00002 stage px.
+  const f = fixture({ x: 0, y: 0, width: 1728, height: 960 }, 1.6666666269302368, [2880, 1600]);
+  const { copy, missed, fresh } = f.take([485, 704, 1254, 1010]);
+  assert.ok(fresh && !missed && copy);
+  const [, y, , , , h] = f.blits[0];
+  assert.equal(y + h, 1600);
+  // The top bar, which reaches the right edge.
+  assert.ok(f.take([0, 0, 1728, 60]).fresh);
+});
+
 test('a whole-number scale copies the rect as it is', () => {
   const f = fixture({ x: 0, y: 0, width: 1920, height: 1080 }, 1, [1920, 1080]);
   assert.ok(f.take([100, 980, 900, 1100]).fresh);

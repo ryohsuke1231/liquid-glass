@@ -1,0 +1,23 @@
+<monitors version="2">
+  <configuration>
+    <logicalmonitor>
+      <x>0</x>
+      <y>0</y>
+      <scale>1.6666666269302368</scale>
+      <primary>yes</primary>
+      <monitor>
+        <monitorspec>
+          <connector>Meta-0</connector>
+          <vendor>MetaVendor</vendor>
+          <product>MetaVirtualMonitor</product>
+          <serial>0x00</serial>
+        </monitorspec>
+        <mode>
+          <width>2880</width>
+          <height>1600</height>
+          <rate>60.000</rate>
+        </mode>
+      </monitor>
+    </logicalmonitor>
+  </configuration>
+</monitors>

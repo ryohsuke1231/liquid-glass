@@ -156,10 +156,12 @@ export const GlassActor = GObject.registerClass(class GlassActor extends Clutter
      * Blurs `texture`, which holds `blurRect` (shader space) of the backdrop,
      * unless `key` says the last blur is still current. The pool works in
      * shader-space pixels, so the blur radius means the same at every
-     * monitor scale.
+     * monitor scale. `slot` names the pool to use; a glass that blurs a
+     * different texture on each stage view passes the view.
      */
-    _runBlur(root, ctx, texture, blurRect, key) {
+    _runBlur(root, ctx, texture, blurRect, key, slot = null) {
         const blur = this._renderer.blur;
+        blur.use(slot);
         if (blur.passCount <= 0)
             return;
         const w = Math.max(1, Math.round(blurRect[2]));
@@ -395,7 +397,9 @@ export const BackdropGlass = GObject.registerClass(paintNodeWithContext(class Ba
         if (changed || moved || (painted && !this._wasPainted))
             this._relays.redrawArea();
         this._wasPainted = painted;
-        this._copier.prune(this.peek_stage_views());
+        const views = this.peek_stage_views();
+        this._copier.prune(views);
+        this._renderer.blur.prune(views);
     }
 
     vfunc_paint_node(root, paintContext) {
@@ -426,7 +430,7 @@ export const BackdropGlass = GObject.registerClass(paintNodeWithContext(class Ba
         const blurRect = this._stageToShader(copy.rect, kx, ky);
         if (!blurRect)
             return;
-        this._runBlur(root, ctx, copy.texture, blurRect, [copy.texture, copy.serial]);
+        this._runBlur(root, ctx, copy.texture, blurRect, [copy.texture, copy.serial], copy.view);
         const compositeRect = this._composite(root, copy.texture, blurRect, kx, ky, resW, resH);
         this._snapshot(() => {
             const round = (v) => +v.toFixed(2);
@@ -845,11 +849,15 @@ export class StageCopier {
         if (!(fx1 > fx0) || !(fy1 > fy0))
             return { copy, missed: false, fresh: false };
         const rect = [(fx0 - ox) / scale, (fy0 - oy) / scale, (fx1 - ox) / scale, (fy1 - oy) / scale];
+        // A scale stored a little below its value (5/3 as 1.6666666) puts the view's far edge a hair past the
+        // layout, and rounding that up would ask for a pixel the clip never holds.
         const clip = paintContext.get_redraw_clip();
-        const clipX = Math.floor(rect[0]);
-        const clipY = Math.floor(rect[1]);
+        const clipX = Math.max(Math.floor(rect[0]), layout.x);
+        const clipY = Math.max(Math.floor(rect[1]), layout.y);
+        const clipX1 = Math.min(Math.ceil(rect[2]), layout.x + layout.width);
+        const clipY1 = Math.min(Math.ceil(rect[3]), layout.y + layout.height);
         const inClip = !clip || clip.contains_rectangle(new Mtk.Rectangle({
-            x: clipX, y: clipY, width: Math.ceil(rect[2]) - clipX, height: Math.ceil(rect[3]) - clipY,
+            x: clipX, y: clipY, width: clipX1 - clipX, height: clipY1 - clipY,
         })) === Mtk.RegionOverlap.IN;
         if (!inClip) {
             if (copy?.rect) {
@@ -877,7 +885,7 @@ export class StageCopier {
         const target = createTarget(width, height, format, this._logger);
         if (!target)
             return null;
-        const next = { ...target, width, height, format, rect: null, serial: 0 };
+        const next = { ...target, view, width, height, format, rect: null, serial: 0 };
         this._copies.set(view, next);
         return next;
     }

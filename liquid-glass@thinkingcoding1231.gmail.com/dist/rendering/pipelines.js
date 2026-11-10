@@ -314,6 +314,13 @@ export function setPipelineFloat(pipeline, name, value) {
     pipeline.set_uniform_1f(pipeline.get_uniform_location(name), value);
 }
 
+function emptyPool() {
+    return {
+        textures: [], fbos: [], tempTextures: [], tempFbos: [], upTextures: [], upFbos: [],
+        result: null, renderedKey: null, width: 0, height: 0,
+    };
+}
+
 export class BlurRenderer {
     _pipelines;
     _passes;
@@ -331,17 +338,41 @@ export class BlurRenderer {
 
     get passCount() { return this.PASS_COUNT; }
 
-    get result() { return this._blurResultTex; }
+    get result() { return this._pool.result; }
 
-    get width() { return this._poolWidth; }
+    get width() { return this._pool.width; }
 
-    get height() { return this._poolHeight; }
+    get height() { return this._pool.height; }
 
-    get ready() { return this.PASS_COUNT === 0 || this._blurFbos.length > 0; }
+    get ready() { return this.PASS_COUNT === 0 || this._pool.fbos.length > 0; }
 
     get needsCompile() { return this._gaussianPipelineDirty && this._pendingGaussianKernel !== null; }
 
     invalidate() { this._destroyTexturePool(); }
+
+    /**
+     * Draws with the pool kept for `slot` from here on. A glass painted on two
+     * stage views has a source of a different size on each, and sharing one
+     * pool would allocate it anew for every paint.
+     */
+    use(slot) {
+        if (slot === this._slot)
+            return;
+        this._parked.set(this._slot, this._pool);
+        this._pool = this._parked.get(slot) ?? emptyPool();
+        this._parked.delete(slot);
+        this._slot = slot;
+    }
+
+    /** Drops the pools of every slot other than the default one that is not in `slots`. */
+    prune(slots) {
+        for (const slot of this._parked.keys()) {
+            if (slot !== null && !slots.includes(slot))
+                this._parked.delete(slot);
+        }
+        if (this._slot !== null && !slots.includes(this._slot))
+            this._pool = emptyPool();
+    }
 
     compilePending(ctx) {
         if (!this.needsCompile)
@@ -352,8 +383,8 @@ export class BlurRenderer {
     }
 
     render(parent, source, uv, inputKey) {
-        this._blurResultTex = null;
-        this._renderedKey = null;
+        this._pool.result = null;
+        this._pool.renderedKey = null;
         if (this.PASS_COUNT <= 0)
             return;
         if (this._blurMethod === 0) {
@@ -364,13 +395,13 @@ export class BlurRenderer {
             this._runDualKawaseBlur(parent, source, uv);
         // Only a chain that actually produced a result may be reused later, and
         // the key records the configuration it was produced with.
-        if (inputKey && this._blurResultTex !== null)
-            this._renderedKey = [...inputKey, ...this._configKey()];
+        if (inputKey && this._pool.result !== null)
+            this._pool.renderedKey = [...inputKey, ...this._configKey()];
     }
 
     canReuse(inputKey) {
-        const stored = this._renderedKey;
-        if (stored === null || this._blurResultTex === null || this.PASS_COUNT <= 0)
+        const stored = this._pool.renderedKey;
+        if (stored === null || this._pool.result === null || this.PASS_COUNT <= 0)
             return false;
         const config = this._configKey();
         if (stored.length !== inputKey.length + config.length)
@@ -384,11 +415,9 @@ export class BlurRenderer {
         return true;
     }
 
-    _renderedKey = null;
-
     _configKey() {
         const p = this._pipelines;
-        return [this._blurFbos[0] ?? null, this._blurMethod, this.PASS_COUNT, this._blurDownscale,
+        return [this._pool.fbos[0] ?? null, this._blurMethod, this.PASS_COUNT, this._blurDownscale,
             this._blurRadiusDown, this._blurRadiusUp, this._gaussianScale,
             this._gaussianHPipeline, this._gaussianVPipeline,
             p.downsample, p.upsample, p.passthrough, p.boxDown];
@@ -425,30 +454,20 @@ export class BlurRenderer {
     }
 
     describe() {
-        const result = this._blurResultTex;
+        const result = this._pool.result;
         return {
             blurMethod: this._blurMethod, passCount: this.PASS_COUNT,
-            pool: this._poolWidth + 'x' + this._poolHeight, poolLevels: this._blurFbos.length,
+            pool: this._pool.width + 'x' + this._pool.height, poolLevels: this._pool.fbos.length,
             blurResult: result ? result.get_width() + 'x' + result.get_height() : 'NULL (layer 1 falls back to the unblurred copy)',
             radiusDown: this._blurRadiusDown, radiusUp: this._blurRadiusUp, targetRadius: this._targetRadius,
             gaussianPipelines: !!(this._gaussianHPipeline && this._gaussianVPipeline),
         };
     }
 
-    // The texture pool; see resize() for the sizes.
-    _blurTextures = [];
-    _blurFbos = [];
-    // The Gaussian horizontal pass output, per level.
-    _gaussianTempTextures = [];
-    _gaussianTempFbos = [];
-    // Separate output targets per level, so no pass writes a framebuffer that
-    // an earlier pass read. Deferred paint nodes make Cogl track dependencies
-    // between framebuffers, and ping-ponging is a cycle it rejects; the passes
-    // then lose their order and the composite reads an unwritten blur.
-    _upTextures = [];
-    _upFbos = [];
-    // This frame's finished blur, read by the composite.
-    _blurResultTex = null;
+    // The pool being drawn with, and the ones kept for the other slots (see use()).
+    _pool = emptyPool();
+    _slot = null;
+    _parked = new Map();
     _gaussianHPipeline = null;
     _gaussianVPipeline = null;
     _blurMethod = 1;
@@ -462,8 +481,6 @@ export class BlurRenderer {
     _gaussianBaseSigma = 0;
     _gaussianScale = 1.0;
     _gaussianFetchPairs = 0;
-    _poolWidth = 0;
-    _poolHeight = 0;
     // glass-blur-downscale: 2 = half resolution (default), 4 = quarter.
     _blurDownscale = 2;
     // Passes per direction. With 4: 1/2 → 1/4 → 1/8 → 1/16 → 1/8 → 1/4 → 1/2.
@@ -499,25 +516,25 @@ export class BlurRenderer {
      * down one more step.
      */
     resize(ctx, w, h) {
-        this._destroyTexturePool();
+        this._pool = emptyPool();
         const shift = this._blurDownscale >= 4 ? 2 : 1;
         let pw = Math.max(w >> shift, 1);
         let ph = Math.max(h >> shift, 1);
         for (let i = 0; i < this.PASS_COUNT; i++) {
             const tex = Cogl.Texture2D.new_with_size(ctx, pw, ph);
-            this._blurTextures.push(tex);
-            this._blurFbos.push(Cogl.Offscreen.new_with_texture(tex));
+            this._pool.textures.push(tex);
+            this._pool.fbos.push(Cogl.Offscreen.new_with_texture(tex));
             const tmpTex = Cogl.Texture2D.new_with_size(ctx, pw, ph);
-            this._gaussianTempTextures.push(tmpTex);
-            this._gaussianTempFbos.push(Cogl.Offscreen.new_with_texture(tmpTex));
+            this._pool.tempTextures.push(tmpTex);
+            this._pool.tempFbos.push(Cogl.Offscreen.new_with_texture(tmpTex));
             const upTex = Cogl.Texture2D.new_with_size(ctx, pw, ph);
-            this._upTextures.push(upTex);
-            this._upFbos.push(Cogl.Offscreen.new_with_texture(upTex));
+            this._pool.upTextures.push(upTex);
+            this._pool.upFbos.push(Cogl.Offscreen.new_with_texture(upTex));
             pw = Math.max(pw >> 1, 1);
             ph = Math.max(ph >> 1, 1);
         }
-        this._poolWidth = w;
-        this._poolHeight = h;
+        this._pool.width = w;
+        this._pool.height = h;
     }
 
     // Dual Kawase: downsample srcTex through every level, then upsample back
@@ -525,8 +542,8 @@ export class BlurRenderer {
     _runDualKawaseBlur(parentNode, srcTex, srcUV) {
         let currentSrc = srcTex;
         for (let i = 0; i < this.PASS_COUNT; i++) {
-            const destFbo = this._blurFbos[i];
-            const destTex = this._blurTextures[i];
+            const destFbo = this._pool.fbos[i];
+            const destTex = this._pool.textures[i];
             const destW = destTex.get_width();
             const destH = destTex.get_height();
             const invW = 1.0 / currentSrc.get_width();
@@ -547,15 +564,15 @@ export class BlurRenderer {
             currentSrc = destTex;
         }
         if (this.PASS_COUNT <= 1) {
-            this._blurResultTex = this._blurTextures[0];
+            this._pool.result = this._pool.textures[0];
             return;
         }
         for (let i = this.PASS_COUNT - 1; i > 0; i--) {
             const srcTexture = (i === this.PASS_COUNT - 1)
-                ? this._blurTextures[i]
-                : this._upTextures[i];
-            const destFbo = this._upFbos[i - 1];
-            const destTex = this._upTextures[i - 1];
+                ? this._pool.textures[i]
+                : this._pool.upTextures[i];
+            const destFbo = this._pool.upFbos[i - 1];
+            const destTex = this._pool.upTextures[i - 1];
             const destW = destTex.get_width();
             const destH = destTex.get_height();
             const invW = 1.0 / srcTexture.get_width();
@@ -566,17 +583,17 @@ export class BlurRenderer {
             setPipelineFloat(pipeline, 'blur_radius', this._blurRadiusUp);
             this._passes.add(parentNode, destFbo, pipeline, destW, destH, [0, 0, 1, 1]);
         }
-        this._blurResultTex = this._upTextures[0];
+        this._pool.result = this._pool.upTextures[0];
     }
 
     // Separable Gaussian on pool level 0 only: a downsampling pre-pass into
-    // _blurTextures[0], the horizontal pass into the temp texture, and the
-    // vertical pass into _upTextures[0].
+    // textures[0], the horizontal pass into the temp texture, and the
+    // vertical pass into upTextures[0].
     _runGaussianBlur(parentNode, srcTex, srcUV) {
-        const tempFbo = this._gaussianTempFbos[0];
-        const tempTex = this._gaussianTempTextures[0];
-        const destFbo = this._blurFbos[0];
-        const destTex = this._blurTextures[0];
+        const tempFbo = this._pool.tempFbos[0];
+        const tempTex = this._pool.tempTextures[0];
+        const destFbo = this._pool.fbos[0];
+        const destTex = this._pool.textures[0];
         const destW = destTex.get_width();
         const destH = destTex.get_height();
         // At downscale 2 one bilinear fetch averages the 2x2 footprint exactly;
@@ -595,30 +612,21 @@ export class BlurRenderer {
         setPipelineVec2(hPipeline, 'inv_size', 1.0 / destW, 1.0 / destH);
         setPipelineFloat(hPipeline, 'kernel_scale', this._gaussianScale);
         this._passes.add(parentNode, tempFbo, hPipeline, destW, destH, [0, 0, 1, 1]);
-        // Not back into destFbo, which the horizontal pass read (see _upTextures).
+        // Not back into destFbo, which the horizontal pass read (see BlurPool.upTextures).
         const vPipeline = this._passes.pipeline('gauss-v', this._gaussianVPipeline);
         vPipeline.set_layer_texture(0, tempTex);
         setPipelineVec2(vPipeline, 'inv_size', 1.0 / destW, 1.0 / destH);
         setPipelineFloat(vPipeline, 'kernel_scale', this._gaussianScale);
-        const outFbo = this._upFbos[0];
+        const outFbo = this._pool.upFbos[0];
         this._passes.add(parentNode, outFbo, vPipeline, destW, destH, [0, 0, 1, 1]);
-        this._blurResultTex = this._upTextures[0];
+        this._pool.result = this._pool.upTextures[0];
     }
 
     // Dropping the references frees the textures; GJS owns them, so
     // run_dispose() would free them twice.
     _destroyTexturePool() {
-        this._blurFbos = [];
-        this._blurTextures = [];
-        this._gaussianTempFbos = [];
-        this._gaussianTempTextures = [];
-        this._upFbos = [];
-        this._upTextures = [];
-        this._blurResultTex = null;
-        // The reuse key holds the old source texture.
-        this._renderedKey = null;
-        this._poolWidth = 0;
-        this._poolHeight = 0;
+        this._pool = emptyPool();
+        this._parked.clear();
     }
 
     // Both methods share the pool, and the Gaussian kernel is compiled on the

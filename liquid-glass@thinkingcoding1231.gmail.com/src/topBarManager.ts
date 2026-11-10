@@ -182,20 +182,24 @@ export class TopBarManager {
 
   private _releaseChild(child: Clutter.Actor): void {
     const target = this._containerTargets.find(([container]) => container === child)?.[1];
+    const released = (actor: Clutter.Actor) => actor === child || actor === target;
+    // A button removed because it was destroyed has nothing left to restore.
     for (const [actor, style] of this._childrenStyles) {
-      if (actor === child || actor === target) actor.set_style(style);
+      if (released(actor) && isActorValid(actor)) actor.set_style(style);
     }
-    this._childrenStyles = this._childrenStyles.filter(([actor]) => actor !== child && actor !== target);
+    this._childrenStyles = this._childrenStyles.filter(([actor]) => !released(actor));
     if (!target) return;
     for (const [actor, id] of this._containerSignalIds) {
-      if (actor === child || actor === target) actor.disconnect(id);
+      if (released(actor) && isActorValid(actor)) actor.disconnect(id);
     }
-    this._containerSignalIds = this._containerSignalIds.filter(([actor]) => actor !== child && actor !== target);
+    this._containerSignalIds = this._containerSignalIds.filter(([actor]) => !released(actor));
     this._containerTargets = this._containerTargets.filter(([container]) => container !== child);
     this._forwardedPresses.delete(child as St.Widget);
-    child.reactive = false;
-    target.remove_style_pseudo_class('hover');
-    target.remove_style_pseudo_class('active');
+    if (isActorValid(child)) child.reactive = false;
+    if (isActorValid(target)) {
+      target.remove_style_pseudo_class('hover');
+      target.remove_style_pseudo_class('active');
+    }
   }
 
   private _disconnectBoxSignals(): void {
