@@ -47,12 +47,11 @@ export function followDockMaterial(settings, glass) {
 }
 
 /**
- * Grows `glass` out of `side` when the dock is attached. Returns `rect` (monitor-local, padded by SHADER_PADDING)
+ * Grows `glass` out of `side` when the dock is `attached` (dock-attach-to-edge), flaring by `radius`. Returns `rect` (monitor-local, padded by SHADER_PADDING)
  * reaching that edge and the side, or `rect` unchanged and null while the dock floats.
  */
-export function attachDockGlass(glass, settings, rect, side, monitorW, monitorH) {
-    const attached = settings.get_boolean('dock-attach-to-edge');
-    glass.setAttachedEdge(attached ? side : 'none', settings.get_double('dock-edge-radius'));
+export function attachDockGlass(glass, attached, radius, rect, side, monitorW, monitorH) {
+    glass.setAttachedEdge(attached ? side : 'none', radius);
     return attached
         ? { rect: attachRectToEdge(rect, side, monitorW, monitorH, SHADER_PADDING), side }
         : { rect, side: null };
@@ -103,6 +102,10 @@ export class DashManager {
     // The glass rect last placed (monitor-local, padded) and the screen edge the dock is on.
     _glassRect = null;
     _side = null;
+    // dock-attach-to-edge, dock-edge-radius and dock-menus-grow, which the per-frame sync reads.
+    _attached = false;
+    _edgeRadius = 0;
+    _menusGrow = false;
 
     constructor(extensionPath, targetActor, settings, logger) {
         this.extensionPath = extensionPath;
@@ -131,6 +134,7 @@ export class DashManager {
             let id = this._settings.connect(`changed::${key}`, callback.bind(this));
             this._settingsSignals.push(id);
         };
+        this._readEdgeSettings();
         connectSetting('enable-dock-glass', () => {
             let enabled = this._settings.get_boolean('enable-dock-glass');
             if (enabled && !this._isEffectActive) {
@@ -152,18 +156,29 @@ export class DashManager {
             this._marginValue = this._effectiveMargin();
         };
         connectSetting('dock-margin-bottom', remargin);
+        connectSetting('dock-edge-radius', () => this._readEdgeSettings());
         connectSetting('dock-menus-grow', () => {
+            this._readEdgeSettings();
             this._growths.clear();
             if (this._glassRect)
                 this._placeGlassRect(this._glassRect);
             this.glass?.queue_redraw();
         });
-        connectSetting('dock-attach-to-edge', remargin);
+        connectSetting('dock-attach-to-edge', () => {
+            this._readEdgeSettings();
+            remargin();
+        });
         this._settingsSignals.push(...followDockMaterial(this._settings, () => this.glass));
     }
 
+    _readEdgeSettings() {
+        this._attached = this._settings.get_boolean('dock-attach-to-edge');
+        this._edgeRadius = this._settings.get_double('dock-edge-radius');
+        this._menusGrow = this._settings.get_boolean('dock-menus-grow');
+    }
+
     _effectiveMargin() {
-        return this._settings.get_boolean('dock-attach-to-edge') ? 0 : this._settings.get_int('dock-margin-bottom') || 0;
+        return this._attached ? 0 : this._settings.get_int('dock-margin-bottom') || 0;
     }
 
     // Moves the dock away from the screen edge it is closest to by
@@ -203,7 +218,7 @@ export class DashManager {
         this.targetActor.set_style(`${this._originalStyle} ${marginStyle}`);
         // Dash to Dock keeps extra room on the edge side for the running dots; the attached glass already runs on to
         // the edge, so stylesheet.css takes most of that room away.
-        if (this._settings.get_boolean('dock-attach-to-edge'))
+        if (this._attached)
             this.targetActor.add_style_class_name('liquid-glass-attached');
         else
             this.targetActor.remove_style_class_name('liquid-glass-attached');
@@ -475,7 +490,7 @@ export class DashManager {
             this._lastScreenW = screenW;
             this._lastScreenH = screenH;
         }
-        const attachment = attachDockGlass(this.glass, this._settings, [localBgX, localBgY, bgW, bgH], side, screenW, screenH);
+        const attachment = attachDockGlass(this.glass, this._attached, this._edgeRadius, [localBgX, localBgY, bgW, bgH], side, screenW, screenH);
         const [rectX, rectY, rectW, rectH] = attachment.rect;
         const placed = this._layoutGlassRect([rectX, rectY, rectW, rectH]);
         this.glass?.setShadowMaxRadius(DOCK_CLIP_PADDING - 20);
@@ -519,7 +534,7 @@ export class DashManager {
             const smoothing = this._settings.get_double('glass-corner-smoothing');
             const { bodies, growths } = layoutGrowths([[x + p + ox, y + p + oy, w - p * 2, h - p * 2]], menus, {
                 minX: ox, maxX: ox + glass.width,
-                fillet: this._settings.get_double('dock-edge-radius'),
+                fillet: this._edgeRadius,
                 reach: bh => cornerReach(radius, smoothing, bh),
                 direction: this.growDirection,
             });
@@ -545,7 +560,7 @@ export class DashManager {
 
     // Menus grow out of a dock along the top or bottom of the screen, by dock-menus-grow.
     _growsMenus() {
-        return (this._side === 'top' || this._side === 'bottom') && this._settings.get_boolean('dock-menus-grow');
+        return (this._side === 'top' || this._side === 'bottom') && this._menusGrow;
     }
 
     /** Out of a dock at the bottom things grow up; out of one at the top, down. */
@@ -941,7 +956,7 @@ export class DhruvaDock {
             return;
         const pad = SHADER_PADDING + this._settings.get_int('dock-glass-expand');
         const side = dockSide(dockEdges({ absX: x, absY: y, baseW: w, baseH: h }, monitor));
-        const [rx, ry, rw, rh] = attachDockGlass(glass, this._settings, [x - pad - monitor.x, y - pad - monitor.y, w + pad * 2, h + pad * 2], side, monitor.width, monitor.height).rect;
+        const [rx, ry, rw, rh] = attachDockGlass(glass, this._settings.get_boolean('dock-attach-to-edge'), this._settings.get_double('dock-edge-radius'), [x - pad - monitor.x, y - pad - monitor.y, w + pad * 2, h + pad * 2], side, monitor.width, monitor.height).rect;
         const rect = { x: rx, y: ry, w: rw, h: rh };
         if (sync) {
             glass.show();

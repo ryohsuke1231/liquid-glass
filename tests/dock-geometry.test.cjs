@@ -31,6 +31,8 @@ function fixture(reference, monitor, attachment = { attached: false, radius: 0 }
       get_double: () => attachment.radius, get_int: () => 0 },
     _marginValue: 0, _glassExpand: 0, _logger: { log: text => writes.push(['log', text]) },
     _findReferenceActor: () => manager.reference ? ref : null });
+  // The manager reads these when it binds its settings, which the fixture skips.
+  if (!reference) manager._readEdgeSettings();
   return { manager, target, background, ref, sync() {
     writes.length = 0;
     manager._syncGeometry();

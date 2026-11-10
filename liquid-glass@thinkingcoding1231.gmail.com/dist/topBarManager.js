@@ -14,21 +14,8 @@ const SHADER_PADDING = 20;
 // Space for the pill shadow.
 const SHADOW_ROOM = 48;
 const SIDES = ['top', 'bottom', 'left', 'right'];
-// The bars with glass, which the menus opened from them can grow out of.
+// The bars with glass, by which a popup finds the bar on its monitor.
 const liveBars = new Set();
-
-/**
- * The bar whose button `source` is, while what opens from it grows out of the bar by the boolean setting `key`
- * (top-bar-menus-grow, top-bar-notifications-grow), or null while it floats.
- */
-export function barGrowingFrom(source, key) {
-    if (!source)
-        return null;
-    for (const bar of liveBars)
-        if (bar.growsFrom(source, key))
-            return bar;
-    return null;
-}
 
 /** The bar with glass on monitor `index`, or null. */
 export function barOnMonitor(index) {
@@ -37,6 +24,9 @@ export function barOnMonitor(index) {
             return bar;
     return null;
 }
+
+// The settings by which menus, banners and popups grow out of a bar.
+const GROW_KEYS = ['top-bar-menus-grow', 'top-bar-notifications-grow', 'top-bar-osd-grow'];
 
 function sanitizeStyle(value) {
     return value === 'pill' || value === 'islands' || value === 'center' ? value : 'off';
@@ -91,6 +81,8 @@ export class TopBarManager {
     // the bar's height.
     _bodies = [];
     _glassSize = [0, 0, 0];
+    // Whether any of GROW_KEYS is on.
+    _grows = false;
 
     constructor(_path, _settings, _logger,
     // The panel's boxes are not part of the shell's typings.
@@ -125,15 +117,21 @@ export class TopBarManager {
             this._applyAttach();
             this._applyGrowths();
         });
-        for (const key of ['top-bar-menus-grow', 'top-bar-notifications-grow', 'top-bar-osd-grow'])
+        for (const key of GROW_KEYS)
             watch(key, () => {
                 // The glass reaches down the monitor only while something grows out of it.
+                this._readGrows();
                 this._lastKey = '';
                 this._growths.clear();
                 this._restack();
                 this._applyGrowths();
             });
+        this._readGrows();
         this._apply();
+    }
+
+    _readGrows() {
+        this._grows = GROW_KEYS.some(key => this._settings.get_boolean(key));
     }
 
     _key(suffix) {
@@ -617,7 +615,7 @@ export class TopBarManager {
         this._bodies = rects.map(([rx, ry, rw, rh]) => [x + rx, y + ry, rw, rh]);
         // Menus and banners grown out of the bar reach down the monitor, so the glass does too.
         let glassHeight = height + SHADOW_ROOM;
-        if (['menus-grow', 'notifications-grow', 'osd-grow'].some(key => this._settings.get_boolean(this._key(key)))) {
+        if (this._grows) {
             const monitor = Main.layoutManager.findMonitorForActor(panelBox);
             if (monitor)
                 glassHeight = Math.max(glassHeight, Math.round(monitor.y + monitor.height - y));

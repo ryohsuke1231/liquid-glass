@@ -211,7 +211,10 @@ export class BarGrowth {
       spring.value = spring.target = 0;
       spring.velocity = 0;
     }
+    const content = this._content;
     this._resetContent();
+    // The shell's own close was held for the glass, so a close that is cut short ends here as well.
+    if (!this._opening && content && isActorValid(content)) this._host.closed();
   }
 
   private _resetContent(): void {
@@ -287,7 +290,6 @@ export class BarGrowth {
       content!.opacity = 255;
     } else {
       this.release();
-      if (content) host.closed();
     }
     return false;
   }

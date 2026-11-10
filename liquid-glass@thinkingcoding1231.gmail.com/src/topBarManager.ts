@@ -24,19 +24,8 @@ type Insets = Record<typeof SIDES[number], number>;
 // PopupMenu keeps the alignment it hands its box pointer on open in a field the shell's typings leave out.
 type ArrowAlignedMenu = { _arrowAlignment: number };
 
-// The bars with glass, which the menus opened from them can grow out of.
+// The bars with glass, by which a popup finds the bar on its monitor.
 const liveBars = new Set<TopBarManager>();
-
-/**
- * The bar whose button `source` is, while what opens from it grows out of the bar by the boolean setting `key`
- * (top-bar-menus-grow, top-bar-notifications-grow), or null while it floats.
- */
-export function barGrowingFrom(source: Clutter.Actor | null, key: string): TopBarManager | null {
-  if (!source) return null;
-  for (const bar of liveBars)
-    if (bar.growsFrom(source, key)) return bar;
-  return null;
-}
 
 /** The bar with glass on monitor `index`, or null. */
 export function barOnMonitor(index: number): TopBarManager | null {
@@ -44,6 +33,9 @@ export function barOnMonitor(index: number): TopBarManager | null {
     if (bar.monitorIndex === index) return bar;
   return null;
 }
+
+// The settings by which menus, banners and popups grow out of a bar.
+const GROW_KEYS = ['top-bar-menus-grow', 'top-bar-notifications-grow', 'top-bar-osd-grow'];
 
 function sanitizeStyle(value: string): TopBarStyle {
   return value === 'pill' || value === 'islands' || value === 'center' ? value : 'off';
@@ -101,6 +93,8 @@ export class TopBarManager implements GrowthBar {
   // the bar's height.
   private _bodies: number[][] = [];
   private _glassSize: number[] = [0, 0, 0];
+  // Whether any of GROW_KEYS is on.
+  private _grows = false;
 
   constructor(private _path: string, private _settings: Gio.Settings, private _logger: Logger,
     // The panel's boxes are not part of the shell's typings.
@@ -132,15 +126,21 @@ export class TopBarManager implements GrowthBar {
       this._applyAttach();
       this._applyGrowths();
     });
-    for (const key of ['top-bar-menus-grow', 'top-bar-notifications-grow', 'top-bar-osd-grow'])
+    for (const key of GROW_KEYS)
       watch(key, () => {
         // The glass reaches down the monitor only while something grows out of it.
+        this._readGrows();
         this._lastKey = '';
         this._growths.clear();
         this._restack();
         this._applyGrowths();
       });
+    this._readGrows();
     this._apply();
+  }
+
+  private _readGrows(): void {
+    this._grows = GROW_KEYS.some(key => this._settings.get_boolean(key));
   }
 
   private _key(suffix: string): string {
@@ -597,7 +597,7 @@ export class TopBarManager implements GrowthBar {
     this._bodies = rects.map(([rx, ry, rw, rh]) => [x + rx, y + ry, rw, rh]);
     // Menus and banners grown out of the bar reach down the monitor, so the glass does too.
     let glassHeight = height + SHADOW_ROOM;
-    if (['menus-grow', 'notifications-grow', 'osd-grow'].some(key => this._settings.get_boolean(this._key(key)))) {
+    if (this._grows) {
       const monitor = Main.layoutManager.findMonitorForActor(panelBox);
       if (monitor) glassHeight = Math.max(glassHeight, Math.round(monitor.y + monitor.height - y));
     }

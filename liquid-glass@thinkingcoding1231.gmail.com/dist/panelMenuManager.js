@@ -1,4 +1,6 @@
 import GLib from 'gi://GLib';
+import Clutter from 'gi://Clutter';
+import St from 'gi://St';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import * as DateMenu from 'resource:///org/gnome/shell/ui/dateMenu.js';
@@ -20,9 +22,14 @@ function menusOf(name, button) {
     return [[name, button.menu]];
 }
 
+// The settings Dash to Dock's menus get glass by: the panel menus' switch, and the dock growing its menus.
+const DOCK_MENU_KEYS = ['enable-extra-menu-glass', 'dock-menus-grow'];
+
 // Whether `actor` sits in Dash to Dock's dash. Some status area entries are not actors.
 function inDock(actor) {
-    for (let a = actor; typeof a?.get_parent === 'function'; a = a.get_parent())
+    if (!(actor instanceof Clutter.Actor))
+        return false;
+    for (let a = actor; a; a = a.get_parent())
         if (a.get_name() === 'dashtodockDashContainer')
             return true;
     return false;
@@ -56,7 +63,7 @@ export class PanelMenuManager {
             watch(box, 'child-removed');
         }
         watch(Main.extensionManager, 'extension-state-changed');
-        for (const key of ['enable-extra-menu-glass', 'disabled-extra-menus', ...Object.values(LEGACY_KEYS)])
+        for (const key of [...DOCK_MENU_KEYS, 'disabled-extra-menus', ...Object.values(LEGACY_KEYS)])
             watch(this._settings, `changed::${key}`);
         this._scheduleScan();
     }
@@ -89,9 +96,11 @@ export class PanelMenuManager {
         const disabled = new Set(this._settings.get_strv('disabled-extra-menus'));
         const enabled = this._settings.get_boolean('enable-extra-menu-glass');
         const reserved = new Set([panel.statusArea.dateMenu?.menu, panel.statusArea.quickSettings?.menu]);
+        const dockMenus = this._settings.get_boolean('dock-menus-grow');
         for (const [name, button] of Object.entries(panel.statusArea)) {
-            // On the bar, or moved into Dash to Dock (as Dock Tray does with the tray icons).
-            if (!button || !(panel.contains(button.container ?? button) || inDock(button.container ?? button)))
+            // On the bar, or moved into Dash to Dock (as Dock Tray does with the tray icons) while its menus grow out of it.
+            const actor = button?.container ?? button;
+            if (!button || !(panel.contains(actor) || (dockMenus && inDock(actor))))
                 continue;
             buttons.add(button);
             this._watchButton(button);
@@ -187,8 +196,8 @@ function menuOf(actor) {
 }
 
 /**
- * Glass behind Dash to Dock's app icon menus (and its show-apps button's), which grow out of the dock's glass by
- * dock-menus-grow. They follow the other panel menus' switch and settings.
+ * Glass behind Dash to Dock's app icon menus (and its show-apps button's) while dock-menus-grow is on, which grow
+ * out of the dock's glass. They follow the other panel menus' switch and settings.
  */
 export class DockMenuManager {
     _path;
@@ -196,7 +205,7 @@ export class DockMenuManager {
     _logger;
     _signals = [];
     _menus = new Map();
-    _settingsId = 0;
+    _settingsIds = [];
     _attached = 0;
 
     constructor(_path, _settings, _logger) {
@@ -210,16 +219,17 @@ export class DockMenuManager {
         // Dash to Dock builds a menu on its first popup, which adds itself to uiGroup and opens at once: it is attached
         // here, before it opens, rather than on a later scan.
         this._signals.push({ target: uiGroup, id: uiGroup.connect('child-added', (_group, actor) => this._attach(actor)) });
-        this._signals.push({ target: uiGroup, id: uiGroup.connect('destroy', () => this.cleanup()) });
-        this._settingsId = this._settings.connect('changed::enable-extra-menu-glass', () => this._rescan());
+        this._settingsIds = DOCK_MENU_KEYS.map(key => this._settings.connect(`changed::${key}`, () => this._rescan()));
         this._rescan();
     }
 
+    _enabled() {
+        return DOCK_MENU_KEYS.every(key => this._settings.get_boolean(key));
+    }
+
     _rescan() {
-        for (const manager of this._menus.values())
-            manager.cleanup();
-        this._menus.clear();
-        if (!this._settings.get_boolean('enable-extra-menu-glass'))
+        this._detachAll();
+        if (!this._enabled())
             return;
         for (const child of Main.layoutManager.uiGroup.get_children())
             this._attach(child);
@@ -227,39 +237,35 @@ export class DockMenuManager {
 
     _attach(actor) {
         const menu = menuOf(actor);
-        if (!menu || this._menus.has(menu) || !this._settings.get_boolean('enable-extra-menu-glass'))
+        if (!menu || this._menus.has(menu) || !this._enabled())
             return;
-        if (!actor.has_style_class_name?.('dock-app-menu') || !menu.box)
+        if (!(actor instanceof St.Widget) || !actor.has_style_class_name('dock-app-menu') || !menu.box)
             return;
         const manager = new UIManager(this._path, this._settings, this._logger, { menu }, false, 'enable-extra-menu-glass', PANEL_MENU_PREFIX, `menu:dock${++this._attached}`, false);
-        // Dash to Dock's menus may not be built the way UIManager expects.
-        try {
-            manager.setup();
-        }
-        catch (e) {
-            manager.cleanup();
-            this._logger.log(`[Liquid Glass] Could not attach glass to a Dash to Dock menu: ${e}`);
-            return;
-        }
-        this._menus.set(menu, manager);
-        actor.connect('destroy', () => {
-            if (this._menus.get(menu) !== manager)
-                return;
+        manager.setup();
+        const destroyId = actor.connect('destroy', () => {
             this._menus.delete(menu);
             manager.cleanup();
         });
+        this._menus.set(menu, { manager, actor, destroyId });
+    }
+
+    _detachAll() {
+        for (const { manager, actor, destroyId } of this._menus.values()) {
+            actor.disconnect(destroyId);
+            manager.cleanup();
+        }
+        this._menus.clear();
     }
 
     cleanup() {
         for (const { target, id } of this._signals)
             target.disconnect(id);
         this._signals = [];
-        if (this._settingsId)
-            this._settings.disconnect(this._settingsId);
-        this._settingsId = 0;
-        for (const manager of this._menus.values())
-            manager.cleanup();
-        this._menus.clear();
+        for (const id of this._settingsIds)
+            this._settings.disconnect(id);
+        this._settingsIds = [];
+        this._detachAll();
     }
 }
 
