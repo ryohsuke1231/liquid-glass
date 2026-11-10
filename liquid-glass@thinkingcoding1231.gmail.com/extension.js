@@ -26,6 +26,17 @@ const QUICK_SETTINGS_DELAY_MS = 1500;
 
 export default class LiquidGlassExtension extends Extension {
   enable() {
+    // The shell does not call disable() for an extension whose enable() threw, so what was set up
+    // until then is taken down here.
+    try {
+      this._setup();
+    } catch (e) {
+      this.disable();
+      throw e;
+    }
+  }
+
+  _setup() {
     this._settings = this.getSettings();
     this._logger = new Logger(this._settings);
     // Modules without settings of their own log through the same
@@ -99,8 +110,9 @@ export default class LiquidGlassExtension extends Extension {
     this._dumpShortcut.setup();
   }
 
+  // Also runs after a failed enable(), when only some of these exist.
   disable() {
-    this._dumpShortcut.cleanup();
+    this._dumpShortcut?.cleanup();
     this._dumpShortcut = null;
 
     // Shared state that no single manager owns.
@@ -111,62 +123,62 @@ export default class LiquidGlassExtension extends Extension {
       this._quickSettingsTimeoutId = 0;
     }
 
-    this._panelMenuManager.cleanup();
+    this._panelMenuManager?.cleanup();
     this._panelMenuManager = null;
-    this._dockMenuManager.cleanup();
+    this._dockMenuManager?.cleanup();
     this._dockMenuManager = null;
 
-    this._topBarManager.cleanup();
+    this._topBarManager?.cleanup();
     this._topBarManager = null;
 
-    this._extraTopBarManager.cleanup();
+    this._extraTopBarManager?.cleanup();
     this._extraTopBarManager = null;
 
-    this._hiddenClockGlass.cleanup();
+    this._hiddenClockGlass?.cleanup();
     this._hiddenClockGlass = null;
 
-    this._desktopLayer.cleanup();
+    this._desktopLayer?.cleanup();
     this._desktopLayer = null;
 
-    this._launcher.cleanup();
+    this._launcher?.cleanup();
     this._launcher = null;
 
-    this._blurMyShellWatch.cleanup();
+    this._blurMyShellWatch?.cleanup();
     this._blurMyShellWatch = null;
 
-    this._uiManager.cleanup();
+    this._uiManager?.cleanup();
     this._uiManager = null;
 
-    this._extraDateMenuManager.cleanup();
+    this._extraDateMenuManager?.cleanup();
     this._extraDateMenuManager = null;
 
     this._quickSettingsManager?.cleanup();
     this._quickSettingsManager = null;
 
     // Before the icon styler, which the docks' icons are watched by.
-    this._dockWatcher.cleanup();
+    this._dockWatcher?.cleanup();
     this._dockWatcher = null;
 
-    this._iconStyler.cleanup();
+    this._iconStyler?.cleanup();
     this._iconStyler = null;
 
-    this._notificationManager.cleanup();
+    this._notificationManager?.cleanup();
     this._notificationManager = null;
 
-    this._osdManager.cleanup();
+    this._osdManager?.cleanup();
     this._osdManager = null;
 
-    this._applicationManager.cleanup();
+    this._applicationManager?.cleanup();
     this._applicationManager = null;
 
-    this._windowListService.cleanup();
+    this._windowListService?.cleanup();
     this._windowListService = null;
 
     untrackViewPaints();
     clearShaderSources();
     removeGlassDiagnostics();
     setUtilsLogger(null);
-    this._logger.cleanup();
+    this._logger?.cleanup();
     this._logger = null;
     this._settings = null;
   }
