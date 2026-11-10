@@ -21,6 +21,7 @@ import {
 
 import { MENU_NO_ANIMATION } from './shellVersion.js';
 import { Logger } from './logger.js';
+import { BarGrowth, menuGrowthHost } from './barGrowth.js';
 
 // Room around the glass rect for the shader's edge effects.
 const SHADER_PADDING = 20;
@@ -197,6 +198,7 @@ export class QuickSettingsManager {
 
   private _growFromButton: boolean = true;
   private _morph: MenuMorph | null = null;
+  private _barGrowth: BarGrowth;
   // Multi Monitors Bar opens this menu from its own bar's button and hands it back to the main bar's button as it
   // closes, so the glass closes into the button it opened from.
   private _openedFrom: Clutter.Actor | null = null;
@@ -282,6 +284,19 @@ export class QuickSettingsManager {
     this.animActor = Main.panel.statusArea.quickSettings.menu.box;
 
     this.glass = null;
+    this._barGrowth = new BarGrowth(menuGrowthHost(this.menu, this.targetActor, this.animActor, {
+      // Only the whole menu's glass can become the bar's; the individual buttons keep theirs.
+      source: () => {
+        if (!(this.glass instanceof BackdropGlass)) return null;
+        const opener = this._openedFrom;
+        return opener && isActorValid(opener) && opener.mapped ? opener : this.menu?.sourceActor ?? null;
+      },
+      button: () => this._buttonRect(),
+      expand: () => this._glassExpand,
+      radius: () => this._cornerRadius,
+      intervalMs: () => this._animationInterval,
+      speed: () => this._morphSpeed,
+    }));
 
     this._signals = [];
     this._frameSyncId = 0;
@@ -630,6 +645,7 @@ export class QuickSettingsManager {
         if (!this.menu.actor.mapped) {
           stopFrameSync();
           this._forgetSubmenus();
+          this._barGrowth.release();
 
           if (this.glass) {
             this.glass.hide();
@@ -1060,6 +1076,12 @@ export class QuickSettingsManager {
   // Every frame in background mode.
   _syncGeometry() {
     if (this._morph) return;
+    // A bar the menu grows out of draws its glass.
+    if (this._barGrowth.holdAtRest()) {
+      this.glass?.hide();
+      this._adjustSubmenuPositions();
+      return;
+    }
     if (!this.glass || !this.targetActor || !this.targetActor.mapped) {
       if (this.glass && this.glass.visible) this.glass.hide();
       return;
@@ -1612,6 +1634,13 @@ export class QuickSettingsManager {
       return;
     }
 
+    // A menu that grows out of the top bar moves with the bar's glass, whichever animation the menu has.
+    if (St.Settings.get().enable_animations && this._barGrowth.start(targetValue === 1)) {
+      this._endMorph();
+      this.glass?.hide();
+      return;
+    }
+
     if (this._growFromButton && St.Settings.get().enable_animations && this._startMorph(targetValue === 1))
       return;
     this._endMorph();
@@ -1972,6 +2001,7 @@ export class QuickSettingsManager {
     this._toggleStyles.clear();
 
     this._disconnectEffectSignals();
+    this._barGrowth.release();
     this._restoreMenuActors();
 
     const glass = this.glass;

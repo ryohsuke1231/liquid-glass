@@ -117,6 +117,10 @@ function notificationFixture() {
     // Perf helpers from the render branch; stubbed to their plain behaviour.
     setClipIfChanged: (actor, ...clip) => actor.set_clip(...clip),
     isFrameSyncFrozen: () => false,
+    // A banner floating below the bar, not grown out of it.
+    BarGrowth: class { start() { return false; } holdAtRest() { return false; } release() {} },
+    MessageTray: { State: { HIDING: 3 } },
+    attachRectToEdge: rect => rect,
   });
   const manager = new C('', new Settings(), { error() {} });
   return { ...clock, manager, tray, monitor };
@@ -125,7 +129,8 @@ function actorStub() {
   return { visible: false, opacity: 0, show() { this.visible = true; }, hide() { this.visible = false; },
     set_position(...v) { this.position = v; }, set_size(...v) { this.size = v; },
     set_clip() {}, remove_clip() {}, remove_transition() {},
-    setShadowMaxRadius() {}, setResolution() {}, setGlassGeometry(...v) { this.geometry = v; }, syncSources() {} };
+    setShadowMaxRadius() {}, setResolution() {}, setGlassGeometry(...v) { this.geometry = v; }, syncSources() {},
+    setAttachedEdge() {} };
 }
 test('notification glass follows transformed dimensions and inherited opacity on offset monitor', () => {
   const { manager: m } = notificationFixture();

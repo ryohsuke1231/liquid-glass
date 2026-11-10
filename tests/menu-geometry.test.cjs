@@ -41,6 +41,8 @@ function fixture() {
   };
   Object.assign(manager, {
     animActor: body, targetActor: outer, glass,
+    // A menu floating below the bar, not grown out of it.
+    _barGrowth: { holdAtRest: () => false },
     _enableAnimation: true, _glassExpand: 0, _cornerRadius: 30,
     _menuXoffset: 0, _menuYoffset: 0,
     _getMenuMonitorGeometry: () => monitor,

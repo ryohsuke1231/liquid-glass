@@ -5,8 +5,14 @@ import { BackdropGlass } from './rendering/backdropGlass.js';
 import { reportFrameLoopError } from './logger.js';
 import { ensureGlassAllocated, setClipIfChanged, isActorValid, placeScreenGlass, GLASS_SHADOW_MAX_RADIUS } from './actors.js';
 import { isFrameSyncFrozen, SAME_FRAME_WINDOW_US, startStageLoop, stopStageLoop, hexToColorArray } from './animation.js';
+import { MAX_GLASS_GROWTHS } from './rendering/glassRenderer.js';
+import { addGrowthBar, removeGrowthBar, cornerReach, layoutGrowths } from './growthBars.js';
 // Room around the glass rect for the shader's edge effects.
 export const SHADER_PADDING = 20;
+// How far past the glass (and the menus grown out of it) the dock glass draws, for its shadow.
+const DOCK_CLIP_PADDING = 200;
+// The setting a menu's BarGrowth asks with, which the dock answers by dock-menus-grow.
+const MENUS_GROW_KEY = 'top-bar-menus-grow';
 // The dock glass's look, from the dock-* settings, for every kind of dock.
 const DOCK_MATERIAL = [
     ['dock-tint-color', (g, s) => g.setTintColor(...hexToColorArray(s.get_string('dock-tint-color')))],
@@ -29,11 +35,27 @@ export function createDockGlass(extensionPath, settings, logger, owner) {
 
 /** Keeps the glass `glass()` returns, if any, in the dock's look. Returns the ids of the signals on `settings`. */
 export function followDockMaterial(settings, glass) {
-    return DOCK_MATERIAL.map(([key, apply]) => settings.connect(`changed::${key}`, () => {
+    const ids = DOCK_MATERIAL.map(([key, apply]) => settings.connect(`changed::${key}`, () => {
         const current = glass();
         if (current)
             apply(current, settings);
     }));
+    // The attachment is applied with the geometry on the next frame, which a redraw brings.
+    for (const key of ['dock-attach-to-edge', 'dock-edge-radius'])
+        ids.push(settings.connect(`changed::${key}`, () => glass()?.queue_redraw()));
+    return ids;
+}
+
+/**
+ * Grows `glass` out of `side` when the dock is attached. Returns `rect` (monitor-local, padded by SHADER_PADDING)
+ * reaching that edge and the side, or `rect` unchanged and null while the dock floats.
+ */
+export function attachDockGlass(glass, settings, rect, side, monitorW, monitorH) {
+    const attached = settings.get_boolean('dock-attach-to-edge');
+    glass.setAttachedEdge(attached ? side : 'none', settings.get_double('dock-edge-radius'));
+    return attached
+        ? { rect: attachRectToEdge(rect, side, monitorW, monitorH, SHADER_PADDING), side }
+        : { rect, side: null };
 }
 
 export class DashManager {
@@ -66,6 +88,7 @@ export class DashManager {
     _lastBgY;
     _lastBaseW;
     _lastBaseH;
+    // dock-margin-bottom, or 0 while the glass grows out of the screen edge.
     _marginValue = 0;
     // Tracks the hide/show transition so the reason is logged once, not per frame.
     _lastHidden;
@@ -73,6 +96,13 @@ export class DashManager {
     // _syncGlassGeometryLive().
     _liveRef = null;
     _logger;
+    // The menus grown out of the dock (the tray icons' menus Dock Tray puts in it), by the BarGrowth that holds each:
+    // [x, y, w, h] on the stage and the radius of their free corners. The latest are drawn.
+    _growths = new Map();
+    _drewGrowths = false;
+    // The glass rect last placed (monitor-local, padded) and the screen edge the dock is on.
+    _glassRect = null;
+    _side = null;
 
     constructor(extensionPath, targetActor, settings, logger) {
         this.extensionPath = extensionPath;
@@ -116,12 +146,24 @@ export class DashManager {
                 this.glass?.queue_redraw();
             }
         });
-        connectSetting('dock-margin-bottom', () => {
+        const remargin = () => {
             if (this._isEffectActive)
                 this._applyMargin();
-            this._marginValue = this._settings.get_int('dock-margin-bottom') || 0;
+            this._marginValue = this._effectiveMargin();
+        };
+        connectSetting('dock-margin-bottom', remargin);
+        connectSetting('dock-menus-grow', () => {
+            this._growths.clear();
+            if (this._glassRect)
+                this._placeGlassRect(this._glassRect);
+            this.glass?.queue_redraw();
         });
+        connectSetting('dock-attach-to-edge', remargin);
         this._settingsSignals.push(...followDockMaterial(this._settings, () => this.glass));
+    }
+
+    _effectiveMargin() {
+        return this._settings.get_boolean('dock-attach-to-edge') ? 0 : this._settings.get_int('dock-margin-bottom') || 0;
     }
 
     // Moves the dock away from the screen edge it is closest to by
@@ -129,7 +171,7 @@ export class DashManager {
     _applyMargin() {
         if (!this.targetActor)
             return;
-        let marginBottom = this._settings.get_int('dock-margin-bottom');
+        let marginBottom = this._effectiveMargin();
         let [w, h] = this.targetActor.get_size();
         let [x, y] = this.targetActor.get_transformed_position();
         let monitorIndex = Main.layoutManager.findIndexForActor(this.targetActor);
@@ -159,6 +201,12 @@ export class DashManager {
         }
         this._currentMarginStyle = marginStyle;
         this.targetActor.set_style(`${this._originalStyle} ${marginStyle}`);
+        // Dash to Dock keeps extra room on the edge side for the running dots; the attached glass already runs on to
+        // the edge, so stylesheet.css takes most of that room away.
+        if (this._settings.get_boolean('dock-attach-to-edge'))
+            this.targetActor.add_style_class_name('liquid-glass-attached');
+        else
+            this.targetActor.remove_style_class_name('liquid-glass-attached');
     }
 
     _applyEffect() {
@@ -180,9 +228,10 @@ export class DashManager {
         }
         const glass = createDockGlass(this.extensionPath, this._settings, this._logger, 'dock');
         this.glass = glass;
+        addGrowthBar(this);
         glass.set_size(1.0, 1.0);
         this._applyMargin();
-        this._marginValue = this._settings.get_int('dock-margin-bottom');
+        this._marginValue = this._effectiveMargin();
         this._glassExpand = this._settings.get_int("dock-glass-expand");
         let dockRoot = this.targetActor;
         while (dockRoot && dockRoot.get_parent() !== Main.layoutManager.uiGroup) {
@@ -259,7 +308,11 @@ export class DashManager {
         const [nx, ny] = ref.actor.get_transformed_position();
         if (!Number.isFinite(nx) || !Number.isFinite(ny))
             return;
-        this.glass.setGlassGeometry(ref.rect[0] + (nx - ref.rawX), ref.rect[1] + (ny - ref.rawY), ref.rect[2], ref.rect[3]);
+        let rect = [ref.rect[0] + (nx - ref.rawX), ref.rect[1] + (ny - ref.rawY), ref.rect[2], ref.rect[3]];
+        // The dock's move must not lift the attached side off the edge.
+        if (ref.side)
+            rect = attachRectToEdge(rect, ref.side, ref.monitorW, ref.monitorH, SHADER_PADDING);
+        this._placeGlassRect(rect);
     }
 
     _syncGeometry() {
@@ -287,7 +340,8 @@ export class DashManager {
         this.glass.show();
         this.glass.opacity = this.targetActor.opacity;
         this._syncDockVisibility(bounds, monitor);
-        this._syncDockGlass(bounds, monitor);
+        this._side = dockSide(edges);
+        this._syncDockGlass(bounds, monitor, this._side);
     }
 
     _actorBounds(actor) {
@@ -390,7 +444,7 @@ export class DashManager {
         }
     }
 
-    _syncDockGlass(bounds, monitor) {
+    _syncDockGlass(bounds, monitor, side) {
         const { absX, absY, baseW, baseH } = bounds;
         const w = Math.max(1.0, baseW), h = Math.max(1.0, baseH);
         let bgW = Math.max(1.0, w + (SHADER_PADDING * 2) + (this._glassExpand * 2));
@@ -421,21 +475,111 @@ export class DashManager {
             this._lastScreenW = screenW;
             this._lastScreenH = screenH;
         }
-        // Limit drawing to the dock plus room for its shadow (not
-        // clip_to_allocation, which would cut the shadow off).
-        const CLIP_PADDING = 200;
-        setClipIfChanged(this.glass, localBgX - CLIP_PADDING, localBgY - CLIP_PADDING, bgW + CLIP_PADDING * 2, bgH + CLIP_PADDING * 2);
-        const SHADOW_MAX_RADIUS = CLIP_PADDING - 20;
-        this.glass?.setShadowMaxRadius(SHADOW_MAX_RADIUS);
+        const attachment = attachDockGlass(this.glass, this._settings, [localBgX, localBgY, bgW, bgH], side, screenW, screenH);
+        const [rectX, rectY, rectW, rectH] = attachment.rect;
+        const placed = this._layoutGlassRect([rectX, rectY, rectW, rectH]);
+        this.glass?.setShadowMaxRadius(DOCK_CLIP_PADDING - 20);
         this.glass?.setResolution(screenW, screenH);
-        this.glass?.setGlassGeometry(localBgX, localBgY, bgW, bgH);
+        if (placed)
+            this.glass?.setGlassGeometry(placed[0], placed[1], placed[2], placed[3]);
         const source = this._liveSource;
         this._liveRef = source ? {
             actor: source.actor,
             rawX: source.rawX, rawY: source.rawY,
-            rect: [localBgX, localBgY, bgW, bgH],
+            rect: [rectX, rectY, rectW, rectH],
+            side: attachment.side, monitorW: screenW, monitorH: screenH,
         } : null;
         // After the geometry setters, so the relays cover this frame's rect.
+        this.glass.syncSources();
+    }
+
+    // Sets the glass to `rect` (monitor-local, padded), widened for the menus growing out of it.
+    _placeGlassRect(rect) {
+        const placed = this._layoutGlassRect(rect);
+        if (placed)
+            this.glass.setGlassGeometry(placed[0], placed[1], placed[2], placed[3]);
+    }
+
+    // Draws the menus growing out of the glass at `rect` (monitor-local, padded) and returns the glass's rect, widened
+    // for them. Drawing is limited to the glass and the menus plus room for the shadow (not clip_to_allocation, which
+    // would cut the shadow off).
+    _layoutGlassRect(rect) {
+        const glass = this.glass;
+        if (!glass)
+            return null;
+        this._glassRect = rect;
+        let [x, y, w, h] = rect;
+        let [x1, y1, x2, y2] = [x, y, x + w, y + h];
+        const menus = this._growsMenus() ? [...this._growths.values()].slice(-MAX_GLASS_GROWTHS) : [];
+        if (menus.length > 0 || this._drewGrowths) {
+            // The body as glass.frag draws a dock's: inside the padding and the feathered edge.
+            const p = SHADER_PADDING + this._feather();
+            const ox = glass.x, oy = glass.y;
+            const radius = this._settings.get_double('dock-corner-radius');
+            const smoothing = this._settings.get_double('glass-corner-smoothing');
+            const { bodies, growths } = layoutGrowths([[x + p + ox, y + p + oy, w - p * 2, h - p * 2]], menus, {
+                minX: ox, maxX: ox + glass.width,
+                fillet: this._settings.get_double('dock-edge-radius'),
+                reach: bh => cornerReach(radius, smoothing, bh),
+                direction: this.growDirection,
+            });
+            // A menu reaching past the dock's end takes the end out with it.
+            x = bodies[0][0] - ox - p;
+            w = bodies[0][2] + p * 2;
+            const local = growths.map(g => ({ ...g, x: g.x - ox, y: g.y - oy }));
+            glass.setGrowths(local);
+            this._drewGrowths = local.length > 0;
+            for (const g of local) {
+                x1 = Math.min(x1, g.x);
+                y1 = Math.min(y1, g.y);
+                x2 = Math.max(x2, g.x + g.w);
+                y2 = Math.max(y2, g.y + g.h);
+            }
+        }
+        const c = DOCK_CLIP_PADDING;
+        x1 = Math.min(x1, x);
+        x2 = Math.max(x2, x + w);
+        setClipIfChanged(glass, x1 - c, y1 - c, x2 - x1 + c * 2, y2 - y1 + c * 2);
+        return [x, y, w, h];
+    }
+
+    // Menus grow out of a dock along the top or bottom of the screen, by dock-menus-grow.
+    _growsMenus() {
+        return (this._side === 'top' || this._side === 'bottom') && this._settings.get_boolean('dock-menus-grow');
+    }
+
+    /** Out of a dock at the bottom things grow up; out of one at the top, down. */
+    get growDirection() {
+        return this._side === 'top' ? 1 : -1;
+    }
+
+    growsFrom(source, key) {
+        return key === MENUS_GROW_KEY && this._isEffectActive && this._growsMenus() && this._glassRect !== null &&
+            !!this.glass?.visible && this.glass.opacity > 0 && isActorValid(source) && source.mapped &&
+            isActorValid(this.targetActor) && this.targetActor.contains(source);
+    }
+
+    /** The stage y of the glass's side facing the screen: its top for a dock at the bottom, its bottom for one at the top. */
+    glassEdge() {
+        const [, y, , h] = this._glassRect ?? [0, 0, 0, 0];
+        const oy = this.glass?.y ?? 0;
+        const inset = SHADER_PADDING + this._feather();
+        return this.growDirection > 0 ? oy + y + h - inset : oy + y + inset;
+    }
+
+    // How far glass.frag keeps a dock's body inside its rect past the padding: the feathered edge, which it does not
+    // take off the menus grown out of it.
+    _feather() {
+        return Math.max(this._settings.get_double('glass-edge-smoothing'), 0.75);
+    }
+
+    setMenuGrowth(owner, rect, radius) {
+        this._growths.delete(owner);
+        if (rect)
+            this._growths.set(owner, { rect, radius });
+        if (!this.glass || !this._glassRect)
+            return;
+        this._placeGlassRect(this._glassRect);
         this.glass.syncSources();
     }
 
@@ -450,6 +594,7 @@ export class DashManager {
     // The next sync shows it again and updates everything.
     _hideGlass() {
         this.glass?.hide();
+        this._glassRect = null;
         this._lastBgW = undefined;
         this._lastBgH = undefined;
         this._lastBgX = undefined;
@@ -475,6 +620,7 @@ export class DashManager {
         this._signals = [];
         if (dockAlive) {
             this.targetActor.remove_style_class_name('liquid-glass-transparent');
+            this.targetActor.remove_style_class_name('liquid-glass-attached');
             if (this._originalStyle !== undefined)
                 this.targetActor.set_style(this._originalStyle);
             for (const child of this.targetActor.get_children()) {
@@ -486,6 +632,10 @@ export class DashManager {
         if (isActorValid(this._dockParent))
             this._dockParent.remove_style_class_name('liquid-glass-transparent');
         this._dockParent = null;
+        removeGrowthBar(this);
+        this._growths.clear();
+        this._drewGrowths = false;
+        this._glassRect = null;
         const glass = this.glass;
         this.glass = null;
         if (glass) {
@@ -600,23 +750,51 @@ export function balanceDockBounds(bounds, reference, edges) {
     return { absX, absY, baseW, baseH };
 }
 
+// The screen edge the dock is closest to.
+export function dockSide(edges) {
+    const { minCenterDist, distBottomCenter, distTopCenter, distRightCenter } = edges;
+    if (minCenterDist === distBottomCenter)
+        return 'bottom';
+    if (minCenterDist === distTopCenter)
+        return 'top';
+    if (minCenterDist === distRightCenter)
+        return 'right';
+    return 'left';
+}
+
 // Trims the dock to `margin` from the screen edge it is closest to.
 export function insetDockBounds(bounds, monitor, edges, margin, stableBaseW, stableBaseH) {
     let { absX, absY, baseW, baseH } = bounds;
-    const { minCenterDist, distBottomCenter, distTopCenter, distRightCenter } = edges;
-    if (minCenterDist === distBottomCenter) {
-        [absY, baseH] = insetSpan(absY, baseH, monitor.y + monitor.height - margin, stableBaseH, false);
-    }
-    else if (minCenterDist === distTopCenter) {
-        [absY, baseH] = insetSpan(absY, baseH, monitor.y + margin, stableBaseH, true);
-    }
-    else if (minCenterDist === distRightCenter) {
-        [absX, baseW] = insetSpan(absX, baseW, monitor.x + monitor.width - margin, stableBaseW, false);
-    }
-    else {
-        [absX, baseW] = insetSpan(absX, baseW, monitor.x + margin, stableBaseW, true);
+    switch (dockSide(edges)) {
+        case 'bottom':
+            [absY, baseH] = insetSpan(absY, baseH, monitor.y + monitor.height - margin, stableBaseH, false);
+            break;
+        case 'top':
+            [absY, baseH] = insetSpan(absY, baseH, monitor.y + margin, stableBaseH, true);
+            break;
+        case 'right':
+            [absX, baseW] = insetSpan(absX, baseW, monitor.x + monitor.width - margin, stableBaseW, false);
+            break;
+        case 'left':
+            [absX, baseW] = insetSpan(absX, baseW, monitor.x + margin, stableBaseW, true);
+            break;
     }
     return { absX, absY, baseW, baseH };
+}
+
+/**
+ * The monitor-local glass rect [x, y, w, h], padded by `pad` on every side, with its side on `side` moved onto the
+ * monitor's edge so the glass grows out of it. The opposite side stays where it is, so a dock sliding out of the
+ * screen draws its glass back into the edge.
+ */
+export function attachRectToEdge(rect, side, monitorW, monitorH, pad) {
+    const [x, y, w, h] = rect;
+    switch (side) {
+        case 'top': return [x, -pad, w, y + h + pad];
+        case 'bottom': return [x, y, w, monitorH + pad - y];
+        case 'left': return [-pad, y, x + w + pad, h];
+        case 'right': return [x, y, monitorW + pad - x, h];
+    }
 }
 
 function insetSpan(start, size, edge, stableSize, leading) {
@@ -762,7 +940,9 @@ export class DhruvaDock {
         if (!monitor)
             return;
         const pad = SHADER_PADDING + this._settings.get_int('dock-glass-expand');
-        const rect = { x: x - pad - monitor.x, y: y - pad - monitor.y, w: w + pad * 2, h: h + pad * 2 };
+        const side = dockSide(dockEdges({ absX: x, absY: y, baseW: w, baseH: h }, monitor));
+        const [rx, ry, rw, rh] = attachDockGlass(glass, this._settings, [x - pad - monitor.x, y - pad - monitor.y, w + pad * 2, h + pad * 2], side, monitor.width, monitor.height).rect;
+        const rect = { x: rx, y: ry, w: rw, h: rh };
         if (sync) {
             glass.show();
             // Dhruva fades the whole dock in and out as it hides.
