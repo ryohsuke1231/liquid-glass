@@ -592,7 +592,8 @@ export class DashManager {
         this._growths.delete(owner);
         if (rect)
             this._growths.set(owner, { rect, radius });
-        if (!this.glass || !this._glassRect)
+        // A growth still running back in at shell shutdown outlives the glass.
+        if (!this.glass || !isActorValid(this.glass) || !this._glassRect)
             return;
         this._placeGlassRect(this._glassRect);
         this.glass.syncSources();

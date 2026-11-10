@@ -342,6 +342,24 @@ export const GlassActor = GObject.registerClass(class GlassActor extends Clutter
 });
 
 /**
+ * Counts the paints of its actor before which a redraw was queued on the actor or below it. A glass's relays are
+ * below it, so the count moves whenever something behind the glass changed, and stays while only what is in front
+ * of it did.
+ */
+const RedrawCounter = GObject.registerClass(class RedrawCounter extends Clutter.Effect {
+    _init() {
+        super._init();
+        this.count = 0;
+    }
+
+    vfunc_paint_node(node, paintContext, flags) {
+        if (flags & Clutter.EffectPaintFlags.ACTOR_DIRTY)
+            this.count++;
+        super.vfunc_paint_node(node, paintContext, flags);
+    }
+});
+
+/**
  * A glass drawn straight onto the stage (dock, menus, notifications, OSDs,
  * Quick Settings' background mode): it copies its own backdrop from the
  * stage view it is painted on.
@@ -351,6 +369,9 @@ export const BackdropGlass = GObject.registerClass(paintNodeWithContext(class Ba
         super._init(params);
         this._relays = new RelaySet(this);
         this._copier = new StageCopier(this._logger);
+        this._redraws = new RedrawCounter();
+        this.add_effect(this._redraws);
+        this._refreshId = 0;
         this._wasPainted = false;
         this._serialAtMap = 0;
         this._underWindows = params.underWindows ?? false;
@@ -421,7 +442,9 @@ export const BackdropGlass = GObject.registerClass(paintNodeWithContext(class Ba
         // off. The last copy is kept meanwhile, and the area is copied again
         // once no window is over it.
         const covered = this._underWindows && windowMayCover(this, stageRect);
-        const { copy, missed, fresh } = this._copier.take(this, root, paintContext, stageRect, covered);
+        const { copy, missed, fresh, spared } = this._copier.take(this, root, paintContext, stageRect, covered, this._redraws.count);
+        if (spared)
+            this._refreshLater();
         if (covered)
             this._copyDoubtful = true;
         else if (fresh)
@@ -448,10 +471,25 @@ export const BackdropGlass = GObject.registerClass(paintNodeWithContext(class Ba
         });
     }
 
+    // Something behind the glass that no relay follows (what an ancestor draws itself) may have changed in a
+    // frame whose copy was spared, so the area is redrawn once more a little later.
+    _refreshLater() {
+        if (this._refreshId)
+            return;
+        this._refreshId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, SPARED_COPY_REFRESH_MS, () => {
+            this._refreshId = 0;
+            this._relays.redrawArea();
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
     /** Counters for the test driver and the dump. */
     get stats() {
         const c = this._copier;
-        return { paints: this._paints, copies: c.copyCount, reuses: c.reuseCount, misses: c.missCount, offStage: c.offStageCount };
+        return {
+            paints: this._paints, copies: c.copyCount, reuses: c.reuseCount, misses: c.missCount,
+            offStage: c.offStageCount, spared: c.sparedCount,
+        };
     }
 
     describe() {
@@ -467,6 +505,10 @@ export const BackdropGlass = GObject.registerClass(paintNodeWithContext(class Ba
     // The relays go with the glass when the caller destroys it; at shell
     // shutdown they can already be gone by the time this runs.
     cleanup() {
+        if (this._refreshId) {
+            GLib.Source.remove(this._refreshId);
+            this._refreshId = 0;
+        }
         super.cleanup();
         this._relays.clear();
         this._copier.clear();
@@ -728,6 +770,20 @@ function windowReaches(actor, area) {
         r.y - m < area[3] && r.y + r.height + m > area[1];
 }
 
+// Copies a rect of a stage view's framebuffer while the stage is painted.
+// Everything painted before the copying actor is in the framebuffer by the
+// time its paint nodes run. Only the frame's redraw clip holds current pixels,
+// though; outside it the framebuffer still has the previous frame. So a copy
+// is taken only when the clip contains the whole rect, and reused otherwise.
+//
+// Where the stage cannot redraw part of a view (no buffer age), every frame's
+// clip is the whole view, and a video anywhere on a monitor would have every
+// glass on it copy and blur again on each of its frames. A redraw of a whole
+// view therefore takes a new copy only if a redraw was queued behind the glass
+// since the last one (see RedrawCounter).
+// How long a copy that whole-view redraws left alone may stay before it is taken again.
+const SPARED_COPY_REFRESH_MS = 250;
+
 // An offscreen texture to render or blit into. A blit needs both sides fixed
 // point or both floating point, so `format` follows the source when that is
 // an offscreen (rotated or HDR views); null is the default RGBA8888_PRE.
@@ -788,6 +844,11 @@ export function untrackViewPaints() {
     paintingView = null;
 }
 
+// Whether the redraw clip is the whole of a view; no clip at all is an unclipped redraw.
+function coversView(clip, layout) {
+    return !clip || clip.contains_rectangle(layout) === Mtk.RegionOverlap.IN;
+}
+
 export class StageCopier {
     _logger;
     _copies = new Map();
@@ -798,6 +859,7 @@ export class StageCopier {
     reuseCount = 0;
     offStageCount = 0;
     missCount = 0;
+    sparedCount = 0;
 
     constructor(_logger) {
         this._logger = _logger;
@@ -819,9 +881,11 @@ export class StageCopier {
      * last one taken on this view. `missed` is set when there is nothing to
      * draw with yet; the caller should get the rect redrawn in a later frame.
      * `fresh` is set when this paint took a new copy. With `keep`, the last
-     * copy is drawn with even when the clip covers the rect.
+     * copy is drawn with even when the clip covers the rect. `redraws` is the
+     * owner's RedrawCounter count; with it, a redraw of the whole view keeps a
+     * copy nothing was redrawn behind, and `spared` is set.
      */
-    take(actor, root, paintContext, stageRect, keep = false) {
+    take(actor, root, paintContext, stageRect, keep = false, redraws = -1) {
         const view = StageCopier.liveView(actor, paintContext);
         if (!view) {
             this.offStageCount++;
@@ -871,12 +935,20 @@ export class StageCopier {
             this.missCount++;
             return { copy: null, missed: true, fresh: false };
         }
+        const nowUs = GLib.get_monotonic_time();
+        if (copy?.rect && redraws >= 0 && copy.redraws === redraws && copy.rect.every((v, i) => v === rect[i]) &&
+            nowUs - copy.takenUs < SPARED_COPY_REFRESH_MS * 1000 && coversView(clip, layout)) {
+            this.sparedCount++;
+            return { copy, missed: false, fresh: false, spared: true };
+        }
         const format = fb instanceof Cogl.Offscreen ? offscreenFormat(fb) : null;
         copy = this._target(view, copy, fx1 - fx0, fy1 - fy0, format);
         if (!copy)
             return { copy: null, missed: false, fresh: false };
         addBlit(root, fb, copy.framebuffer, view.color_state, [fx0, fy0, fx1 - fx0, fy1 - fy0]);
         copy.rect = rect;
+        copy.redraws = redraws;
+        copy.takenUs = nowUs;
         copy.serial = ++this._serial;
         this.lastCopy = copy;
         this.copyCount++;
@@ -889,7 +961,7 @@ export class StageCopier {
         const target = createTarget(width, height, format, this._logger);
         if (!target)
             return null;
-        const next = { ...target, view, width, height, format, rect: null, serial: 0 };
+        const next = { ...target, view, width, height, format, rect: null, serial: 0, redraws: -1, takenUs: 0 };
         this._copies.set(view, next);
         return next;
     }

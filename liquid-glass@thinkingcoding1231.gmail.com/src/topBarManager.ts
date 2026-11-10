@@ -435,8 +435,9 @@ export class TopBarManager implements GrowthBar {
   // The bar grows by the margin and padding while each button keeps the theme's height. The
   // wrappers around the buttons fill the whole bar, so a press at the screen edge still lands.
   private _applyLayout(): void {
-    // set_style() below emits style-changed on the panel, which calls back in here.
-    if (!this._glass || this._applyingLayout) return;
+    // set_style() below emits style-changed on the panel, which calls back in here. At shell shutdown the panel's
+    // boxes are destroyed before the style of what is left of it changes.
+    if (!this._glass || this._applyingLayout || !this._sections().every(isActorValid)) return;
     this._applyingLayout = true;
     try {
       const panel = this._panel;
@@ -667,7 +668,8 @@ export class TopBarManager implements GrowthBar {
   // Draws the bar, widened for the menus growing out of it, and the menus.
   private _applyGrowths(): void {
     const glass = this._glass;
-    if (!glass || this._bodies.length === 0) return;
+    // A growth still running back in at shell shutdown outlives the glass.
+    if (!glass || !isActorValid(glass) || this._bodies.length === 0) return;
     const { bodies, growths } = this._layoutGrowths([...this._growths.values()].slice(-MAX_GLASS_GROWTHS));
 
     const p = SHADER_PADDING;

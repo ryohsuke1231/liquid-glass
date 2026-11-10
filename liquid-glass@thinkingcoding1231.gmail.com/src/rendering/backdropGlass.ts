@@ -350,6 +350,29 @@ export const GlassActor = GObject.registerClass(
 export type GlassActor = InstanceType<typeof GlassActor>;
 
 /**
+ * Counts the paints of its actor before which a redraw was queued on the actor or below it. A glass's relays are
+ * below it, so the count moves whenever something behind the glass changed, and stays while only what is in front
+ * of it did.
+ */
+const RedrawCounter = GObject.registerClass(
+  class RedrawCounter extends Clutter.Effect {
+    declare count: number;
+
+    _init(): void {
+      super._init();
+      this.count = 0;
+    }
+
+    vfunc_paint_node(node: Clutter.PaintNode, paintContext: Clutter.PaintContext, flags: Clutter.EffectPaintFlags): void {
+      if (flags & Clutter.EffectPaintFlags.ACTOR_DIRTY) this.count++;
+      super.vfunc_paint_node(node, paintContext, flags);
+    }
+  }
+);
+
+type RedrawCounter = InstanceType<typeof RedrawCounter>;
+
+/**
  * A glass drawn straight onto the stage (dock, menus, notifications, OSDs,
  * Quick Settings' background mode): it copies its own backdrop from the
  * stage view it is painted on.
@@ -366,11 +389,17 @@ export const BackdropGlass = GObject.registerClass(paintNodeWithContext(
     // Whether the copy may hold a window that covered the backdrop, or the
     // backdrop changed while no copy was taken; see vfunc_paint_node().
     declare private _copyDoubtful: boolean;
+    declare private _redraws: RedrawCounter;
+    // Takes the copy a whole-view redraw left alone again; see StageCopier.take().
+    declare private _refreshId: number;
 
     _init(params: GlassActorParams = {}) {
       super._init(params);
       this._relays = new RelaySet(this);
       this._copier = new StageCopier(this._logger);
+      this._redraws = new RedrawCounter();
+      this.add_effect(this._redraws);
+      this._refreshId = 0;
       this._wasPainted = false;
       this._serialAtMap = 0;
       this._underWindows = params.underWindows ?? false;
@@ -437,7 +466,9 @@ export const BackdropGlass = GObject.registerClass(paintNodeWithContext(
       // off. The last copy is kept meanwhile, and the area is copied again
       // once no window is over it.
       const covered = this._underWindows && windowMayCover(this, stageRect);
-      const { copy, missed, fresh } = this._copier.take(this, root, paintContext, stageRect, covered);
+      const { copy, missed, fresh, spared } = this._copier.take(this, root, paintContext, stageRect, covered,
+        this._redraws.count);
+      if (spared) this._refreshLater();
       if (covered) this._copyDoubtful = true;
       else if (fresh) this._copyDoubtful = false;
       // Nothing to draw with yet, or a doubtful copy: the next frame redraws the whole area.
@@ -460,10 +491,24 @@ export const BackdropGlass = GObject.registerClass(paintNodeWithContext(
       });
     }
 
+    // Something behind the glass that no relay follows (what an ancestor draws itself) may have changed in a
+    // frame whose copy was spared, so the area is redrawn once more a little later.
+    private _refreshLater(): void {
+      if (this._refreshId) return;
+      this._refreshId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, SPARED_COPY_REFRESH_MS, () => {
+        this._refreshId = 0;
+        this._relays.redrawArea();
+        return GLib.SOURCE_REMOVE;
+      });
+    }
+
     /** Counters for the test driver and the dump. */
-    get stats(): { paints: number, copies: number, reuses: number, misses: number, offStage: number } {
+    get stats(): { paints: number, copies: number, reuses: number, misses: number, offStage: number, spared: number } {
       const c = this._copier;
-      return { paints: this._paints, copies: c.copyCount, reuses: c.reuseCount, misses: c.missCount, offStage: c.offStageCount };
+      return {
+        paints: this._paints, copies: c.copyCount, reuses: c.reuseCount, misses: c.missCount,
+        offStage: c.offStageCount, spared: c.sparedCount,
+      };
     }
 
     describe(): object {
@@ -479,6 +524,10 @@ export const BackdropGlass = GObject.registerClass(paintNodeWithContext(
     // The relays go with the glass when the caller destroys it; at shell
     // shutdown they can already be gone by the time this runs.
     cleanup(): void {
+      if (this._refreshId) {
+        GLib.Source.remove(this._refreshId);
+        this._refreshId = 0;
+      }
       super.cleanup();
       this._relays.clear();
       this._copier.clear();
@@ -744,6 +793,15 @@ function windowReaches(actor: Meta.WindowActor, area: number[]): boolean {
 // time its paint nodes run. Only the frame's redraw clip holds current pixels,
 // though; outside it the framebuffer still has the previous frame. So a copy
 // is taken only when the clip contains the whole rect, and reused otherwise.
+//
+// Where the stage cannot redraw part of a view (no buffer age), every frame's
+// clip is the whole view, and a video anywhere on a monitor would have every
+// glass on it copy and blur again on each of its frames. A redraw of a whole
+// view therefore takes a new copy only if a redraw was queued behind the glass
+// since the last one (see RedrawCounter).
+
+// How long a copy that whole-view redraws left alone may stay before it is taken again.
+const SPARED_COPY_REFRESH_MS = 250;
 
 // The copy of one stage view's pixels.
 export interface ViewCopy {
@@ -757,6 +815,9 @@ export interface ViewCopy {
   // until the first copy.
   rect: number[] | null;
   serial: number;
+  // The owner's redraw count and the time (us) when it was taken.
+  redraws: number;
+  takenUs: number;
 }
 
 // An offscreen texture to render or blit into. A blit needs both sides fixed
@@ -819,6 +880,11 @@ export function untrackViewPaints(): void {
   paintingView = null;
 }
 
+// Whether the redraw clip is the whole of a view; no clip at all is an unclipped redraw.
+function coversView(clip: Mtk.Region | null, layout: Mtk.Rectangle): boolean {
+  return !clip || clip.contains_rectangle(layout) === Mtk.RegionOverlap.IN;
+}
+
 export class StageCopier {
   private _copies = new Map<Clutter.StageView, ViewCopy>();
   private _serial = 0;
@@ -829,6 +895,7 @@ export class StageCopier {
   reuseCount = 0;
   offStageCount = 0;
   missCount = 0;
+  sparedCount = 0;
 
   constructor(private _logger?: Logger) {}
 
@@ -847,10 +914,13 @@ export class StageCopier {
    * last one taken on this view. `missed` is set when there is nothing to
    * draw with yet; the caller should get the rect redrawn in a later frame.
    * `fresh` is set when this paint took a new copy. With `keep`, the last
-   * copy is drawn with even when the clip covers the rect.
+   * copy is drawn with even when the clip covers the rect. `redraws` is the
+   * owner's RedrawCounter count; with it, a redraw of the whole view keeps a
+   * copy nothing was redrawn behind, and `spared` is set.
    */
   take(actor: Clutter.Actor, root: Clutter.PaintNode, paintContext: Clutter.PaintContext,
-    stageRect: number[], keep = false): { copy: ViewCopy | null, missed: boolean, fresh: boolean } {
+    stageRect: number[], keep = false, redraws = -1,
+  ): { copy: ViewCopy | null, missed: boolean, fresh: boolean, spared?: boolean } {
     const view = StageCopier.liveView(actor, paintContext);
     if (!view) {
       this.offStageCount++;
@@ -902,12 +972,21 @@ export class StageCopier {
       return { copy: null, missed: true, fresh: false };
     }
 
+    const nowUs = GLib.get_monotonic_time();
+    if (copy?.rect && redraws >= 0 && copy.redraws === redraws && copy.rect.every((v, i) => v === rect[i]) &&
+      nowUs - copy.takenUs < SPARED_COPY_REFRESH_MS * 1000 && coversView(clip, layout)) {
+      this.sparedCount++;
+      return { copy, missed: false, fresh: false, spared: true };
+    }
+
     const format = fb instanceof Cogl.Offscreen ? offscreenFormat(fb) : null;
     copy = this._target(view, copy, fx1 - fx0, fy1 - fy0, format);
     if (!copy) return { copy: null, missed: false, fresh: false };
     addBlit(root, fb, copy.framebuffer, view.color_state, [fx0, fy0, fx1 - fx0, fy1 - fy0]);
 
     copy.rect = rect;
+    copy.redraws = redraws;
+    copy.takenUs = nowUs;
     copy.serial = ++this._serial;
     this.lastCopy = copy;
     this.copyCount++;
@@ -919,7 +998,7 @@ export class StageCopier {
     if (copy && copy.width === width && copy.height === height && copy.format === format) return copy;
     const target = createTarget(width, height, format, this._logger);
     if (!target) return null;
-    const next: ViewCopy = { ...target, view, width, height, format, rect: null, serial: 0 };
+    const next: ViewCopy = { ...target, view, width, height, format, rect: null, serial: 0, redraws: -1, takenUs: 0 };
     this._copies.set(view, next);
     return next;
   }
