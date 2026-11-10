@@ -4,6 +4,9 @@ import { setUniformArray } from '../shellVersion.js';
 import { hexToColorArray } from '../animation.js';
 // Must match glass.frag's `#define MAX_GLASS_REGIONS 16`.
 export const MAX_GLASS_REGIONS = 16;
+const ATTACHED_EDGES = ['none', 'top', 'bottom', 'left', 'right'];
+// Must match glass.frag's `#define MAX_GLASS_GROWTHS 3`: a menu closing, another opening and a notification.
+export const MAX_GLASS_GROWTHS = 3;
 
 /**
  * What every glass draws with, whatever supplies its backdrop: the shader
@@ -201,6 +204,28 @@ export class GlassRenderer {
         this._repaintIfDirty();
     }
 
+    /** Grows the glass out of `edge`, flaring into it with fillets of `radius` px. */
+    setAttachedEdge(edge, radius) {
+        this.uniforms.set('attach_edge', ATTACHED_EDGES.indexOf(edge));
+        this.uniforms.set('attach_radius', Math.max(radius, 0));
+        this._repaintIfDirty();
+    }
+
+    /** Joins `growths` (the first MAX_GLASS_GROWTHS) to the glass. */
+    setGrowths(growths) {
+        const used = growths.slice(0, MAX_GLASS_GROWTHS);
+        const slot = (pick) => Array.from({ length: MAX_GLASS_GROWTHS }, (_, i) => (used[i] ? pick(used[i]) : 0));
+        this.uniforms.set('grow_count', used.length);
+        this.uniforms.setArray('grow_f', Array.from({ length: MAX_GLASS_GROWTHS * 2 }, (_, i) => Math.max(used[Math.floor(i / 2)]?.fillets[i % 2] ?? 0, 0)));
+        this.uniforms.setArray('grow_x', slot(g => g.x));
+        this.uniforms.setArray('grow_y', slot(g => g.y));
+        this.uniforms.setArray('grow_w', slot(g => g.w));
+        this.uniforms.setArray('grow_h', slot(g => g.h));
+        this.uniforms.setArray('grow_r', Array.from({ length: MAX_GLASS_GROWTHS * 4 }, (_, i) => Math.max(used[Math.floor(i / 4)]?.radii[i % 4] ?? 0, 0)));
+        this.geometry.growths = used.map(g => [g.x, g.y, g.w, g.h]);
+        this._repaintIfDirty();
+    }
+
     setAnimationScale(scale) {
         if (this.material.setAnimationScale(scale))
             this._repaintIfDirty();
@@ -306,6 +331,8 @@ export class GlassGeometry {
     rect = [0, 0, 0, 0];
     regions = [];
     multiRegion = false;
+    // The menus grown out of the glass, [x, y, w, h] without padding (setGrowths()).
+    growths = [];
     // Per-instance switches (global._lgGlass.blurRect()/compositeRect()).
     blurEnabled;
     compositeEnabled;
@@ -381,7 +408,8 @@ export class GlassGeometry {
     /**
      * The union [x0, y0, x1, y1] of the glass bodies, or null. The rect a
      * manager passes is the background box; the shader insets the body by
-     * `padding` (the shadow margin for application windows).
+     * `padding` (the shadow margin for application windows), and an attached
+     * glass flares out of it by its fillet radius.
      */
     _glassBodyUnion() {
         const pad = Math.max(this._uniforms.get('padding') ?? 0, 0);
@@ -406,6 +434,20 @@ export class GlassGeometry {
         }
         if (!(x1 > x0) || !(y1 > y0))
             return null;
+        // The fillets only widen the side on the edge, but growing every side keeps this simple and costs little.
+        const flare = (this._uniforms.get('attach_edge') ?? 0) > 0.5 ? Math.max(this._uniforms.get('attach_radius') ?? 0, 0) : 0;
+        x0 -= flare;
+        y0 -= flare;
+        x1 += flare;
+        y1 += flare;
+        for (const [gx, gy, gw, gh] of this.growths) {
+            if (!(gw > 0) || !(gh > 0))
+                continue;
+            x0 = Math.min(x0, gx);
+            y0 = Math.min(y0, gy);
+            x1 = Math.max(x1, gx + gw);
+            y1 = Math.max(y1, gy + gh);
+        }
         return [x0, y0, x1, y1];
     }
 
@@ -632,6 +674,11 @@ export class MaterialSettings {
         this._uniforms.set('dock_y', 0.0);
         this._uniforms.set('dock_w', 0.0);
         this._uniforms.set('dock_h', 0.0);
+        // Floating, not grown out of a screen edge.
+        this._uniforms.set('attach_edge', 0.0);
+        this._uniforms.set('attach_radius', 0.0);
+        // No menus grown out of it.
+        this._uniforms.set('grow_count', 0.0);
         // One glass per region, for Quick Settings' toggle-button mode.
         this._uniforms.set('multi_region_mode', 0.0);
         this._uniforms.set('region_count', 0.0);

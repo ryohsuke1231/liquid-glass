@@ -102,6 +102,27 @@ uniform float dock_y;
 uniform float dock_w;
 uniform float dock_h;
 
+// Glass that grows out of a screen edge: 0 = floating, 1 = top, 2 = bottom,
+// 3 = left, 4 = right. The side on that edge has no corners and widens into
+// the edge through concave fillets of attach_radius px, so the glass reads as
+// part of the screen's border rather than an object over it.
+uniform float attach_edge;
+uniform float attach_radius;
+
+// Menus grown out of the glass (a top bar's): up to MAX_GLASS_GROWTHS boxes in
+// actor px, each with its corners' radii (top left, top right, bottom right,
+// bottom left), joined to the glass through concave fillets of grow_f px on
+// their left and right. A side flush with the glass's end has none, since a
+// rounded union bulges where two straight edges run together.
+#define MAX_GLASS_GROWTHS 3
+uniform float grow_count;
+uniform float grow_f[MAX_GLASS_GROWTHS * 2];
+uniform float grow_x[MAX_GLASS_GROWTHS];
+uniform float grow_y[MAX_GLASS_GROWTHS];
+uniform float grow_w[MAX_GLASS_GROWTHS];
+uniform float grow_h[MAX_GLASS_GROWTHS];
+uniform float grow_r[MAX_GLASS_GROWTHS * 4];
+
 // Multi-region mode, for Quick Settings' toggle-button glass: up to
 // MAX_GLASS_REGIONS separate rounded rects drawn from the same blurred
 // texture. The regions must not overlap, and they get no drop shadow.
@@ -179,6 +200,114 @@ float sdRoundRect(vec2 p, vec2 b, vec2 corner) {
     return (len - r) / max(gradLen, 0.5);
 }
 
+// How far (px) the screen beyond an attached edge is taken to extend. Only
+// has to reach past the actor; the rest is never drawn.
+#define ATTACH_WALL_DEPTH 2048.0
+
+// Into a frame where the attached edge lies towards -y, and back out of it.
+vec2 toEdgeFrame(vec2 p) {
+    if (attach_edge < 1.5)
+        return p;
+    if (attach_edge < 2.5)
+        return vec2(p.x, -p.y);
+    if (attach_edge < 3.5)
+        return p.yx;
+    return vec2(p.y, -p.x);
+}
+
+vec2 fromEdgeFrame(vec2 v) {
+    if (attach_edge < 1.5)
+        return v;
+    if (attach_edge < 2.5)
+        return vec2(v.x, -v.y);
+    if (attach_edge < 3.5)
+        return v.yx;
+    return vec2(-v.y, v.x);
+}
+
+vec2 edgeFrameBox(vec2 b) {
+    return attach_edge > 2.5 ? b.yx : b;
+}
+
+// The two pieces an attached glass is made of, in the edge frame: its box run
+// out behind the edge by the corner radius r and the fillet, so the box's
+// corners there are hidden, and the screen past the edge, only as wide as the
+// box and its fillets. Each as the point and half-extents of a box.
+void edgeParts(vec2 p, vec2 b, float r, out vec2 bodyP, out vec2 bodyB, out vec2 wallP, out vec2 wallB) {
+    vec2 q = toEdgeFrame(p);
+    vec2 bb = edgeFrameBox(b);
+    float f = max(attach_radius, 0.0);
+    float run = r + f;
+    bodyP = q + vec2(0.0, run * 0.5);
+    bodyB = vec2(bb.x, bb.y + run * 0.5);
+    wallP = q + vec2(0.0, bb.y + ATTACH_WALL_DEPTH);
+    wallB = vec2(bb.x + f, ATTACH_WALL_DEPTH);
+}
+
+// The rounded union of the body and the wall. For two perpendicular sides it
+// is the exact distance to a circular fillet of radius attach_radius, so the
+// rim, the bevel and the shadow follow the flare like any other edge.
+float roundUnion(float a, float b, float f) {
+    if (f < 0.5)
+        return min(a, b);
+    vec2 u = max(vec2(f - a, f - b), 0.0);
+    return max(f, min(a, b)) - length(u);
+}
+
+float edgeUnion(float body, float wall) {
+    return roundUnion(body, wall, max(attach_radius, 0.0));
+}
+
+// Signed distance to the glass: its rounded box, or that box grown out of the
+// attached edge.
+float sdGlassShape(vec2 p, vec2 b, vec2 corner) {
+    if (attach_edge < 0.5)
+        return sdRoundRect(p, b, corner);
+    vec2 bodyP, bodyB, wallP, wallB;
+    edgeParts(p, b, corner.x, bodyP, bodyB, wallP, wallB);
+    return edgeUnion(sdRoundRect(bodyP, bodyB, corner), sdCircleRoundRect(wallP, wallB, 0.0));
+}
+
+// Where main() put the frame sdGlass() is called in: actor px = p + frame_origin.
+vec2 frame_origin;
+
+// Signed distance to a box with half-extents b and its own circular radius
+// at each corner (top left, top right, bottom right, bottom left; y down).
+float sdCornerBox(vec2 p, vec2 b, vec4 r) {
+    float rr = p.x > 0.0 ? (p.y > 0.0 ? r.z : r.y) : (p.y > 0.0 ? r.w : r.x);
+    rr = clamp(rr, 0.0, min(b.x, b.y));
+    vec2 q = abs(p) - b + vec2(rr);
+    return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - rr;
+}
+
+// sdGlassShape() with the menus grown out of it.
+float sdGlass(vec2 p, vec2 b, vec2 corner) {
+    float d = sdGlassShape(p, b, corner);
+    int count = int(min(grow_count, float(MAX_GLASS_GROWTHS)));
+    vec2 q = p + frame_origin;
+    for (int i = 0; i < MAX_GLASS_GROWTHS; i++) {
+        if (i >= count) break;
+        vec2 extent = vec2(grow_w[i], grow_h[i]) * 0.5;
+        vec2 c = vec2(grow_x[i], grow_y[i]) + extent;
+        vec4 r = vec4(grow_r[i * 4], grow_r[i * 4 + 1], grow_r[i * 4 + 2], grow_r[i * 4 + 3]);
+        // Blended across the middle, so the field stays continuous inside.
+        float side = smoothstep(c.x - extent.x * 0.5, c.x + extent.x * 0.5, q.x);
+        float f = max(mix(grow_f[i * 2], grow_f[i * 2 + 1], side), 0.0);
+        d = roundUnion(d, sdCornerBox(q - c, extent, r), f);
+    }
+    return d;
+}
+
+// The circular-cornered sdGlass(), cheap enough to pick a region with.
+float sdGlassPick(vec2 p, vec2 b, float r) {
+    if (attach_edge < 0.5)
+        return sdCircleRoundRect(p, b, r);
+    r = min(r, min(b.x, b.y));
+    vec2 bodyP, bodyB, wallP, wallB;
+    edgeParts(p, b, r, bodyP, bodyB, wallP, wallB);
+    return edgeUnion(sdCircleRoundRect(bodyP, bodyB, r), sdCircleRoundRect(wallP, wallB, 0.0));
+}
+
 // The region this pixel is most inside of, with its local frame and colours.
 // Far outside every region the local position stays large, which main()
 // already treats as transparent.
@@ -204,7 +333,7 @@ void findActiveRegion(vec2 pixel_coord, float pad, out vec2 outLocalPos, out vec
 
         // Picking the region needs no continuous corners; main() measures the
         // chosen one with them.
-        float d = sdCircleRoundRect(rLocal, rBox, corner_radius);
+        float d = sdGlassPick(rLocal, rBox, corner_radius);
         if (d < bestD) {
             bestD = d;
             outLocalPos = rLocal;
@@ -236,7 +365,7 @@ float profileHeight(float t, float zScale) {
 // Surface height at p. `corner` is the outline's corner (cornerShape()) and
 // `band` the width the height builds up over (see lensBandFor()).
 float getHeight(vec2 p, vec2 b, vec2 corner, float band, float zScale) {
-    float d = sdRoundRect(p, b, corner);
+    float d = sdGlass(p, b, corner);
 
     // Fades out over +-edge_smoothing px instead of stepping to 0 at the edge.
     // A step makes heightGradient()'s finite difference spike across it, which
@@ -283,6 +412,35 @@ vec2 sdRoundRectDir(vec2 p, vec2 b, vec2 corner) {
     return sign(p) * normalize(pow(u, vec2(corner.y - 1.0)) + vec2(1e-6));
 }
 
+// Unit gradient of sdGlass(). On the fillet it blends the two pieces'
+// gradients as the rounded union does, which turns it along the arc.
+vec2 sdGlassDir(vec2 p, vec2 b, vec2 corner) {
+    // The menus' fillets have no closed form worth keeping; a central
+    // difference of the whole field turns smoothly through them.
+    if (grow_count > 0.5) {
+        const float h = 0.5;
+        vec2 g = vec2(sdGlass(p + vec2(h, 0.0), b, corner) - sdGlass(p - vec2(h, 0.0), b, corner),
+                      sdGlass(p + vec2(0.0, h), b, corner) - sdGlass(p - vec2(0.0, h), b, corner));
+        return normalize(g + vec2(1e-6));
+    }
+    if (attach_edge < 0.5)
+        return sdRoundRectDir(p, b, corner);
+    vec2 bodyP, bodyB, wallP, wallB;
+    edgeParts(p, b, corner.x, bodyP, bodyB, wallP, wallB);
+    float body = sdRoundRect(bodyP, bodyB, corner);
+    float wall = sdCircleRoundRect(wallP, wallB, 0.0);
+    vec2 gBody = sdRoundRectDir(bodyP, bodyB, corner);
+    // A corner of exponent 2 and radius 0 is a sharp box's corner.
+    vec2 gWall = sdRoundRectDir(wallP, wallB, vec2(0.0, 2.0));
+    float f = max(attach_radius, 0.0);
+    vec2 g = body < wall ? gBody : gWall;
+    if (f >= 0.5 && min(body, wall) < f) {
+        vec2 u = max(vec2(f - body, f - wall), 0.0);
+        g = u.x * gBody + u.y * gWall;
+    }
+    return fromEdgeFrame(normalize(g + vec2(1e-6)));
+}
+
 // Height gradient of the glass surface at p. The height depends on the signed
 // distance alone, so grad(H) = H'(d) * grad(d): grad(d) is closed-form, and H'(d)
 // takes one central difference along it. Differencing along x and y instead
@@ -291,7 +449,7 @@ vec2 sdRoundRectDir(vec2 p, vec2 b, vec2 corner) {
 // H'(d) is not taken in closed form: the superellipse is vertical at the
 // edge, and the finite difference keeps that slope bounded.
 vec2 heightGradient(vec2 p, vec2 b, vec2 corner, float band, float zScale, vec2 resolution) {
-    vec2 dir = sdRoundRectDir(p, b, corner);
+    vec2 dir = sdGlassDir(p, b, corner);
     float e = gradientStep(resolution);
 
     float hOut = getHeight(p + dir * e, b, corner, band, zScale);
@@ -617,9 +775,13 @@ void main() {
     }
 
     vec2 corner = cornerShape(box_size, corner_radius);
-    float d = sdRoundRect(local_pos, box_size, corner);
+    frame_origin = pixel_coord - local_pos;
+    float d = sdGlass(local_pos, box_size, corner);
 
-    float lensBand = lensBandFor(min(box_size.x, box_size.y));
+    // An attached glass has no far side across its thickness, so the whole of
+    // it can hold the lens.
+    vec2 lensBox = edgeFrameBox(box_size);
+    float lensBand = lensBandFor(attach_edge < 0.5 ? min(lensBox.x, lensBox.y) : min(lensBox.x, lensBox.y * 2.0));
 
 #ifdef LG_SHAPE_TEXTURE
     d = shapeTextureSD(local_pos);

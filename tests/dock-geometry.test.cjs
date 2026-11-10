@@ -4,7 +4,7 @@ const path = require('node:path');
 const { loadModule } = require('./helpers/load-module.cjs');
 const referenceDock = require('./fixtures/dock-geometry-reference.cjs');
 
-function fixture(reference, monitor) {
+function fixture(reference, monitor, attachment = { attached: false, radius: 0 }) {
   const writes = [];
   const actor = (name, props = {}) => ({ x: 0, y: 0, w: 600, h: 80, mapped: true, opacity: 255, children: [],
     get_size() { return [this.w, this.h]; }, get_transformed_position() { return [this.x, this.y]; },
@@ -27,15 +27,21 @@ function fixture(reference, monitor) {
   const glass = new Proxy(glassActor, { get: (t, key) => key in t ? t[key]
     : (...args) => writes.push(['glass', key, ...args]) });
   Object.assign(manager, { targetActor: target, glass,
+    _settings: { get_boolean: key => key === 'dock-attach-to-edge' && attachment.attached,
+      get_double: () => attachment.radius, get_int: () => 0 },
     _marginValue: 0, _glassExpand: 0, _logger: { log: text => writes.push(['log', text]) },
     _findReferenceActor: () => manager.reference ? ref : null });
+  // The manager reads these when it binds its settings, which the fixture skips.
+  if (!reference) manager._readEdgeSettings();
   return { manager, target, background, ref, sync() {
     writes.length = 0;
     manager._syncGeometry();
-    return { writes: structuredClone(writes), state: Object.fromEntries(Object.entries(manager).filter(([k]) =>
+    // The original has no attachment; a floating dock only clears it.
+    const compared = writes.filter(([owner, key]) => owner !== 'glass' || key !== 'setAttachedEdge');
+    return { writes: structuredClone(compared), state: Object.fromEntries(Object.entries(manager).filter(([k]) =>
       k.startsWith('_last') || k.startsWith('_stable'))),
       visible: manager.glass.visible, opacity: manager.glass.opacity, backgroundOpacity: background.opacity };
-  } };
+  }, rect: () => writes.findLast(([owner, key]) => owner === 'glass' && key === 'setGlassGeometry')?.slice(2) };
 }
 
 test('dock geometry matches the original across edges, margins, movement and reference gaps', () => {
@@ -84,4 +90,27 @@ test('a bottom dock growing sideways keeps its margin from the screen edge', () 
     heights.push(f.manager._lastBgH);
   }
   assert.deepEqual(new Set(heights).size, 1, `glass heights ${heights}`);
+});
+
+test('an attached dock glass reaches its screen edge and draws back into it as the dock slides out', () => {
+  const pad = 20;
+  const bottom = fixture(false, { x: 0, y: 0, width: 1920, height: 1080 }, { attached: true, radius: 16 });
+  bottom.manager._glassExpand = 6;
+  bottom.target.children = [bottom.background];
+  Object.assign(bottom.target, { x: 760, y: 990, w: 400, h: 82 });
+  Object.assign(bottom.background, { x: 760, y: 994, w: 400, h: 70 });
+  bottom.sync();
+  // The expansion widens the free sides; the side on the edge ends at it, past the 16px gap Dash to Dock leaves.
+  assert.deepEqual(bottom.rect(), [760 - pad - 6, 994 - pad - 6, 400 + 2 * (pad + 6), 1080 + pad - (994 - pad - 6)]);
+  Object.assign(bottom.target, { y: 1030 });
+  Object.assign(bottom.background, { y: 1034 });
+  bottom.sync();
+  assert.deepEqual(bottom.rect(), [760 - pad - 6, 1034 - pad - 6, 400 + 2 * (pad + 6), 1080 + pad - (1034 - pad - 6)]);
+
+  const left = fixture(false, { x: 1920, y: 120, width: 1920, height: 1200 }, { attached: true, radius: 16 });
+  left.target.children = [left.background];
+  Object.assign(left.target, { x: 1920, y: 400, w: 82, h: 500 });
+  Object.assign(left.background, { x: 1928, y: 410, w: 60, h: 480 });
+  left.sync();
+  assert.deepEqual(left.rect(), [-pad, 410 - 120 - pad, 8 + 60 + 2 * pad, 480 + 2 * pad]);
 });

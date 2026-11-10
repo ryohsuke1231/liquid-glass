@@ -128,6 +128,39 @@ for (const method of [0, 1]) test(`blur method ${method} queues an acyclic graph
   assert.equal(blur.ready, false);
 });
 
+test('a glass on two stage views keeps a blur pool for each', () => {
+  const { blur, context, root, texture } = blurFixture();
+  blur.setBlurMethod(1); blur.setBlurRadius(15);
+  const left = {}, right = {};
+  const sources = new Map([[left, texture(54, 1048)], [right, texture(1288, 1088)]]);
+  const results = new Map();
+  for (const view of [left, right]) {
+    blur.use(view);
+    const source = sources.get(view);
+    blur.resize(context, source.get_width(), source.get_height());
+    blur.render(root(), source, [0, 0, 1, 1], [source, 1]);
+    results.set(view, blur.result);
+  }
+  // The next frame paints both views again with nothing changed behind the glass.
+  for (const view of [left, right]) {
+    blur.use(view);
+    const source = sources.get(view);
+    assert.equal(blur.width, source.get_width());
+    assert.equal(blur.canReuse([source, 1]), true);
+    assert.equal(blur.result, results.get(view));
+  }
+  blur.prune([right]);
+  blur.use(left);
+  assert.equal(blur.ready, false);
+  blur.use(right);
+  assert.equal(blur.result, results.get(right));
+  // A changed setting drops every view's pool.
+  blur.setDownscale(4);
+  blur.use(left);
+  blur.use(right);
+  assert.equal(blur.ready, false);
+});
+
 test('Gaussian radius updates recompile only when the kernel shape changes', () => {
   const { blur, context, root, texture } = blurFixture();
   blur.setBlurMethod(0); blur.setBlurRadius(10);

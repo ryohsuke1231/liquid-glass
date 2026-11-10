@@ -370,6 +370,34 @@ export type BlurMethod = 0 | 1;
 // Cogl.Offscreen is a Cogl.Framebuffer; the type definitions need the cast.
 type CoglFB = Cogl.Framebuffer;
 
+// One set of blur targets, for a source of `width` x `height`.
+interface BlurPool {
+  // Level i of the downsampling chain; see resize() for the sizes.
+  textures: Cogl.Texture2D[];
+  fbos: Cogl.Offscreen[];
+  // The Gaussian horizontal pass output, per level.
+  tempTextures: Cogl.Texture2D[];
+  tempFbos: Cogl.Offscreen[];
+  // Separate output targets per level, so no pass writes a framebuffer that
+  // an earlier pass read. Deferred paint nodes make Cogl track dependencies
+  // between framebuffers, and ping-ponging is a cycle it rejects; the passes
+  // then lose their order and the composite reads an unwritten blur.
+  upTextures: Cogl.Texture2D[];
+  upFbos: Cogl.Offscreen[];
+  // The finished blur, read by the composite, and what it was rendered from.
+  result: Cogl.Texture | null;
+  renderedKey: unknown[] | null;
+  width: number;
+  height: number;
+}
+
+function emptyPool(): BlurPool {
+  return {
+    textures: [], fbos: [], tempTextures: [], tempFbos: [], upTextures: [], upFbos: [],
+    result: null, renderedKey: null, width: 0, height: 0,
+  };
+}
+
 export class BlurRenderer {
   constructor(
     private _pipelines: ShaderPipelines, private _passes: RenderPasses,
@@ -379,13 +407,34 @@ export class BlurRenderer {
   get radius(): number { return this._targetRadius; }
   get downscale(): number { return this._blurDownscale; }
   get passCount(): number { return this.PASS_COUNT; }
-  get result(): Cogl.Texture | null { return this._blurResultTex; }
-  get width(): number { return this._poolWidth; }
-  get height(): number { return this._poolHeight; }
-  get ready(): boolean { return this.PASS_COUNT === 0 || this._blurFbos.length > 0; }
+  get result(): Cogl.Texture | null { return this._pool.result; }
+  get width(): number { return this._pool.width; }
+  get height(): number { return this._pool.height; }
+  get ready(): boolean { return this.PASS_COUNT === 0 || this._pool.fbos.length > 0; }
   get needsCompile(): boolean { return this._gaussianPipelineDirty && this._pendingGaussianKernel !== null; }
 
   invalidate(): void { this._destroyTexturePool(); }
+
+  /**
+   * Draws with the pool kept for `slot` from here on. A glass painted on two
+   * stage views has a source of a different size on each, and sharing one
+   * pool would allocate it anew for every paint.
+   */
+  use(slot: unknown): void {
+    if (slot === this._slot) return;
+    this._parked.set(this._slot, this._pool);
+    this._pool = this._parked.get(slot) ?? emptyPool();
+    this._parked.delete(slot);
+    this._slot = slot;
+  }
+
+  /** Drops the pools of every slot other than the default one that is not in `slots`. */
+  prune(slots: readonly unknown[]): void {
+    for (const slot of this._parked.keys()) {
+      if (slot !== null && !slots.includes(slot)) this._parked.delete(slot);
+    }
+    if (this._slot !== null && !slots.includes(this._slot)) this._pool = emptyPool();
+  }
 
   compilePending(ctx: Cogl.Context): void {
     if (!this.needsCompile) return;
@@ -395,20 +444,20 @@ export class BlurRenderer {
   }
 
   render(parent: any, source: Cogl.Texture, uv: number[], inputKey?: readonly unknown[]): void {
-    this._blurResultTex = null;
-    this._renderedKey = null;
+    this._pool.result = null;
+    this._pool.renderedKey = null;
     if (this.PASS_COUNT <= 0) return;
     if (this._blurMethod === 0) {
       if (this._gaussianHPipeline && this._gaussianVPipeline) this._runGaussianBlur(parent, source, uv);
     } else this._runDualKawaseBlur(parent, source, uv);
     // Only a chain that actually produced a result may be reused later, and
     // the key records the configuration it was produced with.
-    if (inputKey && this._blurResultTex !== null) this._renderedKey = [...inputKey, ...this._configKey()];
+    if (inputKey && this._pool.result !== null) this._pool.renderedKey = [...inputKey, ...this._configKey()];
   }
 
   canReuse(inputKey: readonly unknown[]): boolean {
-    const stored = this._renderedKey;
-    if (stored === null || this._blurResultTex === null || this.PASS_COUNT <= 0) return false;
+    const stored = this._pool.renderedKey;
+    if (stored === null || this._pool.result === null || this.PASS_COUNT <= 0) return false;
     const config = this._configKey();
     if (stored.length !== inputKey.length + config.length) return false;
     for (let i = 0; i < inputKey.length; i++) if (stored[i] !== inputKey[i]) return false;
@@ -416,11 +465,9 @@ export class BlurRenderer {
     return true;
   }
 
-  private _renderedKey: unknown[] | null = null;
-
   private _configKey(): unknown[] {
     const p = this._pipelines;
-    return [this._blurFbos[0] ?? null, this._blurMethod, this.PASS_COUNT, this._blurDownscale,
+    return [this._pool.fbos[0] ?? null, this._blurMethod, this.PASS_COUNT, this._blurDownscale,
       this._blurRadiusDown, this._blurRadiusUp, this._gaussianScale,
       this._gaussianHPipeline, this._gaussianVPipeline,
       p.downsample, p.upsample, p.passthrough, p.boxDown];
@@ -456,36 +503,20 @@ export class BlurRenderer {
   }
 
   describe() {
-    const result = this._blurResultTex;
+    const result = this._pool.result;
     return {
       blurMethod: this._blurMethod, passCount: this.PASS_COUNT,
-      pool: this._poolWidth + 'x' + this._poolHeight, poolLevels: this._blurFbos.length,
+      pool: this._pool.width + 'x' + this._pool.height, poolLevels: this._pool.fbos.length,
       blurResult: result ? result.get_width() + 'x' + result.get_height() : 'NULL (layer 1 falls back to the unblurred copy)',
       radiusDown: this._blurRadiusDown, radiusUp: this._blurRadiusUp, targetRadius: this._targetRadius,
       gaussianPipelines: !!(this._gaussianHPipeline && this._gaussianVPipeline),
     };
   }
 
-  // The texture pool; see resize() for the sizes.
-  private _blurTextures: Cogl.Texture2D[] = [];
-
-  private _blurFbos: Cogl.Offscreen[] = [];
-
-  // The Gaussian horizontal pass output, per level.
-  private _gaussianTempTextures: Cogl.Texture2D[] = [];
-
-  private _gaussianTempFbos: Cogl.Offscreen[] = [];
-
-  // Separate output targets per level, so no pass writes a framebuffer that
-  // an earlier pass read. Deferred paint nodes make Cogl track dependencies
-  // between framebuffers, and ping-ponging is a cycle it rejects; the passes
-  // then lose their order and the composite reads an unwritten blur.
-  private _upTextures: Cogl.Texture2D[] = [];
-
-  private _upFbos: Cogl.Offscreen[] = [];
-
-  // This frame's finished blur, read by the composite.
-  private _blurResultTex: Cogl.Texture | null = null;
+  // The pool being drawn with, and the ones kept for the other slots (see use()).
+  private _pool: BlurPool = emptyPool();
+  private _slot: unknown = null;
+  private _parked = new Map<unknown, BlurPool>();
 
   private _gaussianHPipeline: Cogl.Pipeline | null = null;
   private _gaussianVPipeline: Cogl.Pipeline | null = null;
@@ -503,10 +534,6 @@ export class BlurRenderer {
   private _gaussianBaseSigma: number = 0;
   private _gaussianScale: number = 1.0;
   private _gaussianFetchPairs: number = 0;
-
-  private _poolWidth: number = 0;
-
-  private _poolHeight: number = 0;
 
   // glass-blur-downscale: 2 = half resolution (default), 4 = quarter.
   private _blurDownscale: number = 2;
@@ -549,7 +576,7 @@ export class BlurRenderer {
    * down one more step.
    */
   resize(ctx: Cogl.Context, w: number, h: number): void {
-    this._destroyTexturePool();
+    this._pool = emptyPool();
 
     const shift = this._blurDownscale >= 4 ? 2 : 1;
     let pw = Math.max(w >> shift, 1);
@@ -557,23 +584,23 @@ export class BlurRenderer {
 
     for (let i = 0; i < this.PASS_COUNT; i++) {
       const tex = Cogl.Texture2D.new_with_size(ctx, pw, ph);
-      this._blurTextures.push(tex);
-      this._blurFbos.push(Cogl.Offscreen.new_with_texture(tex));
+      this._pool.textures.push(tex);
+      this._pool.fbos.push(Cogl.Offscreen.new_with_texture(tex));
 
       const tmpTex = Cogl.Texture2D.new_with_size(ctx, pw, ph);
-      this._gaussianTempTextures.push(tmpTex);
-      this._gaussianTempFbos.push(Cogl.Offscreen.new_with_texture(tmpTex));
+      this._pool.tempTextures.push(tmpTex);
+      this._pool.tempFbos.push(Cogl.Offscreen.new_with_texture(tmpTex));
 
       const upTex = Cogl.Texture2D.new_with_size(ctx, pw, ph);
-      this._upTextures.push(upTex);
-      this._upFbos.push(Cogl.Offscreen.new_with_texture(upTex));
+      this._pool.upTextures.push(upTex);
+      this._pool.upFbos.push(Cogl.Offscreen.new_with_texture(upTex));
 
       pw = Math.max(pw >> 1, 1);
       ph = Math.max(ph >> 1, 1);
     }
 
-    this._poolWidth = w;
-    this._poolHeight = h;
+    this._pool.width = w;
+    this._pool.height = h;
   }
 
   // Dual Kawase: downsample srcTex through every level, then upsample back
@@ -582,8 +609,8 @@ export class BlurRenderer {
     let currentSrc: Cogl.Texture = srcTex;
 
     for (let i = 0; i < this.PASS_COUNT; i++) {
-      const destFbo = this._blurFbos[i] as unknown as CoglFB;
-      const destTex = this._blurTextures[i];
+      const destFbo = this._pool.fbos[i] as unknown as CoglFB;
+      const destTex = this._pool.textures[i];
       const destW = destTex.get_width();
       const destH = destTex.get_height();
 
@@ -610,16 +637,16 @@ export class BlurRenderer {
     }
 
     if (this.PASS_COUNT <= 1) {
-      this._blurResultTex = this._blurTextures[0];
+      this._pool.result = this._pool.textures[0];
       return;
     }
 
     for (let i = this.PASS_COUNT - 1; i > 0; i--) {
       const srcTexture = (i === this.PASS_COUNT - 1)
-        ? this._blurTextures[i]
-        : this._upTextures[i];
-      const destFbo = this._upFbos[i - 1] as unknown as CoglFB;
-      const destTex = this._upTextures[i - 1];
+        ? this._pool.textures[i]
+        : this._pool.upTextures[i];
+      const destFbo = this._pool.upFbos[i - 1] as unknown as CoglFB;
+      const destTex = this._pool.upTextures[i - 1];
       const destW = destTex.get_width();
       const destH = destTex.get_height();
 
@@ -634,17 +661,17 @@ export class BlurRenderer {
       this._passes.add(parentNode, destFbo, pipeline, destW, destH, [0, 0, 1, 1]);
     }
 
-    this._blurResultTex = this._upTextures[0];
+    this._pool.result = this._pool.upTextures[0];
   }
 
   // Separable Gaussian on pool level 0 only: a downsampling pre-pass into
-  // _blurTextures[0], the horizontal pass into the temp texture, and the
-  // vertical pass into _upTextures[0].
+  // textures[0], the horizontal pass into the temp texture, and the
+  // vertical pass into upTextures[0].
   private _runGaussianBlur(parentNode: any, srcTex: Cogl.Texture, srcUV: number[]): void {
-    const tempFbo = this._gaussianTempFbos[0] as unknown as CoglFB;
-    const tempTex = this._gaussianTempTextures[0];
-    const destFbo = this._blurFbos[0] as unknown as CoglFB;
-    const destTex = this._blurTextures[0];
+    const tempFbo = this._pool.tempFbos[0] as unknown as CoglFB;
+    const tempTex = this._pool.tempTextures[0];
+    const destFbo = this._pool.fbos[0] as unknown as CoglFB;
+    const destTex = this._pool.textures[0];
     const destW = destTex.get_width();
     const destH = destTex.get_height();
 
@@ -669,32 +696,23 @@ export class BlurRenderer {
 
     this._passes.add(parentNode, tempFbo, hPipeline, destW, destH, [0, 0, 1, 1]);
 
-    // Not back into destFbo, which the horizontal pass read (see _upTextures).
+    // Not back into destFbo, which the horizontal pass read (see BlurPool.upTextures).
     const vPipeline = this._passes.pipeline('gauss-v', this._gaussianVPipeline!);
     vPipeline.set_layer_texture(0, tempTex);
     setPipelineVec2(vPipeline, 'inv_size', 1.0 / destW, 1.0 / destH);
     setPipelineFloat(vPipeline, 'kernel_scale', this._gaussianScale);
 
-    const outFbo = this._upFbos[0] as unknown as CoglFB;
+    const outFbo = this._pool.upFbos[0] as unknown as CoglFB;
     this._passes.add(parentNode, outFbo, vPipeline, destW, destH, [0, 0, 1, 1]);
 
-    this._blurResultTex = this._upTextures[0];
+    this._pool.result = this._pool.upTextures[0];
   }
 
   // Dropping the references frees the textures; GJS owns them, so
   // run_dispose() would free them twice.
   private _destroyTexturePool(): void {
-    this._blurFbos = [];
-    this._blurTextures = [];
-    this._gaussianTempFbos = [];
-    this._gaussianTempTextures = [];
-    this._upFbos = [];
-    this._upTextures = [];
-    this._blurResultTex = null;
-    // The reuse key holds the old source texture.
-    this._renderedKey = null;
-    this._poolWidth = 0;
-    this._poolHeight = 0;
+    this._pool = emptyPool();
+    this._parked.clear();
   }
 
   // Both methods share the pool, and the Gaussian kernel is compiled on the
