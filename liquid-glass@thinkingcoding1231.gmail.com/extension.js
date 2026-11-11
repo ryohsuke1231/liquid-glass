@@ -6,6 +6,8 @@ import {UIManager} from './dist/uiManager.js';
 import {PanelMenuManager, ExtraDateMenuManager, DockMenuManager} from './dist/panelMenuManager.js';
 import {BlurMyShellWatch} from './dist/blurMyShell.js';
 import {DockWatcher} from './dist/dockManager.js';
+import {DockBarManager} from './dist/dockBar.js';
+import {QuickSettingsIndicators} from './dist/quickSettingsIndicators.js';
 import {NotificationManager} from './dist/notificationManager.js';
 import {QuickSettingsManager} from './dist/quickSettingsManager.js';
 import {OsdManager} from './dist/osdManager.js';
@@ -106,6 +108,12 @@ export default class LiquidGlassExtension extends Extension {
     this._dockWatcher = new DockWatcher(path, this._settings, this._logger, this._iconStyler);
     this._dockWatcher.setup();
 
+    this._dockBarManager = new DockBarManager(this._settings, this._logger);
+    this._dockBarManager.setup();
+
+    this._quickSettingsIndicators = new QuickSettingsIndicators(this._settings);
+    this._quickSettingsIndicators.setup();
+
     this._dumpShortcut = new DumpShortcut(this._settings);
     this._dumpShortcut.setup();
   }
@@ -122,6 +130,13 @@ export default class LiquidGlassExtension extends Extension {
       GLib.Source.remove(this._quickSettingsTimeoutId);
       this._quickSettingsTimeoutId = 0;
     }
+
+    // First, so the top bar's buttons are back in it before the managers of the bar and its menus let go of them.
+    this._dockBarManager?.cleanup();
+    this._dockBarManager = null;
+
+    this._quickSettingsIndicators?.cleanup();
+    this._quickSettingsIndicators = null;
 
     this._panelMenuManager?.cleanup();
     this._panelMenuManager = null;

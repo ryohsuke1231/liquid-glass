@@ -24,7 +24,7 @@
 //              ($LG_DRV_WALLPAPER); LG_DRV_FEATURES picks parts (comma
 //              separated: morph, topbar, widgets, clock, launcher; default all;
 //              also morphtrace, qssub, clockshot, clockdepth (the clock behind the wallpaper; needs the models), clockkeys (the arrow keys while the clock is edited), media, guides, launcherpointer,
-//              launchercolor, iconstyle, iconglass, workspaces, fullshot, popupfreeze, redrawclip, prefshover, bannerintro, stalefreeze, dockgrow, nanrelay, notifstack (LG_DRV_LIGHT as for scale, LG_DRV_STACK notifications); fullshot to prefshover and the last three need LG_DTD_DIR; qsheight, the calendar matched
+//              launchercolor, iconstyle, iconglass, workspaces, fullshot, popupfreeze, redrawclip, prefshover, bannerintro, stalefreeze, dockgrow, dockbar, nanrelay, notifstack (LG_DRV_LIGHT as for scale, LG_DRV_STACK notifications); fullshot to prefshover and the last three need LG_DTD_DIR; qsheight, the calendar matched
 //              to Quick Settings' height; qsflicker, the Quick Settings glass rect while adaptive colour samples;
 //              adaptiveoff, adaptive colour turned off and on while each surface is shown);
 //              also scale (the calendar, Quick Settings in both modes and the launcher
@@ -3390,6 +3390,62 @@ export default class LgDriver extends Extension {
     await sleep(1000);
   }
 
+  // The top bar's buttons in the dock: where they are, with the bar hidden; a menu opened from the dock; the bar
+  // back with the mode off. Left on, so disabling has to put the buttons back.
+  async _dockBar(settings, m) {
+    const panel = Main.panel;
+    const boxes = [panel._leftBox, panel._centerBox, panel._rightBox];
+    const inBar = () => boxes.reduce((n, box) => n + box.get_n_children(), 0);
+    const inDock = () => findActors(Main.layoutManager.uiGroup, a => a.has_style_class_name?.('liquid-glass-dock-bar'))
+      .reduce((n, box) => n + box.get_n_children(), 0);
+    const state = () => `bar=${inBar()} dock=${inDock()} panelBox=${Main.layoutManager.panelBox.visible}`;
+    const before = inBar();
+    settings.set_boolean('dock-attach-to-edge', true);
+    settings.set_boolean('dock-menus-grow', true);
+    settings.set_boolean('top-bar-in-dock', true);
+    await sleep(2500);
+    const on = inBar() === 0 && inDock() === before && !Main.layoutManager.panelBox.visible;
+    log(`dockbar on: ${state()} order=${settings.get_strv('dock-bar-order')} ${on ? 'OK' : 'NG'}`);
+    const full = [m.x, m.y, m.width, m.height];
+    await shot('dockbar-on', full);
+    for (const name of ['dateMenu', 'quickSettings']) {
+      const menu = panel.statusArea[name].menu;
+      menu.open(true);
+      await sleep(2500);
+      const [, y] = menu.actor.get_transformed_position();
+      const [, dockY] = panel.statusArea[name].get_transformed_position();
+      const above = menu.isOpen && y + menu.actor.height <= dockY + 8;
+      log(`dockbar ${name}: open=${menu.isOpen} menu bottom=${Math.round(y + menu.actor.height)} button top=${Math.round(dockY)} ${above ? 'OK' : 'NG'}`);
+      await shot(`dockbar-${name}`, full);
+      menu.close(true);
+      await sleep(1500);
+    }
+    settings.set_strv('dock-bar-hidden', ['activities']);
+    await sleep(800);
+    log(`dockbar left out: activities visible=${panel.statusArea.activities.container.visible} ` +
+      `${panel.statusArea.activities.container.visible ? 'NG' : 'OK'}`);
+    settings.reset('dock-bar-hidden');
+    settings.set_boolean('top-bar-in-dock', false);
+    await sleep(1500);
+    const off = inBar() === before && inDock() === 0 && Main.layoutManager.panelBox.visible &&
+      panel.statusArea.activities.container.visible;
+    log(`dockbar off: ${state()} ${off ? 'OK' : 'NG'}`);
+    await shot('dockbar-off', full);
+    // An icon left off the quick settings button stays hidden, and comes back with the setting.
+    const system = panel.statusArea.quickSettings._system;
+    settings.set_strv('quick-settings-hidden-indicators', ['system']);
+    await sleep(300);
+    const hidden = !system.visible;
+    system.show();
+    const kept = !system.visible;
+    settings.reset('quick-settings-hidden-indicators');
+    await sleep(300);
+    log(`indicators: hidden=${hidden} kept hidden=${kept} back=${system.visible} ${hidden && kept && system.visible ? 'OK' : 'NG'}`);
+    settings.set_boolean('top-bar-in-dock', true);
+    await sleep(2000);
+    this._dockBarButtons = before;
+  }
+
   async _featuresScenario() {
     const parts = (GLib.getenv('LG_DRV_FEATURES') ?? 'morph,topbar,widgets,clock,launcher').split(',');
     const settings = this._lgSettings();
@@ -4135,6 +4191,8 @@ export default class LgDriver extends Extension {
       await this._staleFreeze(settings, m);
     if (parts.includes('dockgrow'))
       await this._dockGrow();
+    if (parts.includes('dockbar'))
+      await this._dockBar(settings, m);
     if (parts.includes('nanrelay'))
       await this._nanRelay(settings);
     if (parts.includes('notifstack'))
@@ -4148,6 +4206,11 @@ export default class LgDriver extends Extension {
     await sleep(1000);
     log(`features disabled: leftovers=${JSON.stringify(this._leftovers())} ` +
       `panel transparent=${Main.panel.has_style_class_name('liquid-glass-transparent')} modal=${Main.modalCount}`);
+    if (this._dockBarButtons) {
+      const back = [Main.panel._leftBox, Main.panel._centerBox, Main.panel._rightBox].reduce((n, box) => n + box.get_n_children(), 0);
+      const shown = Main.layoutManager.panelBox.visible;
+      log(`dockbar disabled: bar=${back} panelBox=${shown} ${back === this._dockBarButtons && shown ? 'OK' : 'NG'}`);
+    }
     Main.extensionManager.enableExtension(LG_UUID);
     await sleep(4000);
     log(`features enabled again: glasses=${lg()?.glassObjects().map(g => g._owner).join(',')}`);

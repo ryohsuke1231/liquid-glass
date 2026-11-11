@@ -237,6 +237,7 @@ export class TopBarManager implements GrowthBar {
       if (released(actor) && isActorValid(actor)) actor.set_style(style);
     }
     this._childrenStyles = this._childrenStyles.filter(([actor]) => !released(actor));
+    if (isActorValid(child)) this._text.release(child);
     if (!target) return;
     for (const [actor, id] of this._containerSignalIds) {
       if (released(actor) && isActorValid(actor)) actor.disconnect(id);
@@ -634,9 +635,10 @@ export class TopBarManager implements GrowthBar {
     return (this._panel as unknown as { monitorIndex?: number }).monitorIndex ?? Main.layoutManager.primaryIndex;
   }
 
-  /** The bar's status area button `name` (dateMenu, quickSettings…), or null. */
+  /** The bar's status area button `name` (dateMenu, quickSettings…), or null while it is not on the bar. */
   button(name: string): St.Widget | null {
-    return (this._panel as unknown as { statusArea?: Record<string, St.Widget> }).statusArea?.[name] ?? null;
+    const button = (this._panel as unknown as { statusArea?: Record<string, St.Widget> }).statusArea?.[name];
+    return button && this._panel.contains(button) ? button : null;
   }
 
   /** Whether what opens from `source`, a button on this bar, grows out of it by the setting `key`. */
@@ -772,8 +774,8 @@ export class TopBarManager implements GrowthBar {
   }
 }
 
-// Built like the shell's Panel, whose three boxes the glass follows.
-function isTopBar(actor: Clutter.Actor): actor is TopBarPanel {
+/** Whether `actor` is built like the shell's Panel, whose three boxes the glass follows. */
+export function isTopBar(actor: Clutter.Actor): actor is TopBarPanel {
   return actor instanceof St.Widget
     && '_leftBox' in actor && actor._leftBox instanceof St.BoxLayout
     && '_centerBox' in actor && actor._centerBox instanceof St.BoxLayout

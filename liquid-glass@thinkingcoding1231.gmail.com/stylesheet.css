@@ -49,6 +49,102 @@
     padding-right: 4px !important;
 }
 
+/* The top bar's buttons in the dock. The theme's rules for them only hold inside the top bar, so they are given
+   again here. Their text color and the borders across the dock, which cut the highlight down to a pill, are in a
+   stylesheet generated to the theme and the dock's thickness. */
+.liquid-glass-dock-bar {
+    font-weight: bold;
+    font-feature-settings: "tnum";
+}
+
+.liquid-glass-dock-bar.left {
+    padding-right: 6px;
+}
+
+.liquid-glass-dock-bar.right {
+    padding-left: 6px;
+}
+
+.liquid-glass-dock-bar .panel-button {
+    transition-duration: 150ms;
+    border: 3px solid transparent;
+    background-color: transparent;
+    border-radius: 999px;
+    font-weight: bold;
+    box-shadow: inset 0 0 0 100px transparent;
+    -natural-hpadding: 12px;
+    -minimum-hpadding: 6px;
+}
+
+.liquid-glass-dock-bar .panel-button .system-status-icon {
+    icon-size: 1.091em;
+    padding: 0 6px;
+    margin: 0 4px;
+}
+
+.liquid-glass-dock-bar .panel-button .panel-status-indicators-box {
+    spacing: 4px;
+}
+
+.liquid-glass-dock-bar .panel-button .panel-status-indicators-box > .system-status-icon {
+    padding: 0;
+}
+
+.liquid-glass-dock-bar .panel-button#panelActivities StBoxLayout {
+    padding: 0 0.2045em;
+    spacing: 5px;
+}
+
+.liquid-glass-dock-bar .panel-button#panelActivities .workspace-dot {
+    border-radius: 999px;
+    min-width: 0.5455em;
+    min-height: 0.5455em;
+}
+
+.liquid-glass-dock-bar .panel-button.screen-recording-indicator StBoxLayout,
+.liquid-glass-dock-bar .panel-button.screen-sharing-indicator StBoxLayout {
+    spacing: 0.409em;
+}
+
+.liquid-glass-dock-bar .panel-button.screen-recording-indicator StIcon,
+.liquid-glass-dock-bar .panel-button.screen-sharing-indicator StIcon {
+    icon-size: 1.091em;
+}
+
+.liquid-glass-dock-bar .panel-button.screen-recording-indicator,
+.liquid-glass-dock-bar .panel-button.screen-recording-indicator:focus,
+.liquid-glass-dock-bar .panel-button.screen-recording-indicator:hover,
+.liquid-glass-dock-bar .panel-button.screen-recording-indicator:active {
+    color: #fafafb;
+    box-shadow: inset 0 0 0 100px #c01c28;
+}
+
+.liquid-glass-dock-bar .panel-button.screen-sharing-indicator,
+.liquid-glass-dock-bar .panel-button.screen-sharing-indicator:focus,
+.liquid-glass-dock-bar .panel-button.screen-sharing-indicator:hover,
+.liquid-glass-dock-bar .panel-button.screen-sharing-indicator:active {
+    color: #fafafb;
+    box-shadow: inset 0 0 0 100px #ff7800;
+}
+
+/* The clock's highlight is on its label, not on its button. */
+.liquid-glass-dock-bar .panel-button.clock-display,
+.liquid-glass-dock-bar .panel-button.clock-display:focus,
+.liquid-glass-dock-bar .panel-button.clock-display:hover,
+.liquid-glass-dock-bar .panel-button.clock-display:active,
+.liquid-glass-dock-bar .panel-button.clock-display:checked {
+    box-shadow: none;
+}
+
+.liquid-glass-dock-bar .panel-button.clock-display .clock {
+    transition-duration: 150ms;
+    border-radius: 999px;
+}
+
+.liquid-glass-dock-bar .panel-button.clock-display .messages-indicator {
+    icon-size: 1.091em;
+}
+
 /* Plain calendar days; today and interactive states keep their theme style. */
 .liquid-glass-transparent .calendar-day:not(.calendar-today):not(:hover):not(:active):not(:focus):not(:checked) {
     background-color: transparent !important;

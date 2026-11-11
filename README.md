@@ -160,6 +160,21 @@ Each of these is off by default, and is set in the top bar or dock surface of th
 - **Volume and brightness popups grow out of the bar** — the popup moves under the system indicators and grows out of the bar. While the bar is hidden, it sits at the top of the screen and its glass grows out of the edge.
 - **Glass behind the hidden-panel clock** — with [Hide Top Bar: Multi Monitors](https://github.com/AlessandroTelesca/hidetopbar-multimonitor), the clock shown while a panel is hidden gets the top bar's glass, attached to the top of the screen, in place of its dark tab.
 
+### Top Bar in the Dock
+
+**In the dock**, one of the **Top bar** choices on the **Effects** page, hides the top bar and puts its buttons into [Dash to Dock](https://extensions.gnome.org/extension/307/dash-to-dock/), left and right of the apps. It is off by default.
+
+- It works on docks along the top or bottom of the screen. Without one, the top bar stays.
+- **Top bar buttons in the dock, from left to right**, shown under that choice, sets the order of the buttons and which side of the apps each is on, and its switches leave a button out. Buttons the top bar gets later, from other extensions, are added next to the apps.
+- The buttons keep their menus, which open from the dock; with **Menus grow out of the dock** they grow out of its glass. Quick Settings opens centered on its button.
+- With docks on several monitors there is one set of buttons: it sits in one dock, the others show copies, and it moves to a dock as the pointer comes onto that dock's buttons.
+- The bars other extensions add on further monitors, such as Multi Monitors Bar's, are hidden too. Notifications and the volume and brightness popup then behave as with a hidden top bar.
+- Dash to Dock does not count the buttons when it sizes its icons, so with many apps the app list scrolls sooner. The clock is only on screen while the dock is.
+
+### Icons on the Quick Settings Button
+
+**Icons on the quick settings button**, on the **Effects** page, has a switch for each icon the button can show (network, microphone in use, power mode, those of other extensions…). An icon turned off is hidden; the quick settings menu keeps its entry.
+
 ### Using it with Blur my Shell
 
 Recent versions of [Blur my Shell](https://github.com/aunetx/blur-my-shell) (74) blur popup menus, notifications and OSDs by default. Its blur shows through the glass, so turn off **Popups** in Blur my Shell; while it blurs popups that have glass, the extension notes it in its log when Logging is on. Turning off Popups leaves Blur my Shell's other effects on. While Blur my Shell blurs the top bar, the dock or application windows where Liquid Glass draws glass, the Liquid Glass preferences show a warning at the top of the Appearance page with a button that goes to the override below.
@@ -341,6 +356,8 @@ A significant part of this codebase was written with the help of AI coding assis
 - [x] The clock and the widgets slide with their workspace when switching, and can be kept to the first workspace
 - [x] The glass clock can stand behind what is near in the wallpaper (a ridge, a building, the subject), analysed locally in GJS
 - [x] Top bar and dock that grow out of the screen edge, and menus, notifications and popups that grow out of them
+- [x] Top bar in the dock: the top bar's buttons sit in Dash to Dock, left and right of the apps, and the bar is hidden
+- [x] Choose which icons the quick settings button shows
 
 ### Next
 - [ ] Publish to extensions.gnome.org

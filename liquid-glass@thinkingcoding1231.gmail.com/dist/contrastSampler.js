@@ -879,6 +879,18 @@ export class AdaptiveTextColor {
         }, batch);
     }
 
+    /** Gives the actors under `root` their own style back, for content that leaves the surface. */
+    release(root) {
+        for (const [actor, entry] of this._styled) {
+            if (!root.contains(actor))
+                continue;
+            adaptiveColorTweener.cancel(actor);
+            actor.disconnect(entry.destroyId);
+            actor.set_style(entry.style || null);
+            this._styled.delete(actor);
+        }
+    }
+
     /** Stops measuring and gives every actor its own style back. */
     clear() {
         this.stop();

@@ -37,6 +37,26 @@
       <summary>Menus grow out of the dock</summary>
       <description>The dock's glass grows into the menus of top bar buttons placed in the dock (such as the tray icons Dock Tray moves there) instead of the menus floating with glass of their own: up out of a dock at the bottom of the screen, down out of one at the top. The menus then take the dock's glass settings, and the edge flare radius rounds the join.</description>
     </key>
+    <key name="top-bar-in-dock" type="b">
+      <default>false</default>
+      <summary>Top bar in the dock</summary>
+      <description>Hides the top bar and puts its buttons into Dash to Dock, left and right of the apps, on docks along the top or bottom of the screen. Without such a dock the top bar stays.</description>
+    </key>
+    <key name="dock-bar-order" type="as">
+      <default>['activities', 'apps', 'quickSettings', 'dateMenu']</default>
+      <summary>Order of the top bar's buttons in the dock</summary>
+      <description>The buttons' names in the top bar, from left to right. Those before "apps" go left of the dock's apps, the others right of them. Buttons not listed yet are added next to the apps.</description>
+    </key>
+    <key name="dock-bar-hidden" type="as">
+      <default>[]</default>
+      <summary>Top bar buttons left out of the dock</summary>
+      <description>Their names, as in the order. They are hidden while the top bar's buttons are in the dock.</description>
+    </key>
+    <key name="quick-settings-hidden-indicators" type="as">
+      <default>[]</default>
+      <summary>Icons left off the quick settings button</summary>
+      <description>The names of the shell's fields that hold them, without the underscore (network, volumeInput, powerProfiles…), and "others" for those other extensions add. The quick settings menu keeps their entries.</description>
+    </key>
     <key name="dock-tint-color" type="s">
       <default>"#ffffff"</default>
       <summary>Tint color (Hex)</summary>

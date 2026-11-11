@@ -229,6 +229,8 @@ export class TopBarManager {
                 actor.set_style(style);
         }
         this._childrenStyles = this._childrenStyles.filter(([actor]) => !released(actor));
+        if (isActorValid(child))
+            this._text.release(child);
         if (!target)
             return;
         for (const [actor, id] of this._containerSignalIds) {
@@ -654,9 +656,10 @@ export class TopBarManager {
         return this._panel.monitorIndex ?? Main.layoutManager.primaryIndex;
     }
 
-    /** The bar's status area button `name` (dateMenu, quickSettings…), or null. */
+    /** The bar's status area button `name` (dateMenu, quickSettings…), or null while it is not on the bar. */
     button(name) {
-        return this._panel.statusArea?.[name] ?? null;
+        const button = this._panel.statusArea?.[name];
+        return button && this._panel.contains(button) ? button : null;
     }
 
     /** Whether what opens from `source`, a button on this bar, grows out of it by the setting `key`. */
@@ -798,8 +801,8 @@ export class TopBarManager {
     }
 }
 
-// Built like the shell's Panel, whose three boxes the glass follows.
-function isTopBar(actor) {
+/** Whether `actor` is built like the shell's Panel, whose three boxes the glass follows. */
+export function isTopBar(actor) {
     return actor instanceof St.Widget
         && '_leftBox' in actor && actor._leftBox instanceof St.BoxLayout
         && '_centerBox' in actor && actor._centerBox instanceof St.BoxLayout

@@ -49,11 +49,13 @@ const QUALITY = [
   { title: 'Fast', patch: { 'blur-method': 1, 'glass-blur-downscale': 4 } },
 ];
 
+const TOP_BAR_HINT = 'The bar itself; menus have their own entries. In the dock: its buttons sit in Dash to Dock and the bar is hidden';
 const TOP_BAR = [
-  { title: 'Off', patch: { 'top-bar-style': 'off' } },
-  { title: 'One pill', patch: { 'top-bar-style': 'pill' } },
-  { title: 'Three pills', patch: { 'top-bar-style': 'islands' } },
-  { title: 'Centered pill', patch: { 'top-bar-style': 'center' } },
+  { title: 'Off', patch: { 'top-bar-style': 'off', 'top-bar-in-dock': false } },
+  { title: 'One pill', patch: { 'top-bar-style': 'pill', 'top-bar-in-dock': false } },
+  { title: 'Three pills', patch: { 'top-bar-style': 'islands', 'top-bar-in-dock': false } },
+  { title: 'Centered pill', patch: { 'top-bar-style': 'center', 'top-bar-in-dock': false } },
+  { title: 'In the dock', patch: { 'top-bar-in-dock': true } },
 ];
 
 const QUICK_SETTINGS_GLASS = [
@@ -726,6 +728,126 @@ function addEdgeAttachment(group, controls, surface, marginRow, shownKeys = [], 
   });
 }
 
+// The top bar's buttons by their names in its status area. Others, from extensions, show under that name.
+const DOCK_BAR_APPS = 'apps';
+const DOCK_BAR_BUTTONS = {
+  activities: 'Activities',
+  dateMenu: 'Clock and notifications',
+  quickSettings: 'Quick settings',
+  keyboard: 'Keyboard layout',
+  a11y: 'Accessibility',
+  dwellClick: 'Click assist',
+  screenRecording: 'Screen recording',
+  screenSharing: 'Screen sharing',
+};
+
+// The order of the top bar's buttons in the dock, each with a switch that leaves it out, shown while the top bar is
+// in the dock.
+function addDockBar(group, controls) {
+  const { settings } = controls;
+  const order = new Adw.ExpanderRow({
+    title: 'Top bar buttons in the dock, from left to right',
+    subtitle: 'The switches leave a button out. Buttons the top bar gets later are added next to the apps',
+  });
+  group.add(order);
+  const reset = new Gtk.Button({
+    icon_name: 'edit-undo-symbolic', tooltip_text: 'Reset the order', valign: Gtk.Align.CENTER, css_classes: ['flat', 'circular'],
+  });
+  reset.connect('clicked', () => settings.reset('dock-bar-order'));
+  order.add_suffix(reset);
+
+  const rows = [];
+  const iconButton = (icon, tooltip, sensitive, clicked) => {
+    const button = new Gtk.Button({
+      icon_name: icon, tooltip_text: tooltip, valign: Gtk.Align.CENTER, css_classes: ['flat', 'circular'], sensitive,
+    });
+    button.connect('clicked', clicked);
+    return button;
+  };
+  controls.watch(['dock-bar-order', 'dock-bar-hidden'], () => {
+    for (const row of rows.splice(0)) order.remove(row);
+    const saved = settings.get_strv('dock-bar-order');
+    const names = saved.includes(DOCK_BAR_APPS) ? saved : [...saved, DOCK_BAR_APPS];
+    const leftOut = settings.get_strv('dock-bar-hidden');
+    const move = (from, to) => {
+      const next = [...names];
+      next.splice(to, 0, ...next.splice(from, 1));
+      settings.set_strv('dock-bar-order', next);
+    };
+    names.forEach((name, i) => {
+      const apps = name === DOCK_BAR_APPS;
+      const row = new Adw.ActionRow({
+        title: apps ? 'The dock\'s apps' : DOCK_BAR_BUTTONS[name] ?? name,
+        subtitle: apps ? 'What is above goes left of them, what is below right' : '',
+      });
+      if (apps) {
+        row.add_prefix(new Gtk.Image({ icon_name: 'view-app-grid-symbolic' }));
+      } else {
+        const shown = new Gtk.Switch({ active: !leftOut.includes(name), valign: Gtk.Align.CENTER, tooltip_text: 'Show in the dock' });
+        shown.connect('notify::active', () => {
+          const rest = settings.get_strv('dock-bar-hidden').filter(other => other !== name);
+          settings.set_strv('dock-bar-hidden', shown.active ? rest : [...rest, name]);
+        });
+        row.add_suffix(shown);
+      }
+      row.add_suffix(iconButton('go-up-symbolic', 'Move left', i > 0, () => move(i, i - 1)));
+      row.add_suffix(iconButton('go-down-symbolic', 'Move right', i < names.length - 1, () => move(i, i + 1)));
+      order.add_row(row);
+      rows.push(row);
+    });
+  });
+  controls.watch(['top-bar-in-dock'], () => { order.visible = settings.get_boolean('top-bar-in-dock'); });
+}
+
+// The quick settings button's icons by the names of the shell's fields that hold them, in their order on the button.
+const INDICATORS = [
+  ['remoteAccess', 'Remote desktop'],
+  ['camera', 'Camera in use'],
+  ['volumeInput', 'Microphone in use'],
+  ['location', 'Location in use'],
+  ['others', 'Icons from other extensions'],
+  ['brightness', 'Brightness'],
+  ['thunderbolt', 'Thunderbolt'],
+  ['nightLight', 'Night light'],
+  ['network', 'Network'],
+  ['darkMode', 'Dark style'],
+  ['doNotDisturb', 'Do not disturb'],
+  ['backlight', 'Keyboard backlight'],
+  ['bluetooth', 'Bluetooth'],
+  ['rfkill', 'Airplane mode'],
+  ['autoRotate', 'Screen rotation'],
+  ['volumeOutput', 'Volume'],
+  ['unsafeMode', 'Unsafe mode'],
+  ['powerProfiles', 'Power mode'],
+  ['system', 'Power and battery'],
+];
+
+// Which icons the quick settings button shows.
+function addIndicators(page, controls) {
+  const { settings } = controls;
+  const key = 'quick-settings-hidden-indicators';
+  const icons = new Adw.ExpanderRow({
+    title: 'Icons on the quick settings button',
+    subtitle: 'An icon turned off is hidden. The quick settings menu keeps its entry',
+  });
+  controls.group(page, 'Quick settings button').add(icons);
+  const rows = INDICATORS.map(([name, title]) => {
+    const row = new Adw.SwitchRow({ title });
+    row.connect('notify::active', () => {
+      const leftOut = settings.get_strv(key);
+      if (row.active === !leftOut.includes(name)) return;
+      const rest = leftOut.filter(other => other !== name);
+      settings.set_strv(key, row.active ? rest : [...rest, name]);
+    });
+    icons.add_row(row);
+    return [name, row];
+  });
+  controls.watch([key], () => {
+    const leftOut = settings.get_strv(key);
+    for (const [name, row] of rows) row.active = !leftOut.includes(name);
+  });
+}
+
 function addLayout(group, controls, surface, appearance) {
   const rows = addNumbers(group, controls, LAYOUT[surface], `${surface}-`);
   if (surface === 'menu' || surface === 'panel-menu') {
@@ -811,7 +933,7 @@ function addAdaptiveColor(group, controls, surface) {
 
 function addSurface(page, controls, surface, title) {
   const group = controls.group(page, title);
-  if (surface === 'top-bar') controls.choice(group, 'Style', TOP_BAR, 'The bar itself; menus have their own entries', false);
+  if (surface === 'top-bar') controls.choice(group, 'Style', TOP_BAR, TOP_BAR_HINT, false);
   if (surface === 'quick-settings') controls.choice(group, 'Apply glass to', QUICK_SETTINGS_GLASS, QUICK_SETTINGS_GLASS_HINT, false);
 
   // The clock's digits are glass of their own shape, without corners or an outline.
@@ -868,7 +990,8 @@ function buildAdvancedPreferences(pages, controls) {
   selectorGroup.add(selector);
   const surfaces = new Map();
   const effects = controls.group(pages.effects, 'Individual effects');
-  controls.choice(effects, 'Top bar', TOP_BAR, 'The bar itself; menus have their own entries', false);
+  controls.choice(effects, 'Top bar', TOP_BAR, TOP_BAR_HINT, false);
+  addDockBar(effects, controls);
   for (const [surface, title, key, hint] of SURFACE_OPTIONS)
     if (key && surface !== 'application') controls.toggle(effects, title, key, hint ?? '');
   const groups = [selectorGroup, effects, addPanelMenus(pages.effects, controls),
@@ -951,7 +1074,8 @@ export function buildPreferences(window, settings) {
   ]));
 
   const surfaces = controls.group(effects, 'Show glass on');
-  controls.choice(surfaces, 'Top bar', TOP_BAR, 'The bar itself; menus are below', false);
+  controls.choice(surfaces, 'Top bar', TOP_BAR, TOP_BAR_HINT, false);
+  addDockBar(surfaces, controls);
   controls.toggle(surfaces, 'Dock', 'enable-dock-glass');
   controls.choice(surfaces, 'Menus', booleanChoices(MENU_KEYS), 'Calendar, quick settings, other top bar menus and desktop');
   controls.choice(surfaces, 'Apply quick settings glass to', QUICK_SETTINGS_GLASS, QUICK_SETTINGS_GLASS_HINT, false);
@@ -974,6 +1098,7 @@ export function buildPreferences(window, settings) {
   addLauncher(desktop, controls);
 
   const effectsTail = collectGroups(effects, () => {
+    addIndicators(effects, controls);
     new IconStyleRules(settings, controls).add(effects);
     new WindowRules(settings, controls).add(effects);
   });
