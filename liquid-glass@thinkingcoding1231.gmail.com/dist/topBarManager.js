@@ -913,11 +913,13 @@ export class ExtraTopBarManager {
         this._watched.set(panel, [destroyId, styleId]);
     }
 
+    // Disconnects first: taking the glass off changes the bar's style class, which would queue a scan, and after
+    // cleanup() that scan would attach a manager nothing takes down again.
     _unwatch(panel) {
-        this._detach(panel);
         for (const id of this._watched.get(panel) ?? [])
             panel.disconnect(id);
         this._watched.delete(panel);
+        this._detach(panel);
     }
 
     _detach(panel) {

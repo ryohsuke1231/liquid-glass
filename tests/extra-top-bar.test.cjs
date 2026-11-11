@@ -136,6 +136,20 @@ test('a destroyed bar takes its glass with it at once, and disabling removes the
   assert.equal(f.Main.extensionManager.handlers.size, 0);
 });
 
+test('disabling leaves no scan behind when taking the glass off changes the bar\'s style class', () => {
+  const f = fixture();
+  f.manager.setup();
+  const { panel } = f.addBar();
+  f.flush();
+  // As the real manager does when it removes its glass.
+  f.built[0].cleanup = function () { this.cleaned++; panel.remove_style_class_name('liquid-glass-transparent'); };
+  f.manager.cleanup();
+  f.flush();
+  assert.equal(f.built.length, 1);
+  assert.equal(f.built[0].cleaned, 1);
+  assert.equal(panel.handlers.size, 0);
+});
+
 test('a scan queued while the shell tears uiGroup down never runs', () => {
   const f = fixture();
   f.manager.setup();
