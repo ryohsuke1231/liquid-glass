@@ -180,6 +180,43 @@
     color: rgba(0, 0, 0, 0.87) !important;
 }
 
+/* Notifications stacked under the newest one of their group. The shell lays them out whole behind it, which
+   an opaque card hides; behind a translucent one only the strip below it is drawn. The third and later ones
+   share one place, so they are left out. */
+.liquid-glass-menu-root .message:second-in-stack,
+.liquid-glass-menu-root .message:lower-in-stack {
+    background-color: transparent !important;
+    border: 0 solid transparent !important;
+    box-shadow: none !important;
+}
+
+.liquid-glass-menu-root .message:second-in-stack {
+    border-bottom-width: 10px !important;
+    border-color: rgba(51, 51, 51, 0.6) !important;
+}
+
+.liquid-glass-menu-root.liquid-glass-light .message:second-in-stack {
+    border-color: rgba(255, 255, 255, 0.45) !important;
+}
+
+.liquid-glass-menu-root .message:second-in-stack,
+.liquid-glass-menu-root .message:lower-in-stack,
+.liquid-glass-menu-root .message:second-in-stack .message-header,
+.liquid-glass-menu-root .message:lower-in-stack .message-header,
+.liquid-glass-menu-root .message:second-in-stack .event-time,
+.liquid-glass-menu-root .message:lower-in-stack .event-time,
+.liquid-glass-menu-root .message:second-in-stack StButton,
+.liquid-glass-menu-root .message:lower-in-stack StButton {
+    color: transparent !important;
+}
+
+/* An image has no colour to clear. */
+.liquid-glass-menu-root .message:second-in-stack .message-icon,
+.liquid-glass-menu-root .message:lower-in-stack .message-icon {
+    icon-size: 1px !important;
+    background-color: transparent !important;
+}
+
 /* Desktop widgets. The card's glass is drawn behind it; the colours here are
    the starting point that automatic text contrast adjusts. */
 .liquid-glass-desktop-card {

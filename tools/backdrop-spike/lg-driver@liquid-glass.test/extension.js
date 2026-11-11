@@ -24,7 +24,7 @@
 //              ($LG_DRV_WALLPAPER); LG_DRV_FEATURES picks parts (comma
 //              separated: morph, topbar, widgets, clock, launcher; default all;
 //              also morphtrace, qssub, clockshot, media, guides, launcherpointer,
-//              launchercolor, iconstyle, iconglass, workspaces, fullshot, popupfreeze, redrawclip, prefshover, bannerintro, stalefreeze, dockgrow, nanrelay; fullshot to prefshover and the last three need LG_DTD_DIR; qsheight, the calendar matched
+//              launchercolor, iconstyle, iconglass, workspaces, fullshot, popupfreeze, redrawclip, prefshover, bannerintro, stalefreeze, dockgrow, nanrelay, notifstack (LG_DRV_LIGHT as for scale, LG_DRV_STACK notifications); fullshot to prefshover and the last three need LG_DTD_DIR; qsheight, the calendar matched
 //              to Quick Settings' height; qsflicker, the Quick Settings glass rect while adaptive colour samples;
 //              adaptiveoff, adaptive colour turned off and on while each surface is shown);
 //              also scale (the calendar, Quick Settings in both modes and the launcher
@@ -61,6 +61,7 @@ import Shell from 'gi://Shell';
 import St from 'gi://St';
 
 import * as Config from 'resource:///org/gnome/shell/misc/config.js';
+import * as MessageTray from 'resource:///org/gnome/shell/ui/messageTray.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
@@ -3133,6 +3134,39 @@ export default class LgDriver extends Extension {
     log(`icon glass clear again: ready=${ready(dock, dock)}`);
   }
 
+  // Three notifications from one source, stacked in the calendar menu and then expanded.
+  async _notifStack() {
+    const light = GLib.getenv('LG_DRV_LIGHT');
+    if (light) {
+      new Gio.Settings({schema_id: 'org.gnome.desktop.interface'}).set_string('color-scheme', light === '1' ? 'prefer-light' : light);
+      await sleep(2000);
+    }
+    this._cameraAway = true;
+    for (let n = 1; n <= Number(GLib.getenv('LG_DRV_STACK') ?? 3); n++) {
+      const source = MessageTray.getSystemSource();
+      source.addNotification(new MessageTray.Notification({source, title: `Stacked notification ${n}`,
+        body: `The body of message ${n}, which is long enough to be read through a card`,
+        gicon: new Gio.ThemedIcon({name: 'org.gnome.Settings'})}));
+      await sleep(400);
+    }
+    const dateMenu = Main.panel.statusArea.dateMenu.menu;
+    dateMenu.open(true);
+    await sleep(2500);
+    const rect = Object.values(this._stageRect(dateMenu.actor));
+    const groups = findActors(dateMenu.actor, a => a.constructor.name === 'NotificationMessageGroup');
+    const messages = findActors(dateMenu.actor, a => a.has_style_class_name?.('message'));
+    log(`notifstack: groups=${groups.length} messages=${messages.map(a => `${Object.values(this._stageRect(a))}/${a.get_style_pseudo_class()}`).join(' ')}`);
+    await shot('notifstack-collapsed', rect);
+    for (const group of groups) group.expand?.();
+    await sleep(1500);
+    await shot('notifstack-expanded', rect);
+    for (const group of groups) group.collapse?.();
+    await sleep(1500);
+    await shot('notifstack-collapsed-again', rect);
+    dateMenu.close(true);
+    await sleep(1000);
+  }
+
   async _featuresScenario() {
     const parts = (GLib.getenv('LG_DRV_FEATURES') ?? 'morph,topbar,widgets,clock,launcher').split(',');
     const settings = this._lgSettings();
@@ -3792,6 +3826,8 @@ export default class LgDriver extends Extension {
       await this._dockGrow();
     if (parts.includes('nanrelay'))
       await this._nanRelay(settings);
+    if (parts.includes('notifstack'))
+      await this._notifStack();
     // Everything switched on, the launcher open: disabling has to leave nothing.
     (await this._lgModule('launcherManager.js')).Launcher.instance?.open();
     await sleep(500);
