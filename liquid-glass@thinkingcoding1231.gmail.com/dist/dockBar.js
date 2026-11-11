@@ -9,6 +9,7 @@ import { isActorValid } from './actors.js';
 import { startSyncLoop, stopStageLoop } from './animation.js';
 import { GeneratedStylesheet } from './generatedStylesheet.js';
 import { isTopBar } from './topBarManager.js';
+import { setTopBarsHeld } from './topBarHold.js';
 /** On the two boxes that hold the top bar's buttons in a dock. */
 export const DOCK_BAR_CLASS = 'liquid-glass-dock-bar';
 // The entry of the order that stands for the dock's apps: what is before it goes left of them, the rest right.
@@ -320,6 +321,7 @@ export class DockBarManager {
             }));
             box.hide();
         }
+        setTopBarsHeld(this._held.size > 0);
     }
 
     // child-added comes from inside the panel's own code, which goes on with the button.

@@ -120,7 +120,7 @@ function notificationFixture() {
     // A banner floating below the bar, not grown out of it.
     BarGrowth: class { start() { return false; } holdAtRest() { return false; } release() {} },
     MessageTray: { State: { HIDING: 3 } },
-    attachRectToEdge: rect => rect,
+    attachRectToEdge: rect => rect, topBarsHeld: () => false,
   });
   const manager = new C('', new Settings(), { error() {} });
   return { ...clock, manager, tray, monitor };
