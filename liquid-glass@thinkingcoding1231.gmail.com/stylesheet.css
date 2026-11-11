@@ -67,13 +67,10 @@
 
 .liquid-glass-dock-bar .panel-button {
     transition-duration: 150ms;
-    border: 3px solid transparent;
     background-color: transparent;
     border-radius: 999px;
     font-weight: bold;
     box-shadow: inset 0 0 0 100px transparent;
-    -natural-hpadding: 12px;
-    -minimum-hpadding: 6px;
 }
 
 .liquid-glass-dock-bar .panel-button .system-status-icon {

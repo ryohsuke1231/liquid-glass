@@ -244,7 +244,11 @@ export class DockMenuManager {
         const menu = menuOf(actor);
         if (!menu || this._menus.has(menu) || !this._enabled())
             return;
-        if (!(actor instanceof St.Widget) || !actor.has_style_class_name('dock-app-menu') || !menu.box)
+        // The app icons' menus, and their window previews, which only their source tells apart from other menus.
+        if (!(actor instanceof St.Widget) || !menu.box)
+            return;
+        const source = menu.sourceActor;
+        if (!actor.has_style_class_name('dock-app-menu') && !(inDock(source) && typeof source.getInterestingWindows === 'function'))
             return;
         const manager = new UIManager(this._path, this._settings, this._logger, { menu }, false, 'enable-extra-menu-glass', PANEL_MENU_PREFIX, `menu:dock${++this._attached}`, false);
         manager.setup();

@@ -155,7 +155,8 @@ Each of these is off by default, and is set in the top bar or dock surface of th
 
 - **Grow out of the screen edge** (top bar and dock) — the glass reaches the screen edge and curves outwards into it instead of floating, with the rim, bevel and shadow following the curve. **Edge flare radius** sets the size of that curve. The dock's glass draws back into the edge as the dock hides, and its icons sit closer to the edge. The top bar's top margin and the dock's bottom margin are not used while this is on.
 - **Menus grow out of the bar** — the bar's glass grows down into the calendar, Quick Settings (Whole menu) and the other top bar menus on springs, so bar and menu are one piece of glass. The bar widens for a menu wider than it. The menus then take the top bar's glass settings.
-- **Menus grow out of the dock** — the same for Dash to Dock's app menus and for top bar buttons placed in the dock, such as the tray icons of Dock Tray, on a dock at the top or bottom of the screen. Side docks keep floating menus.
+- **Menus grow out of the dock** — the same for Dash to Dock's app menus, its apps' names and window previews, and for top bar buttons placed in the dock, such as the tray icons of Dock Tray, on a dock at the top or bottom of the screen. Side docks keep floating menus.
+- **Window previews on the dock** (on the **Effects** page) — hovering an app with windows on a Dash to Dock dock shows Dash to Dock's window previews in place of the app's name. They open without a grab or keyboard focus, so the pointer can move on along the dock and the focused window keeps the keyboard.
 - **Notifications grow out of the bar** — banners grow out of the bar under the clock. While the bar is hidden (Hide Top Bar), their own glass grows out of the top of the screen.
 - **Volume and brightness popups grow out of the bar** — the popup moves under the system indicators and grows out of the bar. While the bar is hidden, it sits at the top of the screen and its glass grows out of the edge.
 - **Glass behind the hidden-panel clock** — with [Hide Top Bar: Multi Monitors](https://github.com/AlessandroTelesca/hidetopbar-multimonitor), the clock shown while a panel is hidden gets the top bar's glass, attached to the top of the screen, in place of its dark tab.
@@ -169,6 +170,7 @@ Each of these is off by default, and is set in the top bar or dock surface of th
 - The buttons keep their menus, which open from the dock; with **Menus grow out of the dock** they grow out of its glass. Quick Settings opens centered on its button.
 - With docks on several monitors there is one set of buttons: it sits in one dock, the others show copies, and it moves to a dock as the pointer comes onto that dock's buttons.
 - The bars other extensions add on further monitors, such as Multi Monitors Bar's, are hidden too. Notifications and the volume and brightness popup then behave as with a hidden top bar.
+- The buttons' highlight is a pill in the middle of the dock, whatever the dock's thickness. **Space between the apps and the screen edge** and **Space on the apps' other side**, in the dock surface of the advanced **Appearance** page, set that thickness; at -1 the space is Dash to Dock's.
 - Dash to Dock does not count the buttons when it sizes its icons, so with many apps the app list scrolls sooner. The clock is only on screen while the dock is.
 
 ### Icons on the Quick Settings Button
@@ -358,6 +360,7 @@ A significant part of this codebase was written with the help of AI coding assis
 - [x] Top bar and dock that grow out of the screen edge, and menus, notifications and popups that grow out of them
 - [x] Top bar in the dock: the top bar's buttons sit in Dash to Dock, left and right of the apps, and the bar is hidden
 - [x] Choose which icons the quick settings button shows
+- [x] The dock's app names grow out of its glass, and window previews on hover
 
 ### Next
 - [ ] Publish to extensions.gnome.org

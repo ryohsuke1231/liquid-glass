@@ -8,6 +8,9 @@ import {BlurMyShellWatch} from './dist/blurMyShell.js';
 import {DockWatcher} from './dist/dockManager.js';
 import {DockBarManager} from './dist/dockBar.js';
 import {QuickSettingsIndicators} from './dist/quickSettingsIndicators.js';
+import {DockLabels} from './dist/dockLabels.js';
+import {DockSpacing} from './dist/dockSpacing.js';
+import {DockPreviews} from './dist/dockPreviews.js';
 import {NotificationManager} from './dist/notificationManager.js';
 import {QuickSettingsManager} from './dist/quickSettingsManager.js';
 import {OsdManager} from './dist/osdManager.js';
@@ -114,6 +117,15 @@ export default class LiquidGlassExtension extends Extension {
     this._quickSettingsIndicators = new QuickSettingsIndicators(this._settings);
     this._quickSettingsIndicators.setup();
 
+    this._dockSpacing = new DockSpacing(this._settings, this._logger);
+    this._dockSpacing.setup();
+
+    this._dockLabels = new DockLabels(this._settings);
+    this._dockLabels.setup();
+
+    this._dockPreviews = new DockPreviews(this._settings, this._logger);
+    this._dockPreviews.setup();
+
     this._dumpShortcut = new DumpShortcut(this._settings);
     this._dumpShortcut.setup();
   }
@@ -137,6 +149,16 @@ export default class LiquidGlassExtension extends Extension {
 
     this._quickSettingsIndicators?.cleanup();
     this._quickSettingsIndicators = null;
+
+    // Before the dock menus' glass, which the previews have.
+    this._dockPreviews?.cleanup();
+    this._dockPreviews = null;
+
+    this._dockLabels?.cleanup();
+    this._dockLabels = null;
+
+    this._dockSpacing?.cleanup();
+    this._dockSpacing = null;
 
     this._panelMenuManager?.cleanup();
     this._panelMenuManager = null;

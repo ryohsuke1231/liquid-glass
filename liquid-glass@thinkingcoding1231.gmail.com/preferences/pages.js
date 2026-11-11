@@ -49,6 +49,8 @@ const QUALITY = [
   { title: 'Fast', patch: { 'blur-method': 1, 'glass-blur-downscale': 4 } },
 ];
 
+const DOCK_PREVIEWS = 'Window previews on the dock';
+const DOCK_PREVIEWS_HINT = 'Hovering an app with windows shows Dash to Dock\'s window previews in place of its name';
 const TOP_BAR_HINT = 'The bar itself; menus have their own entries. In the dock: its buttons sit in Dash to Dock and the bar is hidden';
 const TOP_BAR = [
   { title: 'Off', patch: { 'top-bar-style': 'off', 'top-bar-in-dock': false } },
@@ -98,7 +100,8 @@ const APPEARANCE = [
 ];
 
 const LAYOUT = {
-  dock: [['glass-expand', 'Glass expansion', 0, 50, 1], ['margin-bottom', 'Edge spacing', -5, 30, 1]],
+  dock: [['glass-expand', 'Glass expansion', 0, 50, 1], ['margin-bottom', 'Edge spacing', -5, 30, 1],
+  ['space-edge', 'Space between the apps and the screen edge', -1, 40, 1], ['space-far', 'Space on the apps\' other side', -1, 40, 1]],
   menu: [['glass-expand', 'Glass expansion', 0, 50, 1], ['x-offset', 'Horizontal offset', -200, 200, 1],
   ['y-offset', 'Vertical offset', -50, 100, 1], ['scale', 'Menu scale', 0.5, 1, 0.01]],
   'panel-menu': [['glass-expand', 'Glass expansion', 0, 50, 1], ['x-offset', 'Horizontal offset', -200, 200, 1],
@@ -858,7 +861,7 @@ function addLayout(group, controls, surface, appearance) {
   if (surface === 'dock') {
     addEdgeAttachment(group, controls, surface, rows.get('margin-bottom'));
     controls.toggle(group, 'Menus grow out of the dock', 'dock-menus-grow',
-      'Menus of top bar buttons placed in the dock (such as Dock Tray\'s tray icons) grow out of the dock\'s glass');
+      'The apps\' names, their menus and those of top bar buttons placed in the dock grow out of the dock\'s glass');
   }
   if (surface === 'top-bar') {
     const shown = () => controls.settings.get_value('top-bar-style').deep_unpack() !== 'off';
@@ -994,6 +997,7 @@ function buildAdvancedPreferences(pages, controls) {
   addDockBar(effects, controls);
   for (const [surface, title, key, hint] of SURFACE_OPTIONS)
     if (key && surface !== 'application') controls.toggle(effects, title, key, hint ?? '');
+  controls.toggle(effects, DOCK_PREVIEWS, 'dock-window-previews', DOCK_PREVIEWS_HINT);
   const groups = [selectorGroup, effects, addPanelMenus(pages.effects, controls),
     ...addRendering(pages.rendering, controls)];
   let visible = false;
@@ -1077,6 +1081,7 @@ export function buildPreferences(window, settings) {
   controls.choice(surfaces, 'Top bar', TOP_BAR, TOP_BAR_HINT, false);
   addDockBar(surfaces, controls);
   controls.toggle(surfaces, 'Dock', 'enable-dock-glass');
+  controls.toggle(surfaces, DOCK_PREVIEWS, 'dock-window-previews', DOCK_PREVIEWS_HINT);
   controls.choice(surfaces, 'Menus', booleanChoices(MENU_KEYS), 'Calendar, quick settings, other top bar menus and desktop');
   controls.choice(surfaces, 'Apply quick settings glass to', QUICK_SETTINGS_GLASS, QUICK_SETTINGS_GLASS_HINT, false);
   controls.choice(surfaces, 'Popups', booleanChoices(POPUP_KEYS), 'Notifications and volume / brightness indicators');

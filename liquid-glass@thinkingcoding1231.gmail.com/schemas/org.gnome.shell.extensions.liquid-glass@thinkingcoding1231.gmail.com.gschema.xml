@@ -35,7 +35,24 @@
     <key name="dock-menus-grow" type="b">
       <default>false</default>
       <summary>Menus grow out of the dock</summary>
-      <description>The dock's glass grows into the menus of top bar buttons placed in the dock (such as the tray icons Dock Tray moves there) instead of the menus floating with glass of their own: up out of a dock at the bottom of the screen, down out of one at the top. The menus then take the dock's glass settings, and the edge flare radius rounds the join.</description>
+      <description>The dock's glass grows into the names of its apps and into the menus of its apps and of top bar buttons placed in the dock (such as the tray icons Dock Tray moves there) instead of the menus floating with glass of their own: up out of a dock at the bottom of the screen, down out of one at the top. The menus then take the dock's glass settings, and the edge flare radius rounds the join.</description>
+    </key>
+    <key name="dock-space-edge" type="i">
+      <range min="-1" max="40"/>
+      <default>-1</default>
+      <summary>Space between the dock's apps and the screen edge (px)</summary>
+      <description>With Dash to Dock's icon size and the space on the other side, this sets the dock's thickness. Below 0, or with the other below 0, the space is Dash to Dock's.</description>
+    </key>
+    <key name="dock-space-far" type="i">
+      <range min="-1" max="40"/>
+      <default>-1</default>
+      <summary>Space on the other side of the dock's apps (px)</summary>
+      <description>See dock-space-edge.</description>
+    </key>
+    <key name="dock-window-previews" type="b">
+      <default>false</default>
+      <summary>Window previews on the dock</summary>
+      <description>Hovering an app with windows on a Dash to Dock dock shows Dash to Dock's window previews in place of the app's name. They open without a grab or keyboard focus.</description>
     </key>
     <key name="top-bar-in-dock" type="b">
       <default>false</default>

@@ -7,6 +7,7 @@ import { ensureGlassAllocated, setClipIfChanged, isActorValid, placeScreenGlass,
 import { isFrameSyncFrozen, SAME_FRAME_WINDOW_US, startStageLoop, stopStageLoop, hexToColorArray } from './animation.js';
 import { MAX_GLASS_GROWTHS } from './rendering/glassRenderer.js';
 import { addGrowthBar, removeGrowthBar, cornerReach, layoutGrowths } from './growthBars.js';
+import { dockSpacingSet } from './dockSpacing.js';
 // Room around the glass rect for the shader's edge effects.
 export const SHADER_PADDING = 20;
 // How far past the glass (and the menus grown out of it) the dock glass draws, for its shadow.
@@ -156,6 +157,8 @@ export class DashManager {
             this._marginValue = this._effectiveMargin();
         };
         connectSetting('dock-margin-bottom', remargin);
+        connectSetting('dock-space-edge', remargin);
+        connectSetting('dock-space-far', remargin);
         connectSetting('dock-edge-radius', () => this._readEdgeSettings());
         connectSetting('dock-menus-grow', () => {
             this._readEdgeSettings();
@@ -217,8 +220,8 @@ export class DashManager {
         this._currentMarginStyle = marginStyle;
         this.targetActor.set_style(`${this._originalStyle} ${marginStyle}`);
         // Dash to Dock keeps extra room on the edge side for the running dots; the attached glass already runs on to
-        // the edge, so stylesheet.css takes most of that room away.
-        if (this._attached)
+        // the edge, so stylesheet.css takes most of that room away, unless the settings give the room themselves.
+        if (this._attached && !dockSpacingSet(this._settings))
             this.targetActor.add_style_class_name('liquid-glass-attached');
         else
             this.targetActor.remove_style_class_name('liquid-glass-attached');
