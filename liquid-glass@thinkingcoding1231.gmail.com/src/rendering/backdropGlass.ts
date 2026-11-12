@@ -410,7 +410,7 @@ export const BackdropGlass = GObject.registerClass(paintNodeWithContext(
     // tracked while it was hidden.
     vfunc_map(): void {
       super.vfunc_map();
-      this._serialAtMap = this._copier.lastCopy?.serial ?? 0;
+      this._serialAtMap = this._copier.mainCopy?.serial ?? 0;
       this._relays.redrawArea();
     }
 
@@ -421,7 +421,7 @@ export const BackdropGlass = GObject.registerClass(paintNodeWithContext(
      * older copy can show what was there before.
      */
     backdropCopy(): { texture: Cogl.Texture, rect: number[] } | null {
-      const copy = this._copier.lastCopy;
+      const copy = this._copier.mainCopy;
       if (!copy?.rect || copy.serial <= this._serialAtMap) return null;
       return { texture: copy.texture, rect: copy.rect };
     }
@@ -888,8 +888,9 @@ function coversView(clip: Mtk.Region | null, layout: Mtk.Rectangle): boolean {
 export class StageCopier {
   private _copies = new Map<Clutter.StageView, ViewCopy>();
   private _serial = 0;
-  // The copy an off-stage paint (screenshot, clone) draws with.
-  lastCopy: ViewCopy | null = null;
+  // The copy an off-stage paint (screenshot, screen recording, clone) draws with: the one holding the most of
+  // the glass. A glass whose sample area reaches onto the next monitor has a thin strip copied there as well.
+  mainCopy: ViewCopy | null = null;
 
   copyCount = 0;
   reuseCount = 0;
@@ -924,7 +925,7 @@ export class StageCopier {
     const view = StageCopier.liveView(actor, paintContext);
     if (!view) {
       this.offStageCount++;
-      return { copy: this.lastCopy, missed: false, fresh: false };
+      return { copy: this.mainCopy, missed: false, fresh: false };
     }
     const fb = view.get_framebuffer();
     let copy = this._copies.get(view) ?? null;
@@ -988,9 +989,23 @@ export class StageCopier {
     copy.redraws = redraws;
     copy.takenUs = nowUs;
     copy.serial = ++this._serial;
-    this.lastCopy = copy;
+    this.mainCopy = this._largest();
     this.copyCount++;
     return { copy, missed: false, fresh: true };
+  }
+
+  private _largest(): ViewCopy | null {
+    let best: ViewCopy | null = null;
+    let bestArea = 0;
+    for (const copy of this._copies.values()) {
+      if (!copy.rect) continue;
+      const area = (copy.rect[2] - copy.rect[0]) * (copy.rect[3] - copy.rect[1]);
+      if (area > bestArea) {
+        best = copy;
+        bestArea = area;
+      }
+    }
+    return best;
   }
 
   private _target(view: Clutter.StageView, copy: ViewCopy | null, width: number, height: number,
@@ -1012,6 +1027,6 @@ export class StageCopier {
 
   clear(): void {
     this._copies.clear();
-    this.lastCopy = null;
+    this.mainCopy = null;
   }
 }

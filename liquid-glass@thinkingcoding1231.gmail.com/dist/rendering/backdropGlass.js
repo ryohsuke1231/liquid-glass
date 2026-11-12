@@ -382,7 +382,7 @@ export const BackdropGlass = GObject.registerClass(paintNodeWithContext(class Ba
     // tracked while it was hidden.
     vfunc_map() {
         super.vfunc_map();
-        this._serialAtMap = this._copier.lastCopy?.serial ?? 0;
+        this._serialAtMap = this._copier.mainCopy?.serial ?? 0;
         this._relays.redrawArea();
     }
 
@@ -393,7 +393,7 @@ export const BackdropGlass = GObject.registerClass(paintNodeWithContext(class Ba
      * older copy can show what was there before.
      */
     backdropCopy() {
-        const copy = this._copier.lastCopy;
+        const copy = this._copier.mainCopy;
         if (!copy?.rect || copy.serial <= this._serialAtMap)
             return null;
         return { texture: copy.texture, rect: copy.rect };
@@ -853,8 +853,9 @@ export class StageCopier {
     _logger;
     _copies = new Map();
     _serial = 0;
-    // The copy an off-stage paint (screenshot, clone) draws with.
-    lastCopy = null;
+    // The copy an off-stage paint (screenshot, screen recording, clone) draws with: the one holding the most of
+    // the glass. A glass whose sample area reaches onto the next monitor has a thin strip copied there as well.
+    mainCopy = null;
     copyCount = 0;
     reuseCount = 0;
     offStageCount = 0;
@@ -889,7 +890,7 @@ export class StageCopier {
         const view = StageCopier.liveView(actor, paintContext);
         if (!view) {
             this.offStageCount++;
-            return { copy: this.lastCopy, missed: false, fresh: false };
+            return { copy: this.mainCopy, missed: false, fresh: false };
         }
         const fb = view.get_framebuffer();
         let copy = this._copies.get(view) ?? null;
@@ -950,9 +951,24 @@ export class StageCopier {
         copy.redraws = redraws;
         copy.takenUs = nowUs;
         copy.serial = ++this._serial;
-        this.lastCopy = copy;
+        this.mainCopy = this._largest();
         this.copyCount++;
         return { copy, missed: false, fresh: true };
+    }
+
+    _largest() {
+        let best = null;
+        let bestArea = 0;
+        for (const copy of this._copies.values()) {
+            if (!copy.rect)
+                continue;
+            const area = (copy.rect[2] - copy.rect[0]) * (copy.rect[3] - copy.rect[1]);
+            if (area > bestArea) {
+                best = copy;
+                bestArea = area;
+            }
+        }
+        return best;
     }
 
     _target(view, copy, width, height, format) {
@@ -976,6 +992,6 @@ export class StageCopier {
 
     clear() {
         this._copies.clear();
-        this.lastCopy = null;
+        this.mainCopy = null;
     }
 }

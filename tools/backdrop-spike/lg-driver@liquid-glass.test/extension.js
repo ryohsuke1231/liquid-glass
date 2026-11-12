@@ -1792,7 +1792,7 @@ export default class LgDriver extends Extension {
             const copier = backdrop?._copier;
             counts.bad = `frame ${counts.frames} opacity ${launcher._panel.opacity} phase ${launcher._switch?.phase} ` +
               `copies ${copier?.copyCount} reuses ${copier?.reuseCount} misses ${copier?.missCount} offStage ${copier?.offStageCount} ` +
-              `last ${JSON.stringify(copier?.lastCopy?.rect?.map(Math.round))} serialAtMap ${backdrop?._serialAtMap} serial ${copier?.lastCopy?.serial} ` +
+              `last ${JSON.stringify(copier?.mainCopy?.rect?.map(Math.round))} serialAtMap ${backdrop?._serialAtMap} serial ${copier?.mainCopy?.serial} ` +
               `icon ${JSON.stringify([...icon.get_transformed_position(), ...icon.get_transformed_size()].map(Math.round))} host ${host?.get_name()}`;
           }
         }
