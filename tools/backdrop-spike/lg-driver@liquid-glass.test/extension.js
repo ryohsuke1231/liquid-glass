@@ -31,6 +31,10 @@
 //              on a small logical screen: run-glass.sh with LG_SPIKE_MONITOR=2256x1504 and
 //              LG_MONITORS_XML=tools/backdrop-spike/monitors-200.xml; LG_DRV_LIGHT=1 for the
 //              light shell theme) and widgetcolors (the weather card's text colours after rebuilds);
+//              widgetflicker, every on-screen frame of the weather card while menus, a banner, the OSD and the
+//              launcher come and go (LG_DRV_PRELUDE=windowfirst,window,reenable for what the session went
+//              through first, LG_DRV_OFFSTAGE=all|away|record for off-screen stage paints meanwhile,
+//              LG_DRV_WIDGET_POSITION, LG_DRV_ROUNDS);
 //              $LG_DRV_SETTINGS_DUMP (a dconf dump), $LG_DRV_ICON_THEME and $LG_DRV_SHELL_THEME (a
 //              gnome-shell.css) set up the session first
 //   dhruva     the dock scenario on a Dhruva dock, then its icons magnified under the
@@ -184,6 +188,55 @@ class Camera extends Clutter.Actor {
     root.add_child(node);
   }
 }));
+
+// Keeps what every frame showed in a stage rect: armed, it copies the rect out of the framebuffer into a new
+// texture on each frame, up to `max` of them.
+const Recorder = GObject.registerClass(paintNodeWithContext(
+class Recorder extends Clutter.Actor {
+  _init() {
+    super._init({name: 'drv-recorder', reactive: false, width: 1, height: 1});
+    this.rect = null;
+    this.frames = [];
+    this.max = 0;
+  }
+
+  vfunc_pick(_pickContext) {
+  }
+
+  vfunc_paint_node(root, paintContext) {
+    const fb = paintingView ? paintContext.get_framebuffer() : null;
+    const view = fb && this.peek_stage_views().find(v => v.get_framebuffer() === fb);
+    if (!this.rect || !view || this.is_in_clone_paint() || this.frames.length >= this.max)
+      return;
+    const s = view.get_scale();
+    const l = view.layout;
+    const [x, y, w, h] = this.rect;
+    const fx = Math.floor(x * s) + Math.round(-l.x * s);
+    const fy = Math.floor(y * s) + Math.round(-l.y * s);
+    const fw = Math.ceil(w * s);
+    const fh = Math.ceil(h * s);
+    const tex = Cogl.Texture2D.new_with_size(coglContext(), fw, fh);
+    const off = Cogl.Offscreen.new_with_texture(tex);
+    off.allocate();
+    const target = newRootNode(off, view.color_state);
+    root.add_child(target);
+    const blit = Clutter.BlitNode.new(fb);
+    blit.add_blit_rectangle(fx, fy, 0, 0, fw, fh);
+    target.add_child(blit);
+    this.frames.push({tex, off, at: GLib.get_monotonic_time()});
+  }
+}));
+
+function texturePixbuf(texture) {
+  return new Promise((resolve, reject) => Shell.Screenshot.composite_to_stream(texture, 0, 0, -1, -1, 1,
+    null, 0, 0, 1, Gio.MemoryOutputStream.new_resizable(), (_o, res) => {
+      try {
+        resolve(Shell.Screenshot.composite_to_stream_finish(res));
+      } catch (e) {
+        reject(e);
+      }
+    }));
+}
 
 // Paints nothing; records whether each frame redrew the whole stage.
 const ClipProbe = GObject.registerClass(paintNodeWithContext(
@@ -1739,7 +1792,7 @@ export default class LgDriver extends Extension {
             const copier = backdrop?._copier;
             counts.bad = `frame ${counts.frames} opacity ${launcher._panel.opacity} phase ${launcher._switch?.phase} ` +
               `copies ${copier?.copyCount} reuses ${copier?.reuseCount} misses ${copier?.missCount} offStage ${copier?.offStageCount} ` +
-              `last ${JSON.stringify(copier?.lastCopy?.rect?.map(Math.round))} serialAtMap ${backdrop?._serialAtMap} serial ${copier?.lastCopy?.serial} ` +
+              `last ${JSON.stringify(copier?.mainCopy?.rect?.map(Math.round))} serialAtMap ${backdrop?._serialAtMap} serial ${copier?.mainCopy?.serial} ` +
               `icon ${JSON.stringify([...icon.get_transformed_position(), ...icon.get_transformed_size()].map(Math.round))} host ${host?.get_name()}`;
           }
         }
@@ -2921,6 +2974,176 @@ export default class LgDriver extends Extension {
     await check('after the launcher');
   }
 
+  // The weather card while other glass comes, goes and changes away from it: with a still wallpaper, every frame
+  // has to show the card as the first one did (a Reddit video showed it dark, white or with a far part of the
+  // wallpaper for a frame).
+  async _widgetFlicker(settings, m) {
+    settings.set_strv('desktop-widgets', ['weather']);
+    settings.set_string('desktop-widgets-position', GLib.getenv('LG_DRV_WIDGET_POSITION') ?? 'bottom-left');
+    settings.set_value('weather-place', new GLib.Variant('(sdd)', ['Hua Hin', 12.57, 99.96]));
+    // $LG_DRV_PRELUDE (comma separated): what the session went through first. "windowfirst": a window over where
+    // the card comes up; "window": one put over the card's edge afterwards; "reenable": Liquid Glass disabled and
+    // enabled twice.
+    const prelude = (GLib.getenv('LG_DRV_PRELUDE') ?? '').split(',');
+    const cover = async () => {
+      const app = await this._spawn(['gjs', '-m', `${this.path}/rows-app.js`], 'lgdrv-rows');
+      if (!app) return;
+      await sleep(1500);
+      app.win.move_frame(true, m.x + 250, m.y + 340);
+      await sleep(1500);
+      const fr = app.win.get_frame_rect();
+      log(`widgetflicker: window at ${[fr.x, fr.y, fr.width, fr.height]}`);
+    };
+    if (prelude.includes('windowfirst')) await cover();
+    settings.set_boolean('enable-desktop-widgets', true);
+    await sleep(8000);
+    if (prelude.includes('window')) await cover();
+    if (prelude.includes('reenable')) {
+      for (let i = 0; i < 2; i++) {
+        Main.extensionManager.disableExtension(LG_UUID);
+        await sleep(1500);
+        Main.extensionManager.enableExtension(LG_UUID);
+        await sleep(5000);
+      }
+    }
+    const weather = findActor(global.window_group, 'liquid-glass-desktop-weather');
+    if (!weather) {
+      log('widgetflicker: no weather card NG');
+      return;
+    }
+    const [wx, wy] = weather.get_transformed_position();
+    const [ww, wh] = weather.get_transformed_size();
+    const pad = 24;
+    const rect = [Math.round(wx) - pad, Math.round(wy) - pad, Math.round(ww) + pad * 2, Math.round(wh) + pad * 2];
+    log(`widgetflicker: card at ${rect.join(',')} glass ${JSON.stringify(this._glass('desktop-weather')?.stats)}`);
+    await shot('widgetflicker-card', rect);
+    const recorder = this._add(new Recorder());
+    recorder.set_position(m.x + m.width - 2, m.y + Math.round(m.height / 2));
+    recorder.rect = rect;
+    const tick = global.stage.connect('before-update', () => {
+      if (recorder.frames.length < recorder.max) recorder.queue_redraw();
+    });
+    const pixels = async frame => {
+      const pixbuf = await texturePixbuf(frame.tex);
+      return {pixbuf, px: pixbuf.get_pixels(), n: pixbuf.get_n_channels(), stride: pixbuf.get_rowstride(),
+        w: pixbuf.get_width(), h: pixbuf.get_height()};
+    };
+    // The share of the pixels (every other one) that differ from `base` by more than 24 in a channel.
+    const differing = (a, base) => {
+      let bad = 0, total = 0;
+      for (let y = 0; y < a.h; y += 2) {
+        for (let x = 0; x < a.w; x += 2) {
+          const i = y * a.stride + x * a.n;
+          total++;
+          if (Math.abs(a.px[i] - base.px[i]) > 24 || Math.abs(a.px[i + 1] - base.px[i + 1]) > 24 ||
+            Math.abs(a.px[i + 2] - base.px[i + 2]) > 24) bad++;
+        }
+      }
+      return bad / total;
+    };
+    let failures = 0;
+    // $LG_DRV_OFFSTAGE: the stage painted off screen every 30 ms meanwhile, as adaptive colour and a screen
+    // recording do ("all" the monitor, "away" a rect clear of the card).
+    const offStage = GLib.getenv('LG_DRV_OFFSTAGE');
+    // "record" keeps what those paints drew of the card, which is what a recording made of them shows.
+    const captureRect = offStage === 'away'
+      ? new Mtk.Rectangle({x: m.x + m.width - 300, y: m.y + 100, width: 200, height: 100})
+      : offStage === 'record'
+        ? new Mtk.Rectangle({x: rect[0], y: rect[1], width: rect[2], height: rect[3]})
+        : new Mtk.Rectangle({x: m.x, y: m.y, width: m.width, height: m.height});
+    const captureScale = offStage === 'record' ? 1 : 0.1;
+    let captured = [];
+    const capture = () => {
+      const content = SHELL_MAJOR >= 50
+        ? global.stage.paint_to_content(captureRect, captureScale, null, Clutter.PaintFlag.NO_CURSORS)
+        : global.stage.paint_to_content(captureRect, captureScale, Clutter.PaintFlag.NO_CURSORS);
+      if (offStage === 'record' && captured.length < 400) captured.push({tex: content.get_texture()});
+    };
+    const watch = async (what, ms, run) => {
+      const before = this._glass('desktop-weather')?.stats;
+      const captureId = offStage ? GLib.timeout_add(GLib.PRIORITY_DEFAULT, 30, () => {
+        capture();
+        return GLib.SOURCE_CONTINUE;
+      }) : 0;
+      recorder.frames = [];
+      recorder.max = 400;
+      recorder.queue_redraw();
+      await sleep(150);
+      await run();
+      await sleep(ms);
+      if (captureId) GLib.Source.remove(captureId);
+      recorder.max = 0;
+      const frames = offStage === 'record' ? captured : recorder.frames;
+      recorder.frames = [];
+      captured = [];
+      // Nothing was drawn (an idle step): there is nothing to compare.
+      if (frames.length < 2) {
+        log(`widgetflicker ${what}: frames=${frames.length}`);
+        return;
+      }
+      const base = await pixels(frames[0]);
+      let worst = 0, worstAt = -1, off = 0;
+      const offAt = [];
+      for (let i = 1; i < frames.length; i++) {
+        const share = differing(await pixels(frames[i]), base);
+        if (share > 0.01) {
+          off++;
+          if (offAt.length < 12) offAt.push(`${i}:${(share * 100).toFixed(0)}%`);
+        }
+        if (share > worst) {
+          worst = share;
+          worstAt = i;
+        }
+      }
+      if (off) {
+        failures++;
+        base.pixbuf.savev(`${OUT_DIR}/widgetflicker-${what}-first.png`, 'png', [], []);
+        (await pixels(frames[worstAt])).pixbuf.savev(`${OUT_DIR}/widgetflicker-${what}-worst.png`, 'png', [], []);
+      }
+      log(`widgetflicker ${what}: frames=${frames.length} differing=${off} worst=${(worst * 100).toFixed(1)}% ` +
+        `${off ? `at ${offAt.join(' ')} ` : ''}glass ${delta(before, this._glass('desktop-weather')?.stats)} ${off ? 'NG' : 'OK'}`);
+    };
+    const dateMenu = Main.panel.statusArea.dateMenu.menu;
+    const quick = Main.panel.statusArea.quickSettings.menu;
+    const osd = () => {
+      const icon = Gio.ThemedIcon.new('audio-volume-high-symbolic');
+      if (SHELL_MAJOR >= 49) Main.osdWindowManager.showAll(icon, 'Volume', Math.random(), 1);
+      else Main.osdWindowManager.show(-1, icon, 'Volume', Math.random(), 1);
+    };
+    const {Launcher} = await this._lgModule('launcherManager.js');
+    for (let round = 0; round < Number(GLib.getenv('LG_DRV_ROUNDS') ?? 2); round++) {
+      await watch(`idle-${round}`, 1500, async () => {});
+      await watch(`calendar-open-${round}`, 1500, async () => dateMenu.open(true));
+      await watch(`calendar-close-${round}`, 1500, async () => dateMenu.close(true));
+      await watch(`quick-open-${round}`, 1500, async () => quick.open(true));
+      await watch(`quick-close-${round}`, 1500, async () => quick.close(true));
+      await watch(`notification-${round}`, 6000, async () => Main.notify('Driver', 'A banner over the top bar'));
+      await watch(`osd-${round}`, 3000, async () => {
+        for (let i = 0; i < 6; i++) {
+          osd();
+          await sleep(200);
+        }
+      });
+      await watch(`launcher-${round}`, 2500, async () => {
+        Launcher.instance?.open();
+        await sleep(800);
+        Launcher.instance?.setText('set');
+        await sleep(1500);
+        Launcher.instance?.close?.();
+      });
+      await watch(`calendar-quick-${round}`, 2500, async () => {
+        dateMenu.open(true);
+        await sleep(300);
+        quick.open(true);
+        await sleep(600);
+        quick.close(true);
+      });
+    }
+    global.stage.disconnect(tick);
+    this._drop(recorder);
+    log(`widgetflicker: ${failures ? `${failures} steps differed NG` : 'every frame showed the same card OK'}`);
+  }
+
   // The dock's glass while icons come and go (a window opened and closed,
   // which adds and removes an icon and its running indicator): it grows and
   // shrinks sideways only, never towards the screen edge.
@@ -3828,6 +4051,8 @@ export default class LgDriver extends Extension {
       await this._nanRelay(settings);
     if (parts.includes('notifstack'))
       await this._notifStack();
+    if (parts.includes('widgetflicker'))
+      await this._widgetFlicker(settings, m);
     // Everything switched on, the launcher open: disabling has to leave nothing.
     (await this._lgModule('launcherManager.js')).Launcher.instance?.open();
     await sleep(500);

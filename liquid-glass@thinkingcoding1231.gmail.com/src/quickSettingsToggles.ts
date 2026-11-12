@@ -594,7 +594,7 @@ export const ToggleBackdropGlass = GObject.registerClass(paintNodeWithContext(
       const { kx, ky, resW, resH } = scale;
       const local = [s[0] * kx, s[1] * ky, (s[0] + s[2]) * kx, (s[1] + s[3]) * ky];
 
-      const desktop = this.reader.copier.lastCopy;
+      const desktop = this.reader.copier.mainCopy;
       if (!desktop?.rect) {
         // Nothing copied yet; the next frame redraws the whole area.
         this._relays.redrawArea();

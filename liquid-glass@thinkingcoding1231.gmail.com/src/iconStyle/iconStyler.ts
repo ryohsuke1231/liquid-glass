@@ -1002,7 +1002,7 @@ export const IconBackdrop = GObject.registerClass(
         this._paintedRect = null;
         return;
       }
-      this._serialAtMap = this._copier.lastCopy?.serial ?? 0;
+      this._serialAtMap = this._copier.mainCopy?.serial ?? 0;
       startSyncLoop(this._signalSlot, this._firstSlot, {
         alive: () => !!this._host?.mapped,
         honourFreeze: true,
@@ -1041,7 +1041,9 @@ export const IconBackdrop = GObject.registerClass(
       const moved = !this._area || area.some((v, i) => v !== this._area![i]);
       this._area = area;
       if (relays.sync(area) || moved) relays.redrawArea();
-      this._copier.prune(this._host!.peek_stage_views());
+      const views = this._host!.peek_stage_views();
+      this._copier.prune(views);
+      this._renderer.blur.prune(views);
     }
 
     vfunc_pre_paint(node: Clutter.PaintNode, paintContext: Clutter.PaintContext): boolean {
@@ -1051,13 +1053,15 @@ export const IconBackdrop = GObject.registerClass(
       if (!host || !rect) return true;
       const ctx = coglContext();
       this._renderer.prepare(ctx);
-      const serial = this._copier.lastCopy?.serial;
+      const serial = this._copier.mainCopy?.serial;
       const { copy, missed } = this._copier.take(host, node, paintContext, rect);
       // Nothing to draw with yet; the next frame redraws the whole area. The relays may not be shown yet.
       if (missed) host.queue_redraw();
       if (copy && copy.serial !== serial) this._params.copied();
       const blur = this._renderer.blur;
       if (!copy?.rect || blur.passCount <= 0) return true;
+      // One pool per stage view, so current() can pick the blur of the copy it returns.
+      blur.use(copy.view);
       const w = Math.max(1, Math.round(copy.rect[2] - copy.rect[0]));
       const h = Math.max(1, Math.round(copy.rect[3] - copy.rect[1]));
       const key = [copy.texture, copy.serial];
@@ -1069,9 +1073,10 @@ export const IconBackdrop = GObject.registerClass(
 
     /** What is behind the icons now, or null until it has been copied since the host was last shown. */
     current(): Backdrop | null {
-      const copy = this._copier.lastCopy;
+      const copy = this._copier.mainCopy;
       if (!copy?.rect || copy.serial <= this._serialAtMap) return null;
       const blur = this._renderer.blur;
+      blur.use(copy.view);
       return { texture: blur.passCount > 0 && blur.result ? blur.result : copy.texture, rect: copy.rect };
     }
 
