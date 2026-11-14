@@ -111,11 +111,6 @@ export class BarGrowth {
     return growthBarFrom(this._host.source(), this._host.key) !== null;
   }
 
-  /** Whether what it holds would grow up out of a dock at the bottom of the screen now. */
-  get growsUp(): boolean {
-    return growthBarFrom(this._host.source(), this._host.key)?.growDirection === -1;
-  }
-
   /** The stage y of the glass edge what it holds would grow out of now, and which way it grows, or null. */
   edge(): { y: number, direction: 1 | -1 } | null {
     const bar = growthBarFrom(this._host.source(), this._host.key);
