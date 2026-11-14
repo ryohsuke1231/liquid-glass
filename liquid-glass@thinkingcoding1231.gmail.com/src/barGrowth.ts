@@ -116,6 +116,12 @@ export class BarGrowth {
     return growthBarFrom(this._host.source(), this._host.key)?.growDirection === -1;
   }
 
+  /** The stage y of the glass edge what it holds would grow out of now, and which way it grows, or null. */
+  edge(): { y: number, direction: 1 | -1 } | null {
+    const bar = growthBarFrom(this._host.source(), this._host.key);
+    return bar ? { y: bar.glassEdge(), direction: bar.growDirection } : null;
+  }
+
   /** Whether it is opening or open, rather than closing. */
   get opening(): boolean {
     return this._opening;

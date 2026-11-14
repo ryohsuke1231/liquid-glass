@@ -90,6 +90,13 @@ class LabelGrowth {
     Object.getPrototypeOf(this._item).showLabel.call(this._item);
     this.showing = true;
     if (!isActorValid(this._label) || !this._label.visible) return;
+    // Dash to Dock leaves a gap between the label and the dock, which the glass would fill.
+    const edge = this._growth.edge();
+    if (edge) {
+      // Not laid out yet: its size still counts the theme's margin.
+      const height = this._label.get_preferred_height(-1)[1] - this._label.margin_top - this._label.margin_bottom;
+      this._label.y = Math.round(edge.direction < 0 ? edge.y - height : edge.y);
+    }
     // Dash to Dock has started its fade, which the growth takes over.
     this._setDrawn(animate ? this._growth.start(true) : this._growth.holdAtRest());
     this._shown(this);
