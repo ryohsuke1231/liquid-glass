@@ -592,12 +592,16 @@ function evaluate(node: Node, inputs: (Tensor | undefined)[], kernels: Kernels):
   }
 }
 
+// The operators nearly all the time goes into; progress is counted in them.
+const HEAVY = new Set(['MatMul', 'Conv', 'ConvInteger']);
+
 /**
  * Runs `model` on `feeds` (its inputs by name) and returns its outputs by
- * name. `spent` collects the milliseconds each kind of operator took.
+ * name. `progress` is told how far (0 to 1) the run has come, and `spent`
+ * collects the milliseconds each kind of operator took.
  */
 export function runModel(model: Model, feeds: Record<string, Tensor>, kernels: Kernels,
-  spent?: Record<string, number>): Record<string, Tensor> {
+  progress?: (fraction: number) => void, spent?: Record<string, number>): Record<string, Tensor> {
   const values = new Map<string, Tensor>(Object.entries(feeds));
   // How many nodes still read each value; it is dropped after the last one.
   const readers = new Map<string, number>();
@@ -605,12 +609,15 @@ export function runModel(model: Model, feeds: Record<string, Tensor>, kernels: K
     for (const name of node.inputs) readers.set(name, (readers.get(name) ?? 0) + 1);
   }
   for (const name of model.outputs) readers.set(name, Infinity);
+  const heavy = model.nodes.filter(node => HEAVY.has(node.op)).length;
+  let done = 0;
   for (const node of model.nodes) {
     const inputs = node.inputs.map(name => name ? values.get(name) ?? model.initializer(name) : undefined);
     const constant = node.op === 'Constant' ? node.attributes.value as Attribute : null;
     const started = spent ? Date.now() : 0;
     const outputs = constant ? [constant as Tensor] : evaluate(node, inputs, kernels);
     if (spent) spent[node.op] = (spent[node.op] ?? 0) + Date.now() - started;
+    if (progress && HEAVY.has(node.op)) progress(++done / heavy);
     node.outputs.forEach((name, i) => {
       if (name && readers.has(name)) values.set(name, outputs[i]);
     });

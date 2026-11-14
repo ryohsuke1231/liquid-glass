@@ -38,6 +38,7 @@ function fixture(overrides = {}, dbusResponses = [], blurMyShell = null) {
     get_boolean(key) { return this.get_value(key).deep_unpack(); }
     get_strv(key) { return this.get_value(key).deep_unpack(); }
     get_string(key) { return this.get_value(key).deep_unpack(); }
+    get_int(key) { return this.get_value(key).deep_unpack(); }
     connect(signal, fn) { const id = nextId++; listeners.set(id, {signal, fn}); return id; }
     disconnect(id) { listeners.delete(id); }
     is_writable() { return true; }
@@ -81,7 +82,7 @@ function fixture(overrides = {}, dbusResponses = [], blurMyShell = null) {
   class RGBA { parse() { this.red = this.green = this.blue = 1; } }
   const Adw = Object.fromEntries(['PreferencesPage', 'PreferencesGroup', 'SwitchRow', 'ComboRow', 'SpinRow', 'ActionRow', 'EntryRow', 'ExpanderRow',
     'Dialog', 'ToolbarView', 'HeaderBar'].map(name => [name, class extends Widget {}]));
-  const Gtk = {Adjustment: Widget, ColorDialogButton: Widget, ColorDialog: Widget, Button: Widget, ListBox: Widget,
+  const Gtk = {Adjustment: Widget, ColorDialogButton: Widget, ColorDialog: Widget, Button: Widget, ProgressBar: Widget, ListBox: Widget,
     Scale: Widget, Orientation: {HORIZONTAL: 0},
     SignalListItemFactory: Widget, Box: Widget, Label: Widget, Image: Widget,
     StringList: {new: titles => titles}, Align: {CENTER: 0}, SelectionMode: {NONE: 0},

@@ -2,7 +2,7 @@
 // its own (gjs -m) with helpers for the arithmetic (kernelWorker.js). Answers
 // {file, style, width, height, depthModel, subjectModel, cache} by writing the
 // depth map of the picture as the monitor shows it to `cache` and saying
-// {width, height, seconds}.
+// {width, height, seconds}, with how far it has come meanwhile.
 import GdkPixbuf from 'gi://GdkPixbuf';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
@@ -39,6 +39,11 @@ const GUIDE_REACH = 3;
 const GUIDE_EPSILON = 4e-4;
 // The maps kept in the cache; the oldest go first.
 const KEPT_MAPS = 40;
+// How far the work has come once the picture is read and once both models have run, and the depth model's share
+// of the time the two take.
+const LOADED = 0.08;
+const DONE = 0.97;
+const DEPTH_SHARE = 0.66;
 
 // The picture as a monitor of width x height shows it, at the map's size.
 function monitorView(file: string, style: PictureStyle, width: number, height: number): GdkPixbuf.Pixbuf {
@@ -75,9 +80,10 @@ function modelInput(view: GdkPixbuf.Pixbuf, width: number, height: number) {
 }
 
 // The model's first output for `view` resized to width x height, as a plane of that size in 0..1.
-function infer(path: string, view: GdkPixbuf.Pixbuf, width: number, height: number, pool: KernelPool): Float32Array {
+function infer(path: string, view: GdkPixbuf.Pixbuf, width: number, height: number, pool: KernelPool,
+  progress: (fraction: number) => void): Float32Array {
   const model = parseModel(GLib.MappedFile.new(path, false).get_bytes().toArray());
-  const outputs = runModel(model, { [model.inputs[0]]: modelInput(view, width, height) }, pool);
+  const outputs = runModel(model, { [model.inputs[0]]: modelInput(view, width, height) }, pool, progress);
   const out = outputs[model.outputs[0]];
   if (out.data.length !== width * height) throw new Error(`the model answered with [${out.dims}]`);
   return normalized(out.data as Float32Array);
@@ -98,8 +104,17 @@ function prune(folder: string): void {
   for (const { path } of files.slice(KEPT_MAPS)) GLib.unlink(path);
 }
 
-await serveRequests(async (request: Request) => {
+await serveRequests(async (request: Request, report) => {
   const started = GLib.get_monotonic_time();
+  // Told in whole percents, each once.
+  let told = -1;
+  const reach = (from: number, to: number) => (fraction: number) => {
+    const percent = Math.floor((from + (to - from) * fraction) * 100);
+    if (percent === told) return;
+    told = percent;
+    report(percent / 100);
+  };
+  const depthShare = request.subjectModel ? DEPTH_SHARE : 1;
   const view = monitorView(request.file, request.style, request.width, request.height);
   const { width, height } = view;
   const guide = planes(view, v => v / 255);
@@ -111,12 +126,15 @@ await serveRequests(async (request: Request) => {
     guidedFilter(resizePlane(values, w, h, width, height), luminance, width, height, radius, GUIDE_EPSILON);
 
   const [script] = GLib.filename_from_uri(import.meta.url);
+  reach(0, LOADED)(1);
   const pool = new KernelPool(GLib.build_filenamev([GLib.path_get_dirname(script), 'kernelWorker.js']));
   try {
     const [dw, dh] = modelSize(width, height, DEPTH_LONG, DEPTH_PATCH);
-    const depth = refine(infer(request.depthModel, view, dw, dh, pool), dw, dh);
+    const depth = refine(infer(request.depthModel, view, dw, dh, pool, reach(LOADED, LOADED + (DONE - LOADED) * depthShare)), dw, dh);
     const subject = request.subjectModel
-      ? refine(infer(request.subjectModel, view, SUBJECT_SIZE, SUBJECT_SIZE, pool), SUBJECT_SIZE, SUBJECT_SIZE) : null;
+      ? refine(infer(request.subjectModel, view, SUBJECT_SIZE, SUBJECT_SIZE, pool, reach(LOADED + (DONE - LOADED) * depthShare, DONE)),
+        SUBJECT_SIZE, SUBJECT_SIZE)
+      : null;
     write(request.cache, encodeDepthMap(packDepthMap(depth, subject, width, height)));
     prune(GLib.path_get_dirname(request.cache));
   } finally {

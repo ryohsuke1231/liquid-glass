@@ -15,10 +15,16 @@ const STATUS = {
   'no-model': 'The models are not downloaded',
   'unsupported': 'This wallpaper cannot be analysed (a slideshow, a tiled picture or none)',
   'waiting': 'Not analysed yet',
-  'analysing': 'Analysing…',
   'ready': 'Analysed',
   'failed': 'The analysis failed',
 };
+
+// A bar at the end of a row, for work that takes a while.
+function progressBar(row) {
+  const bar = new Gtk.ProgressBar({ valign: Gtk.Align.CENTER, width_request: 140, visible: false });
+  row.add_suffix(bar);
+  return bar;
+}
 
 function megabytes(bytes) {
   return `${Math.round(bytes / 1e6)} MB`;
@@ -85,6 +91,7 @@ export function clockDepthRows(group, controls) {
   const total = MODELS.reduce((sum, model) => sum + model.bytes, 0);
   const models = new Adw.ActionRow({ title: 'Models' });
   const fetch = new Gtk.Button({ label: 'Download', valign: Gtk.Align.CENTER });
+  const fetched = progressBar(models);
   models.add_suffix(fetch);
   group.add(models);
   const showModels = (note = '') => {
@@ -99,14 +106,19 @@ export function clockDepthRows(group, controls) {
   let cancellable = null;
   fetch.connect('clicked', async () => {
     cancellable = new Gio.Cancellable();
-    fetch.sensitive = false;
+    fetch.visible = false;
+    fetched.fraction = 0;
+    fetched.visible = true;
     const session = new Soup.Session({ user_agent: USER_AGENT, timeout: 60 });
     try {
       let before = 0;
       for (const model of MODELS) {
         if (!hasModel(model)) {
           await downloadModel(session, model, cancellable,
-            received => { models.subtitle = `Downloading… ${Math.floor((before + received) * 100 / total)} %`; });
+            received => {
+              fetched.fraction = (before + received) / total;
+              models.subtitle = `Downloading… ${Math.floor(fetched.fraction * 100)} % of ${megabytes(total)}`;
+            });
         }
         before += model.bytes;
       }
@@ -116,7 +128,7 @@ export function clockDepthRows(group, controls) {
     } catch (error) {
       if (!isCancelled(error)) showModels(`The download failed: ${error.message ?? error}`);
     }
-    fetch.sensitive = true;
+    fetched.visible = false;
   });
   controls.onClose(() => cancellable?.cancel());
 
@@ -127,11 +139,17 @@ export function clockDepthRows(group, controls) {
   analyse.connect('clicked', () => {
     settings.set_int('glass-clock-depth-request', settings.get_int('glass-clock-depth-request') + 1);
   });
+  const analysed = progressBar(state);
   state.add_suffix(analyse);
   group.add(state);
-  controls.watch(['glass-clock-depth-status'], () => {
+  controls.watch(['glass-clock-depth-status', 'glass-clock-depth-progress'], () => {
     const status = settings.get_string('glass-clock-depth-status');
-    state.subtitle = STATUS[status] ?? status;
+    const percent = settings.get_int('glass-clock-depth-progress');
+    const analysing = status === 'analysing';
+    state.subtitle = analysing ? `Analysing… ${percent} %` : STATUS[status] ?? status;
+    analysed.visible = analysing;
+    analysed.fraction = percent / 100;
+    analyse.visible = !analysing;
     analyse.sensitive = status === 'waiting' || status === 'failed';
   });
   controls.watch(['glass-clock-depth'], () => {

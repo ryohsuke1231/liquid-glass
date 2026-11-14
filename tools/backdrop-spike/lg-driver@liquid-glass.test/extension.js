@@ -3723,13 +3723,15 @@ export default class LgDriver extends Extension {
       const started = GLib.get_monotonic_time();
       settings.set_boolean('glass-clock-depth', true);
       let status = '';
+      const seen = new Set();
       for (let i = 0; i < 240; i++) {
         status = settings.get_string('glass-clock-depth-status');
+        seen.add(settings.get_int('glass-clock-depth-progress'));
         if (!['', 'off', 'analysing'].includes(status)) break;
         await sleep(500);
       }
       const seconds = ((GLib.get_monotonic_time() - started) / 1e6).toFixed(1);
-      log(`clockdepth: status=${status} after ${seconds} s ${status === 'ready' ? 'OK' : 'NG'}`);
+      log(`clockdepth: status=${status} after ${seconds} s, progress seen ${[...seen].join(' ')} ${status === 'ready' ? 'OK' : 'NG'}`);
       for (const [i, at] of places.entries()) {
         place(at);
         await sleep(2500);

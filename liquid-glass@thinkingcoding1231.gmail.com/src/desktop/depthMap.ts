@@ -177,6 +177,15 @@ const EDGE_REACH = 2;
 const MODEL_WIDTH = 518;
 const LEVELS = 47;
 const MAX_SAMPLES = 20000;
+// The depth the subject's back is at: this share of it is farther.
+const SUBJECT_BACK = 0.15;
+// What is nearer than the subject's back hides the clock too when at most this much of the line round it has
+// neither a step in depth nor the subject's outline under it.
+const LOOSE_SHARE = 0.3;
+// Half the width of the shader's soft edge round the threshold.
+const EDGE_SOFTNESS = 0.012;
+// and when the subject and what is nearer together hide at most this much of the clock's surroundings.
+const HIDDEN_SHARE = 0.85;
 
 /** Whether the map's subject plane holds a subject, rather than the model's guesses at a picture without one. */
 export function hasSubject(map: DepthMap): boolean {
@@ -191,49 +200,102 @@ export function hasSubject(map: DepthMap): boolean {
   return share >= SUBJECT_AREA[0] && share <= SUBJECT_AREA[1] && firm >= any * SUBJECT_FIRM;
 }
 
-/**
- * What a clock over `rect` ([x, y, width, height] in map px) hides behind.
- * The subject, when there is one and it covers a part of the clock; nothing
- * when it covers most of it, so the clock stays readable. Away from the
- * subject, whatever is nearer than a depth that splits the clock's surroundings in two
- * along a real edge: a ridge against the sky, not a slope that only comes
- * nearer little by little. Nothing when neither is there.
- */
-export function chooseOcclusion(map: DepthMap, rect: [number, number, number, number], subject: boolean): Occlusion {
+// The clock's surroundings, sampled: the depth, whether the subject is there or close by, and how much the depth
+// changes round each sample.
+interface Samples {
+  columns: number;
+  rows: number;
+  depth: Uint8Array;
+  subject: Uint8Array;
+  nearSubject: Uint8Array;
+  jump: Uint8Array;
+}
+
+function sample(map: DepthMap, rect: [number, number, number, number]): Samples | null {
   // Coarser for a large clock, so working it out while the clock is dragged stays cheap.
   const step = Math.max(Math.round(map.width / MODEL_WIDTH), Math.ceil(Math.sqrt(rect[2] * rect[3] / MAX_SAMPLES)), 1);
   const x0 = Math.max(Math.floor(rect[0]), 0), y0 = Math.max(Math.floor(rect[1]), 0);
   const columns = Math.floor((Math.min(Math.ceil(rect[0] + rect[2]), map.width) - x0) / step);
   const rows = Math.floor((Math.min(Math.ceil(rect[1] + rect[3]), map.height) - y0) / step);
-  if (columns < 4 || rows < 4) return NO_OCCLUSION;
+  if (columns < 4 || rows < 4) return null;
   const n = columns * rows;
-  const depth = new Uint8Array(n);
-  let covered = 0;
+  const depth = new Uint8Array(n), subject = new Uint8Array(n), nearSubject = new Uint8Array(n), jump = new Uint8Array(n);
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < columns; c++) {
       const at = ((y0 + r * step) * map.width + x0 + c * step) * 4;
       depth[r * columns + c] = map.pixels[at];
-      if (map.pixels[at + 1] > SUBJECT_LEVEL) covered++;
+      subject[r * columns + c] = Number(map.pixels[at + 1] > SUBJECT_LEVEL);
     }
   }
-  // A clock on the subject goes by the subject alone: behind it, or in front of it when it would hide most of the clock.
-  if (subject && covered >= n * SUBJECT_COVER[0]) return covered <= n * SUBJECT_COVER[1] ? { threshold: 2, subject: true } : NO_OCCLUSION;
-
-  // How much the depth changes round each sample.
-  const jump = new Uint8Array(n);
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < columns; c++) {
-      let min = 255, max = 0;
+      let min = 255, max = 0, near = 0;
       for (let y = Math.max(r - EDGE_REACH, 0); y <= Math.min(r + EDGE_REACH, rows - 1); y++) {
         for (let x = Math.max(c - EDGE_REACH, 0); x <= Math.min(c + EDGE_REACH, columns - 1); x++) {
           const v = depth[y * columns + x];
           if (v < min) min = v;
           if (v > max) max = v;
+          near |= subject[y * columns + x];
         }
       }
       jump[r * columns + c] = max - min;
+      nearSubject[r * columns + c] = near;
     }
   }
+  return { columns, rows, depth, subject, nearSubject, jump };
+}
+
+// The line between what is nearer than `t` and the rest: how many samples are nearer, how many lie on the line,
+// how many of those on a step in depth, and how many on neither a step nor the subject's outline.
+function contour(s: Samples, t: number): { near: number, line: number, steps: number, loose: number } {
+  const { columns, rows, depth, jump, nearSubject } = s;
+  let near = 0, line = 0, steps = 0, loose = 0;
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < columns; c++) {
+      const i = r * columns + c;
+      const isNear = depth[i] > t;
+      if (isNear) near++;
+      if ((c > 0 && isNear !== depth[i - 1] > t) || (r > 0 && isNear !== depth[i - columns] > t)) {
+        line++;
+        if (jump[i] > EDGE_STEP) steps++;
+        else if (!nearSubject[i]) loose++;
+      }
+    }
+  }
+  return { near, line, steps, loose };
+}
+
+/**
+ * What a clock over `rect` ([x, y, width, height] in map px) hides behind.
+ *
+ * The subject, when there is one and it covers a part of the clock; nothing
+ * when it covers most of it, so the clock stays readable. A clock behind the
+ * subject is also behind what is nearer than the subject, the ground a
+ * mountain stands on, unless that would cut the clock along a line with no
+ * edge under it, as across the road a car stands on.
+ *
+ * Away from the subject, whatever is nearer than a depth that splits the
+ * clock's surroundings in two along a real edge: a ridge against the sky, not
+ * a slope that only comes nearer little by little. Nothing when neither is
+ * there.
+ */
+export function chooseOcclusion(map: DepthMap, rect: [number, number, number, number], subject: boolean): Occlusion {
+  const samples = sample(map, rect);
+  if (!samples) return NO_OCCLUSION;
+  const { depth } = samples;
+  const n = depth.length;
+  const covered = samples.subject.reduce((sum, v) => sum + v, 0);
+  if (subject && covered >= n * SUBJECT_COVER[0]) {
+    if (covered > n * SUBJECT_COVER[1]) return NO_OCCLUSION;
+    const onSubject = depth.filter((_v, i) => samples.subject[i] === 1).sort();
+    const back = onSubject[Math.floor(SUBJECT_BACK * (onSubject.length - 1))];
+    const { line, loose } = contour(samples, back);
+    let hidden = 0;
+    for (let i = 0; i < n; i++) hidden += Number(samples.subject[i] === 1 || depth[i] >= back);
+    const withNearer = line >= 8 && loose <= line * LOOSE_SHARE && hidden <= n * HIDDEN_SHARE;
+    return { threshold: withNearer ? Math.max(back / 255 - EDGE_SOFTNESS, 0) : 2, subject: true };
+  }
+
   const sorted = depth.slice().sort();
   let best = 0, threshold = -1;
   let last = -1;
@@ -241,18 +303,7 @@ export function chooseOcclusion(map: DepthMap, rect: [number, number, number, nu
     const t = sorted[Math.floor((0.04 + 0.92 * level / (LEVELS - 1)) * (n - 1))];
     if (t === last) continue;
     last = t;
-    let near = 0, line = 0, steps = 0;
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < columns; c++) {
-        const i = r * columns + c;
-        const isNear = depth[i] > t;
-        if (isNear) near++;
-        if ((c > 0 && isNear !== depth[i - 1] > t) || (r > 0 && isNear !== depth[i - columns] > t)) {
-          line++;
-          if (jump[i] > EDGE_STEP) steps++;
-        }
-      }
-    }
+    const { near, line, steps } = contour(samples, t);
     if (near < n * NEAR_SHARE[0] || near > n * NEAR_SHARE[1] || line < 8) continue;
     if (steps / line > best) {
       best = steps / line;

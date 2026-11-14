@@ -11,6 +11,7 @@ const MAX_STARTS = 3;
 interface Waiting {
   resolve: (answer: any) => void;
   reject: (error: Error) => void;
+  progress?: (fraction: number) => void;
 }
 
 function isCancelled(e: unknown): boolean {
@@ -42,12 +43,15 @@ export class WorkerProcess {
     return this._waiting.size;
   }
 
-  /** Rejects when the worker cannot be started, exits meanwhile or answers with an error. */
-  request(message: object): Promise<any> {
+  /**
+   * Rejects when the worker cannot be started, exits meanwhile or answers with an error. `progress` gets how far
+   * (0 to 1) a worker that reports it has come.
+   */
+  request(message: object, progress?: (fraction: number) => void): Promise<any> {
     if (!this._process && !this._start()) return Promise.reject(new Error(`the ${this._name} cannot start`));
     return new Promise((resolve, reject) => {
       const id = this._nextId++;
-      this._waiting.set(id, { resolve, reject });
+      this._waiting.set(id, { resolve, reject, progress });
       this._lines.push(`${JSON.stringify({ ...message, id })}\n`);
       this._write();
     });
@@ -119,6 +123,10 @@ export class WorkerProcess {
     }
     const waiting = this._waiting.get(message.id);
     if (!waiting) return;
+    if (typeof message.progress === 'number') {
+      waiting.progress?.(message.progress);
+      return;
+    }
     this._waiting.delete(message.id);
     if (message.error) waiting.reject(new Error(message.error));
     else waiting.resolve(message);
@@ -149,10 +157,11 @@ export class WorkerProcess {
 /**
  * The worker's side: answers each line of JSON on stdin with what `handle`
  * returns, or with its error, until stdin closes. `arrived` sees each request
- * as soon as it is read, while earlier ones may still be worked on. Call from
+ * as soon as it is read, while earlier ones may still be worked on. `handle`
+ * can say how far (0 to 1) it has come with its second argument. Call from
  * the worker's module and await.
  */
-export async function serveRequests(handle: (request: any) => Promise<object>,
+export async function serveRequests(handle: (request: any, report: (fraction: number) => void) => Promise<object>,
   arrived: (request: any) => void = () => {}): Promise<void> {
   const GioUnix = (await import('gi://GioUnix')).default;
   const input = new Gio.DataInputStream({ base_stream: new GioUnix.InputStream({ fd: 0, close_fd: false }) });
@@ -184,7 +193,7 @@ export async function serveRequests(handle: (request: any) => Promise<object>,
         const { id = 0, ...request } = message ?? {};
         try {
           if (!message) throw new Error('the request is not JSON');
-          answer({ ...(await handle(request)), id });
+          answer({ ...(await handle(request, progress => answer({ id, progress }))), id });
         } catch (e) {
           answer({ id, error: String(e) });
         }

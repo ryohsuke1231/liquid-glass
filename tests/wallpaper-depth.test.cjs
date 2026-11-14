@@ -66,6 +66,19 @@ test('a firm subject is taken where it covers a part of the clock, a faint guess
   assert.equal(depth.hasSubject(faint), false);
 });
 
+test('a clock behind a subject is also behind the ground the subject stands on, but is not cut by a plain slope', () => {
+  // A peak against the sky, standing on land that comes nearer below it; the model marked only the peak.
+  const land = (x, y) => y < 300 - Math.max(120 - Math.abs(x - 640), 0) ? 0 : 0.3 + (y - 180) / 1000;
+  const peak = (x, y) => land(x, y) > 0 && y < 380 && Math.abs(x - 640) < 200 ? 1 : 0;
+  const mountain = mapOf(1280, 720, land, peak);
+  const behind = depth.chooseOcclusion(mountain, [340, 100, 600, 500], true);
+  assert.equal(behind.subject, true);
+  assert.ok(behind.threshold > 0.02 && behind.threshold < 0.42, `the land hides the clock too: ${behind.threshold}`);
+  // A subject on a slope with no edge of its own: only the subject hides the clock.
+  const car = mapOf(1280, 720, (x, y) => Math.hypot(x - 640, y - 400) < 150 ? 0.75 : y / 720, (x, y) => Math.hypot(x - 640, y - 400) < 150 ? 1 : 0);
+  assert.deepEqual(depth.chooseOcclusion(car, [200, 300, 480, 200], true), { threshold: 2, subject: true });
+});
+
 test('the guided filter moves a soft edge onto the picture\'s edge and leaves flat parts alone', () => {
   const w = 64, h = 16;
   const guide = new Float32Array(w * h), plane = new Float32Array(w * h);

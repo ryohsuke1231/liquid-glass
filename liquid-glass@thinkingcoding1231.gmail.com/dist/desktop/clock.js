@@ -150,7 +150,9 @@ export class GlassClock {
             (this._fieldSize[0] - 2 * rx) * kx, (this._fieldSize[1] - 2 * ry) * ky,
         ], shown.subject);
         if (this._env.logger.enabled)
-            this._env.logger.log(`[Liquid Glass] The clock stands behind ${occlusion.subject ? 'the subject' : occlusion.threshold > 1 ? 'nothing' : `depth ${occlusion.threshold.toFixed(3)}`}`);
+            this._env.logger.log(`[Liquid Glass] The clock stands behind ${[
+                occlusion.subject ? 'the subject' : '', occlusion.threshold > 1 ? '' : `depth ${occlusion.threshold.toFixed(3)}`,
+            ].filter(Boolean).join(' and ') || 'nothing'}`);
         this._glass.setOcclusion(shown.texture, [this._fieldScale[0] / monitor.width, this._fieldScale[1] / monitor.height], [(gx - monitor.x) / monitor.width, (gy - monitor.y) / monitor.height], occlusion.threshold, occlusion.subject);
     }
 

@@ -73,6 +73,7 @@ export class WallpaperDepth {
   }
 
   private _status(status: string): void {
+    if (status !== 'analysing') this._settings.reset('glass-clock-depth-progress');
     if (this._settings.get_string('glass-clock-depth-status') !== status)
       this._settings.set_string('glass-clock-depth-status', status);
   }
@@ -206,7 +207,7 @@ export class WallpaperDepth {
     try {
       const answer = await worker.request({
         ...target, cache, depthModel: modelPath(DEPTH_MODEL), subjectModel: hasModel(SUBJECT_MODEL) ? modelPath(SUBJECT_MODEL) : '',
-      });
+      }, fraction => this._settings.set_int('glass-clock-depth-progress', Math.round(fraction * 100)));
       this._logger.log(`[Liquid Glass] Analysed the wallpaper in ${answer.seconds.toFixed(1)} s`);
     } catch (e) {
       failed = true;
