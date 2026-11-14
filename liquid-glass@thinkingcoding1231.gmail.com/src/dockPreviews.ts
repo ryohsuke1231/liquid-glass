@@ -37,6 +37,9 @@ export class DockPreviews {
   // The app icons whose shouldShowTooltip() is replaced, with their destroy handlers.
   private _patched = new Map<any, number>();
   private _open: any = null;
+  // The app whose closed previews Dash to Dock has not been told about yet: it keeps a single flag for all of the
+  // dock's menus, and hearing of this close while another menu holds the screen would let the dock hide under it.
+  private _unannounced: any = null;
   // The app whose previews are about to be shown (null: closed), and since when.
   private _pending: any;
   private _pendingSince = 0;
@@ -121,6 +124,7 @@ export class DockPreviews {
   private _poll(): boolean {
     if (!this._enabled) {
       this._close();
+      this._announceClosed();
       return false;
     }
     const [x, y] = global.get_pointer();
@@ -134,6 +138,7 @@ export class DockPreviews {
     let target = null;
     // Another menu, the overview or a dialog has the screen: the previews stay out of their way.
     const free = Main.modalCount === 0;
+    if (free && this._unannounced) this._announceClosed();
     if (free && icon && icon !== this._suppressed && icon.mapped && icon.getInterestingWindows().length > 0)
       target = icon;
     else if (free && this._open && (inMenu || (dash && !icon) || icon === this._open))
@@ -153,7 +158,7 @@ export class DockPreviews {
         else this._close();
       }
     }
-    return Boolean(dash || this._open || this._pending !== undefined);
+    return Boolean(dash || this._open || this._unannounced || this._pending !== undefined);
   }
 
   private _menuFor(icon: any): any {
@@ -195,7 +200,15 @@ export class DockPreviews {
   private _closed(icon: any): void {
     if (this._open !== icon) return;
     this._open = null;
-    if (isActorValid(icon)) icon.emit('menu-state-changed', false);
+    this._unannounced = icon;
+    if (Main.modalCount === 0) this._announceClosed();
+    else this._startPolling();
+  }
+
+  private _announceClosed(): void {
+    const icon = this._unannounced;
+    this._unannounced = null;
+    if (icon && isActorValid(icon)) icon.emit('menu-state-changed', false);
   }
 
   cleanup(): void {
@@ -205,6 +218,7 @@ export class DockPreviews {
     this._eventId = 0;
     this._settings.disconnect(this._settingsId);
     this._close();
+    this._announceClosed();
     for (const menu of [...this._menus.values()]) menu.destroy();
     this._menus.clear();
     for (const [icon, destroyId] of this._patched) {

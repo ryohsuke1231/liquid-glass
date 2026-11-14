@@ -90,6 +90,11 @@ export class BarGrowth {
         return growthBarFrom(this._host.source(), this._host.key) !== null;
     }
 
+    /** Whether what it holds would grow up out of a dock at the bottom of the screen now. */
+    get growsUp() {
+        return growthBarFrom(this._host.source(), this._host.key)?.growDirection === -1;
+    }
+
     /** Whether it is opening or open, rather than closing. */
     get opening() {
         return this._opening;

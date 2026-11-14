@@ -49,6 +49,11 @@
     padding-right: 4px !important;
 }
 
+/* The theme keeps top bar menus off the bottom of the screen, which would lift those growing up out of the dock off it. */
+.popup-menu-boxpointer.liquid-glass-dock-menu {
+    margin-bottom: 0;
+}
+
 /* The top bar's buttons in the dock. The theme's rules for them only hold inside the top bar, so they are given
    again here. Their text color and the borders across the dock, which cut the highlight down to a pill, are in a
    stylesheet generated to the theme and the dock's thickness. */

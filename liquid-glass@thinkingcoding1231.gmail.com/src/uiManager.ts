@@ -75,6 +75,8 @@ const MENU_MEASURE_FRAMES = 30;
 // The calendar menu's cards (stylesheet.css).
 const CARD_CLASSES = ['events-button', 'world-clocks-button', 'message'];
 const MENU_MEASURE_STABLE_FRAMES = 3;
+// On a menu growing up out of a dock at the bottom (stylesheet.css).
+const DOCK_MENU_CLASS = 'liquid-glass-dock-menu';
 
 // Quick Settings' open height, measured once for every menu that matches it,
 // and the callbacks waiting for a measurement in progress.
@@ -246,6 +248,8 @@ export class UIManager {
 
     this._animSignalId = this.menu.connect('open-state-changed', (menu: any, isOpen: boolean) => {
       if (isOpen) this._openedFrom = this.menu.sourceActor;
+      if (isOpen && this._barGrowth.growsUp) this.targetActor.add_style_class_name(DOCK_MENU_CLASS);
+      else if (isOpen) this.targetActor.remove_style_class_name(DOCK_MENU_CLASS);
       if (!this._isEffectActive) return;
       if (isOpen) {
         this._applyMenuScale();
@@ -1770,6 +1774,7 @@ export class UIManager {
     this._openedFrom = null;
     if (this._destroySignalId) {
       this.targetActor.disconnect(this._destroySignalId);
+      this.targetActor.remove_style_class_name(DOCK_MENU_CLASS);
       this._destroySignalId = 0;
     }
     this._disconnectAccentColor();
