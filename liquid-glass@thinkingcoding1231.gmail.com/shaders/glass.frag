@@ -148,6 +148,28 @@ uniform float region_base_strength[MAX_GLASS_REGIONS];
 // interpolates the distance itself.
 uniform float shape_range; // px of distance each way the fields hold
 uniform float shape_band;  // the lens band, px
+
+// The wallpaper's depth map on layer 3: how near the wallpaper is (red) and
+// where its subject is (green). The glass is not drawn where the wallpaper is
+// nearer than occlusion_threshold or, with occlusion_subject, on the subject,
+// so it looks as if it stood behind those. The map's coordinates are the
+// shader's px times the scale plus the offset.
+uniform float occlusion_scale_x;
+uniform float occlusion_scale_y;
+uniform float occlusion_offset_x;
+uniform float occlusion_offset_y;
+uniform float occlusion_threshold; // above 1: behind nothing
+uniform float occlusion_subject;
+
+float occlusionCover(vec2 pixel) {
+    if (occlusion_threshold > 1.0 && occlusion_subject < 0.5)
+        return 0.0;
+    vec2 at = pixel * vec2(occlusion_scale_x, occlusion_scale_y) + vec2(occlusion_offset_x, occlusion_offset_y);
+    vec2 map = texture2D(cogl_sampler3, at).rg;
+    float near = smoothstep(occlusion_threshold - 0.012, occlusion_threshold + 0.012, map.r);
+    float subject = smoothstep(0.35, 0.65, map.g) * step(0.5, occlusion_subject);
+    return max(near, subject);
+}
 #endif
 
 // Signed distance to a circular-cornered rounded rectangle.
@@ -745,6 +767,16 @@ void main() {
 
     vec2 pixel_coord = uv * resolution;
 
+    // How much of the glass shows here; the rest is behind the wallpaper.
+    float shown = 1.0;
+#ifdef LG_SHAPE_TEXTURE
+    shown = 1.0 - occlusionCover(pixel_coord);
+    if (shown <= 0.0) {
+        cogl_color_out = vec4(0.0);
+        return;
+    }
+#endif
+
     // Width of the antialiased edge.
     float edgeFeather = max(edge_smoothing, 0.75);
 
@@ -851,7 +883,7 @@ void main() {
 
         litFlat = max(litFlat + ditherLSB(pixel_coord), 0.0);
 
-        cogl_color_out = vec4(litFlat, 1.0) * cogl_color_in;
+        cogl_color_out = vec4(litFlat, 1.0) * cogl_color_in * shown;
         return;
     }
 
@@ -1087,5 +1119,5 @@ void main() {
     // Scaled by the coverage to keep the colour premultiplied.
     finalRgb = max(finalRgb + ditherLSB(pixel_coord) * finalAlpha, 0.0);
 
-    cogl_color_out = vec4(finalRgb, finalAlpha) * cogl_color_in;
+    cogl_color_out = vec4(finalRgb, finalAlpha) * cogl_color_in * shown;
 }

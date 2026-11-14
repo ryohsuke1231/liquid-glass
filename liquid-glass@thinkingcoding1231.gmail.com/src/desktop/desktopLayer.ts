@@ -16,7 +16,7 @@ import { UIManager } from '../uiManager.js';
 import { type DesktopItem, type ItemEnv, WeatherWidget, EventsWidget, MediaWidget } from './widgets.js';
 import {
   type Anchor, type Rect, parseAnchors, parsePositions, placeAtFraction, fractionOf, sanitizeAnchor, stackAt,
-  stackColumns, type Guide, snapMove, type HandleSide, placeBeside, resizeRect
+  stackColumns, type Guide, snapMove, type HandleSide, type KeyEdit, keyEditRect, placeBeside, resizeRect
 } from './placement.js';
 import { GlassClock } from './clock.js';
 
@@ -430,6 +430,12 @@ export interface EditCallbacks {
   ended: () => void;
 }
 
+// The arrow keys, as the direction each one points in.
+const ARROWS = new Map<number, [HandleSide, HandleSide]>([
+  [Clutter.KEY_Left, [-1, 0]], [Clutter.KEY_Right, [1, 0]], [Clutter.KEY_Up, [0, -1]], [Clutter.KEY_Down, [0, 1]],
+  [Clutter.KEY_KP_Left, [-1, 0]], [Clutter.KEY_KP_Right, [1, 0]], [Clutter.KEY_KP_Up, [0, -1]], [Clutter.KEY_KP_Down, [0, 1]],
+]);
+
 interface Drag {
   start: [number, number];
   origin: [number, number];
@@ -441,8 +447,8 @@ interface Drag {
 /**
  * A blue frame round a desktop item, over everything else, that moves the
  * item when dragged and resizes it by its handles (when `resized` is given).
- * It holds the pointer and keyboard until Escape, Enter, the Done button or
- * a click outside it.
+ * The arrow keys do the same a little at a time. It holds the pointer and
+ * keyboard until Escape, Enter, the Done button or a click outside it.
  */
 export class EditFrame {
   private _layer: St.Widget;
@@ -456,6 +462,9 @@ export class EditFrame {
   // Drawn guides, reused from one move to the next, and what each one shows.
   private _guideActors: St.DrawingArea[] = [];
   private _guides: Guide[] = [];
+  // Where a key resize keeps the item's center, on the stage. The new size comes a little later and not exactly as
+  // asked, so the item is put back on it then.
+  private _held: { x: number, y: number } | null = null;
 
   constructor(readonly item: DesktopItem, private _callbacks: EditCallbacks) {
     this._layer = new St.Widget({ name: 'liquid-glass-edit', reactive: true, x: 0, y: 0 });
@@ -486,6 +495,11 @@ export class EditFrame {
     this._layer.connect('button-release-event', (_a: Clutter.Actor, event: Clutter.Event) => this._release(event));
     this._layer.connect('key-press-event', (_a: Clutter.Actor, event: Clutter.Event) => {
       const key = event.get_key_symbol();
+      const arrow = ARROWS.get(key);
+      if (arrow) {
+        this._arrow(arrow, event.get_state());
+        return Clutter.EVENT_STOP;
+      }
       if (key !== Clutter.KEY_Escape && key !== Clutter.KEY_Return && key !== Clutter.KEY_KP_Enter)
         return Clutter.EVENT_PROPAGATE;
       this.end();
@@ -514,7 +528,18 @@ export class EditFrame {
     return [f.x + (hx + 1) / 2 * f.width, f.y + (hy + 1) / 2 * f.height]; // Maps handle side (-1, 0, 1) to position ratio (0, 0.5, 1). And then calculates the center of the handle.
   }
 
+  private _hold(): void {
+    const held = this._held;
+    if (!held || this._drag) return;
+    const r = itemRect(this.item);
+    const dx = Math.round(held.x - r.x - r.width / 2), dy = Math.round(held.y - r.y - r.height / 2);
+    if (dx === 0 && dy === 0) return;
+    this.item.actor.set_position(this.item.actor.x + dx, this.item.actor.y + dy);
+    this._callbacks.moved(...itemOrigin(this.item));
+  }
+
   sync(): void {
+    this._hold();
     const f = this._frameRect();
     this._frame.set_position(Math.round(f.x), Math.round(f.y));
     this._frame.set_size(Math.round(f.width), Math.round(f.height));
@@ -624,6 +649,7 @@ export class EditFrame {
       this.end();
       return Clutter.EVENT_STOP;
     }
+    this._held = null;
     this._drag = { start: [x, y], origin: itemOrigin(this.item), rect: itemRect(this.item), hx: hit[0], hy: hit[1] };
     return Clutter.EVENT_STOP;
   }
@@ -658,6 +684,28 @@ export class EditFrame {
     else this._callbacks.moved(...itemOrigin(this.item));
     this.sync();
     return Clutter.EVENT_STOP;
+  }
+
+  // An arrow key moves the item. With Shift it stretches it: taller with up, shorter with down, wider with right,
+  // narrower with left. With Control the up and down keys scale it. The last two only for an item that can be
+  // resized, and both about its center.
+  private _arrow([dx, dy]: [HandleSide, HandleSide], state: Clutter.ModifierType): void {
+    if (this._drag) return;
+    const edit: KeyEdit = state & Clutter.ModifierType.CONTROL_MASK ? 'scale' : state & Clutter.ModifierType.SHIFT_MASK ? 'stretch' : 'move';
+    if (edit !== 'move' && !this._callbacks.resized) return;
+    const from = itemRect(this.item);
+    const to = keyEditRect(from, dx, dy, edit, MIN_SIZE);
+    if (!to) return;
+    if (edit === 'move') {
+      this._held = null;
+      this.item.actor.set_position(this.item.actor.x + to.x - from.x, this.item.actor.y + to.y - from.y);
+      this._callbacks.moved(...itemOrigin(this.item));
+    } else {
+      // Further presses keep the center of the first, not wherever the item is on its way there.
+      this._held ??= { x: from.x + from.width / 2, y: from.y + from.height / 2 };
+      this._callbacks.resized!(from, to);
+    }
+    this.sync();
   }
 
   /** Takes the frame away. */

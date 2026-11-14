@@ -340,6 +340,9 @@ export const GlassActor = GObject.registerClass(
     setShapeTexture(texture: Cogl.Texture | null, range: number, band: number): void {
       this._renderer.setShapeTexture(texture, range, band);
     }
+    setOcclusion(texture: Cogl.Texture | null, scale: [number, number], offset: [number, number], threshold: number, subject: boolean): void {
+      this._renderer.setOcclusion(texture, scale, offset, threshold, subject);
+    }
     setGlassRegions(regions: GlassRegion[]): void { this._renderer.setGlassRegions(regions); }
     setBrightness(brightness: number): void { this._renderer.setBrightness(brightness); }
     setContrast(contrast: number): void { this._renderer.setContrast(contrast); }

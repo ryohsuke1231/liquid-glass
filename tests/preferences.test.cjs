@@ -38,6 +38,7 @@ function fixture(overrides = {}, dbusResponses = [], blurMyShell = null) {
     get_boolean(key) { return this.get_value(key).deep_unpack(); }
     get_strv(key) { return this.get_value(key).deep_unpack(); }
     get_string(key) { return this.get_value(key).deep_unpack(); }
+    get_int(key) { return this.get_value(key).deep_unpack(); }
     connect(signal, fn) { const id = nextId++; listeners.set(id, {signal, fn}); return id; }
     disconnect(id) { listeners.delete(id); }
     is_writable() { return true; }
@@ -81,7 +82,7 @@ function fixture(overrides = {}, dbusResponses = [], blurMyShell = null) {
   class RGBA { parse() { this.red = this.green = this.blue = 1; } }
   const Adw = Object.fromEntries(['PreferencesPage', 'PreferencesGroup', 'SwitchRow', 'ComboRow', 'SpinRow', 'ActionRow', 'EntryRow', 'ExpanderRow',
     'Dialog', 'ToolbarView', 'HeaderBar'].map(name => [name, class extends Widget {}]));
-  const Gtk = {Adjustment: Widget, ColorDialogButton: Widget, ColorDialog: Widget, Button: Widget, ListBox: Widget,
+  const Gtk = {Adjustment: Widget, ColorDialogButton: Widget, ColorDialog: Widget, Button: Widget, ProgressBar: Widget, ListBox: Widget,
     Scale: Widget, Orientation: {HORIZONTAL: 0},
     SignalListItemFactory: Widget, Box: Widget, Label: Widget, Image: Widget,
     StringList: {new: titles => titles}, Align: {CENTER: 0}, SelectionMode: {NONE: 0},
@@ -388,11 +389,12 @@ test('the animation and adaptive color rows are set in under their switches and 
   assert.equal(row('Spring mass').visible, false);
 });
 
-test('the desktop page keeps the clock switch, time format and date; its look is a surface of the advanced view', () => {
+test('the desktop page keeps the clock switch, time format, date and wallpaper depth; its look is a surface of the advanced view', () => {
   const f = fixture({'preferences-advanced': true});
   const desktop = f.window.children.find(page => page.title === 'Desktop');
   const clock = desktop.children.find(group => group.title === 'Glass clock');
-  assert.deepEqual(clock.children.map(row => row.title), ['Show the clock', 'Time format', 'Show the date']);
+  assert.deepEqual(clock.children.map(row => row.title), ['Show the clock', 'Time format', 'Show the date',
+    'Stand behind the wallpaper', 'Models', 'Analyse new wallpapers automatically', 'This wallpaper']);
   const selector = f.row('Surface');
   selector.selected = selector.model.indexOf('Desktop clock');
   const group = f.window.children[0].children.find(group => group.title === 'Desktop clock');

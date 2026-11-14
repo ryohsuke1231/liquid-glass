@@ -23,7 +23,7 @@
 //              widgets, the glass clock and the launcher, on a photo wallpaper
 //              ($LG_DRV_WALLPAPER); LG_DRV_FEATURES picks parts (comma
 //              separated: morph, topbar, widgets, clock, launcher; default all;
-//              also morphtrace, qssub, clockshot, media, guides, launcherpointer,
+//              also morphtrace, qssub, clockshot, clockdepth (the clock behind the wallpaper; needs the models), clockkeys (the arrow keys while the clock is edited), media, guides, launcherpointer,
 //              launchercolor, iconstyle, iconglass, workspaces, fullshot, popupfreeze, redrawclip, prefshover, bannerintro, stalefreeze, dockgrow, nanrelay, notifstack (LG_DRV_LIGHT as for scale, LG_DRV_STACK notifications); fullshot to prefshover and the last three need LG_DTD_DIR; qsheight, the calendar matched
 //              to Quick Settings' height; qsflicker, the Quick Settings glass rect while adaptive colour samples;
 //              adaptiveoff, adaptive colour turned off and on while each surface is shown);
@@ -3704,6 +3704,94 @@ export default class LgDriver extends Extension {
       const [x, y] = clock.get_transformed_position();
       const [w, h] = clock.get_transformed_size();
       await shot('clock-alone', [x, y, w, h]);
+    }
+    if (parts.includes('clockkeys')) {
+      // The arrow keys while the clock is moved and resized: plain, with Shift and with Control. The time is held
+      // still, since a new minute changes the clock's width.
+      (await this._lgModule('desktop/clock.js')).GlassClock.prototype._timeText = () => GLib.getenv('LG_DRV_CLOCK_TEXT') ?? '12:34';
+      settings.set_boolean('glass-clock-show-date', false);
+      settings.set_boolean('enable-glass-clock', true);
+      await sleep(4000);
+      const lg = Extension.lookupByUUID(LG_UUID);
+      const layer = lg.stateObj?._desktopLayer ?? lg._desktopLayer;
+      layer._startEdit(layer._items.get('clock'));
+      await sleep(500);
+      const keyboard = (SHELL_MAJOR >= 48 ? global.stage.context.get_backend() : Clutter.get_default_backend()).get_default_seat()
+        .create_virtual_device(Clutter.InputDeviceType.KEYBOARD_DEVICE);
+      const {itemRect} = await this._lgModule('desktop/desktopLayer.js');
+      const rect = () => {
+        const r = itemRect(layer._items.get('clock'));
+        return [r.x, r.y, r.width, r.height].map(Math.round);
+      };
+      const press = async (key, modifier, times = 5) => {
+        const before = rect();
+        for (let i = 0; i < times; i++) {
+          if (modifier) keyboard.notify_keyval(GLib.get_monotonic_time(), modifier, Clutter.KeyState.PRESSED);
+          keyboard.notify_keyval(GLib.get_monotonic_time(), key, Clutter.KeyState.PRESSED);
+          keyboard.notify_keyval(GLib.get_monotonic_time(), key, Clutter.KeyState.RELEASED);
+          if (modifier) keyboard.notify_keyval(GLib.get_monotonic_time(), modifier, Clutter.KeyState.RELEASED);
+          await sleep(120);
+        }
+        await sleep(2500);
+        return [before, rect()];
+      };
+      const report = (name, [a, b], ok) => log(`clockkeys: ${name} [${a}] -> [${b}] ${ok(a, b) ? 'OK' : 'NG'}`);
+      report('right', await press(Clutter.KEY_Right), (a, b) => b[0] - a[0] === 10 && b[1] === a[1] && b[2] === a[2]);
+      report('up', await press(Clutter.KEY_Up), (a, b) => b[1] - a[1] === -10 && b[0] === a[0] && b[3] === a[3]);
+      const center = r => [r[0] + r[2] / 2, r[1] + r[3] / 2];
+      const still = (a, b) => Math.abs(center(a)[0] - center(b)[0]) <= 2 && Math.abs(center(a)[1] - center(b)[1]) <= 2;
+      const same = (a, b, i) => Math.abs(a[i] - b[i]) <= 2;
+      report('shift+right', await press(Clutter.KEY_Right, Clutter.KEY_Shift_L), (a, b) => Math.abs(b[2] - a[2] - 20) <= 3 && same(a, b, 3) && still(a, b));
+      report('shift+left', await press(Clutter.KEY_Left, Clutter.KEY_Shift_L, 10), (a, b) => Math.abs(b[2] - a[2] + 40) <= 3 && same(a, b, 3) && still(a, b));
+      report('shift+up', await press(Clutter.KEY_Up, Clutter.KEY_Shift_L, 10), (a, b) => Math.abs(b[3] - a[3] - 40) <= 3 && same(a, b, 2) && still(a, b));
+      report('shift+down', await press(Clutter.KEY_Down, Clutter.KEY_Shift_L), (a, b) => Math.abs(b[3] - a[3] + 20) <= 3 && same(a, b, 2) && still(a, b));
+      report('ctrl+up', await press(Clutter.KEY_Up, Clutter.KEY_Control_L), (a, b) => b[2] > a[2] && b[3] > a[3] && still(a, b));
+      report('ctrl+down', await press(Clutter.KEY_Down, Clutter.KEY_Control_L, 10), (a, b) => b[2] < a[2] && b[3] < a[3] && still(a, b));
+      await shot('clockkeys', [m.x, m.y, m.width, m.height]);
+      keyboard.notify_keyval(GLib.get_monotonic_time(), Clutter.KEY_Escape, Clutter.KeyState.PRESSED);
+      keyboard.notify_keyval(GLib.get_monotonic_time(), Clutter.KEY_Escape, Clutter.KeyState.RELEASED);
+      await sleep(500);
+      log(`clockkeys: frame gone ${layer._edit === null ? 'OK' : 'NG'}; size=${settings.get_int('glass-clock-size')} stretch=${settings.get_double('glass-clock-stretch')} height=${settings.get_double('glass-clock-height')}`);
+    }
+    if (parts.includes('clockdepth')) {
+      // The clock standing behind what is near in the wallpaper ($LG_DRV_WALLPAPER): before and after the
+      // analysis, at each of $LG_DRV_CLOCK_AT ("x:y;x:y", its center as fractions of the work area).
+      // The models have to be in the session's data folder ($XDG_DATA_HOME/liquid-glass/models).
+      settings.set_boolean('output-logs', true);
+      settings.set_int('glass-clock-size', Number(GLib.getenv('LG_DRV_CLOCK_SIZE') ?? 240));
+      settings.set_boolean('glass-clock-show-date', false);
+      const text = GLib.getenv('LG_DRV_CLOCK_TEXT');
+      if (text) (await this._lgModule('desktop/clock.js')).GlassClock.prototype._timeText = () => text;
+      const places = (GLib.getenv('LG_DRV_CLOCK_AT') ?? '0.5:0.3').split(';').map(p => p.split(':').map(Number));
+      const place = at => settings.set_string('desktop-item-positions', JSON.stringify({clock: at}));
+      place(places[0]);
+      settings.set_boolean('enable-glass-clock', true);
+      await sleep(4000);
+      await shot('clockdepth-before', [m.x, m.y, m.width, m.height]);
+      const started = GLib.get_monotonic_time();
+      settings.set_boolean('glass-clock-depth', true);
+      let status = '';
+      const seen = new Set();
+      for (let i = 0; i < 240; i++) {
+        status = settings.get_string('glass-clock-depth-status');
+        seen.add(settings.get_int('glass-clock-depth-progress'));
+        if (!['', 'off', 'analysing'].includes(status)) break;
+        await sleep(500);
+      }
+      const seconds = ((GLib.get_monotonic_time() - started) / 1e6).toFixed(1);
+      log(`clockdepth: status=${status} after ${seconds} s, progress seen ${[...seen].join(' ')} ${status === 'ready' ? 'OK' : 'NG'}`);
+      for (const [i, at] of places.entries()) {
+        place(at);
+        await sleep(2500);
+        await shot(`clockdepth-${i}`, [m.x, m.y, m.width, m.height]);
+      }
+      // A second wallpaper change back and forth reads the map from the cache.
+      settings.set_boolean('glass-clock-depth', false);
+      await sleep(500);
+      const again = GLib.get_monotonic_time();
+      settings.set_boolean('glass-clock-depth', true);
+      for (let i = 0; i < 40 && settings.get_string('glass-clock-depth-status') !== 'ready'; i++) await sleep(100);
+      log(`clockdepth: cached status=${settings.get_string('glass-clock-depth-status')} after ${((GLib.get_monotonic_time() - again) / 1e6).toFixed(1)} s`);
     }
     if (parts.includes('topbar')) {
       for (const style of ['pill', 'islands', 'center']) {

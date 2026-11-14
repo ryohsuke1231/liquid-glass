@@ -332,6 +332,10 @@ export const GlassActor = GObject.registerClass(class GlassActor extends Clutter
         this._renderer.setShapeTexture(texture, range, band);
     }
 
+    setOcclusion(texture, scale, offset, threshold, subject) {
+        this._renderer.setOcclusion(texture, scale, offset, threshold, subject);
+    }
+
     setGlassRegions(regions) { this._renderer.setGlassRegions(regions); }
 
     setBrightness(brightness) { this._renderer.setBrightness(brightness); }

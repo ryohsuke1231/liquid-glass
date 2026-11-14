@@ -41,13 +41,16 @@ export class WorkerProcess {
         return this._waiting.size;
     }
 
-    /** Rejects when the worker cannot be started, exits meanwhile or answers with an error. */
-    request(message) {
+    /**
+     * Rejects when the worker cannot be started, exits meanwhile or answers with an error. `progress` gets how far
+     * (0 to 1) a worker that reports it has come.
+     */
+    request(message, progress) {
         if (!this._process && !this._start())
             return Promise.reject(new Error(`the ${this._name} cannot start`));
         return new Promise((resolve, reject) => {
             const id = this._nextId++;
-            this._waiting.set(id, { resolve, reject });
+            this._waiting.set(id, { resolve, reject, progress });
             this._lines.push(`${JSON.stringify({ ...message, id })}\n`);
             this._write();
         });
@@ -127,6 +130,10 @@ export class WorkerProcess {
         const waiting = this._waiting.get(message.id);
         if (!waiting)
             return;
+        if (typeof message.progress === 'number') {
+            waiting.progress?.(message.progress);
+            return;
+        }
         this._waiting.delete(message.id);
         if (message.error)
             waiting.reject(new Error(message.error));
@@ -161,7 +168,8 @@ export class WorkerProcess {
 /**
  * The worker's side: answers each line of JSON on stdin with what `handle`
  * returns, or with its error, until stdin closes. `arrived` sees each request
- * as soon as it is read, while earlier ones may still be worked on. Call from
+ * as soon as it is read, while earlier ones may still be worked on. `handle`
+ * can say how far (0 to 1) it has come with its second argument. Call from
  * the worker's module and await.
  */
 export async function serveRequests(handle, arrived = () => { }) {
@@ -198,7 +206,7 @@ export async function serveRequests(handle, arrived = () => { }) {
                 try {
                     if (!message)
                         throw new Error('the request is not JSON');
-                    answer({ ...(await handle(request)), id });
+                    answer({ ...(await handle(request, progress => answer({ id, progress }))), id });
                 }
                 catch (e) {
                     answer({ id, error: String(e) });

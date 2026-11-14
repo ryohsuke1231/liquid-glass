@@ -13,6 +13,8 @@ import { FIELD_RANGE, type DigitsRequest, type Digits, DigitsMaker, type TallSty
 import { coglContext } from '../shellVersion.js';
 import type { Logger } from '../logger.js';
 import { WorkerProcess } from '../workers/workerProcess.js';
+import { chooseOcclusion } from './depthMap.js';
+import { WallpaperDepth } from './wallpaperDepth.js';
 
 // The drop shadow's reach (px), a little inside the distance field's.
 const SHADOW_REACH = 40;
@@ -80,6 +82,11 @@ export class GlassClock implements DesktopItem {
   private _interfaceSettings = new Gio.Settings({ schema_id: 'org.gnome.desktop.interface' });
   private _interfaceIds: number[] = [];
   private _adaptive: AdaptiveTextColor;
+  // The wallpaper's depth map while the clock stands behind what is near in it.
+  private _depth: WallpaperDepth | null = null;
+  // Where the digits were and which map there was when what they hide behind was last worked out.
+  private _occlusionKey = '';
+  private _occlusionTexture: Cogl.Texture | null = null;
 
   constructor(env: ItemEnv) {
     this._env = env;
@@ -112,9 +119,55 @@ export class GlassClock implements DesktopItem {
     this._interfaceIds.push(this._interfaceSettings.connect('changed::clock-format', () => this._tick()));
     this._interfaceIds.push(this._interfaceSettings.connect('changed::font-name', () => this._queueFont()));
 
+    watch('glass-clock-depth', () => this._syncDepth());
+
     this._applyMaterial();
     this._syncAdaptive();
+    this._syncDepth();
     this._loadFont();
+  }
+
+  private _syncDepth(): void {
+    const wanted = this._env.settings.get_boolean('glass-clock-depth');
+    if (wanted === !!this._depth) return;
+    if (wanted) {
+      this._depth = new WallpaperDepth(this._env.path, this._env.settings, this._env.logger, () => {
+        this._occlusionKey = '';
+        this._env.relayout();
+      });
+    } else {
+      this._depth!.destroy();
+      this._depth = null;
+    }
+    this._occlusionKey = '';
+    this._env.relayout();
+  }
+
+  // Works out what the digits hide behind where they are now, when they moved or the map changed.
+  private _syncOcclusion(): void {
+    const shown = this._depth?.current ?? null;
+    const [gx, gy] = this._glass.get_transformed_position();
+    const key = shown ? [gx, gy, ...this._fieldSize, ...this._fieldScale, shown.map.width, shown.monitor.x, shown.monitor.y].join(' ') : 'none';
+    if (key === this._occlusionKey && (!shown || shown.texture === this._occlusionTexture)) return;
+    this._occlusionKey = key;
+    this._occlusionTexture = shown?.texture ?? null;
+    if (!shown) {
+      this._glass.setOcclusion(null, [0, 0], [0, 0], 2, false);
+      return;
+    }
+    const { map, monitor } = shown;
+    const [rx, ry] = this._fieldScale.map(k => FIELD_RANGE * k);
+    const kx = map.width / monitor.width, ky = map.height / monitor.height;
+    const occlusion = chooseOcclusion(map, [
+      (gx + rx - monitor.x) * kx, (gy + ry - monitor.y) * ky,
+      (this._fieldSize[0] - 2 * rx) * kx, (this._fieldSize[1] - 2 * ry) * ky,
+    ], shown.subject);
+    if (this._env.logger.enabled)
+      this._env.logger.log(`[Liquid Glass] The clock stands behind ${[
+        occlusion.subject ? 'the subject' : '', occlusion.threshold > 1 ? '' : `depth ${occlusion.threshold.toFixed(3)}`,
+      ].filter(Boolean).join(' and ') || 'nothing'}`);
+    this._glass.setOcclusion(shown.texture, [this._fieldScale[0] / monitor.width, this._fieldScale[1] / monitor.height],
+      [(gx - monitor.x) / monitor.width, (gy - monitor.y) / monitor.height], occlusion.threshold, occlusion.subject);
   }
 
   private _applyMaterial(): void {
@@ -210,7 +263,7 @@ export class GlassClock implements DesktopItem {
     if (sx === 1 && this._digitHeight) {
       const added = (sy - 1) * this._bounds[3] / this._digitHeight;
       const height = clamp(s.get_double('glass-clock-height') + added, keyRange(s, 'glass-clock-height'));
-      s.set_double('glass-clock-height', Math.round(height * 100) / 100);
+      s.set_double('glass-clock-height', Math.round(height * 1000) / 1000);
       this._loadFont();
       return;
     }
@@ -219,7 +272,7 @@ export class GlassClock implements DesktopItem {
     // The width follows the size too; the stretch makes up the rest.
     const stretch = clamp(s.get_double('glass-clock-stretch') * sx * size / newSize, keyRange(s, 'glass-clock-stretch'));
     s.set_int('glass-clock-size', newSize);
-    s.set_double('glass-clock-stretch', Math.round(stretch * 100) / 100);
+    s.set_double('glass-clock-stretch', Math.round(stretch * 1000) / 1000);
     this._loadFont();
   }
 
@@ -343,6 +396,7 @@ export class GlassClock implements DesktopItem {
     }
     if (this.actor.mapped) {
       ensureGlassAllocated(this._glass);
+      this._syncOcclusion();
       this._glass.syncSources();
     }
     return changed;
@@ -357,6 +411,9 @@ export class GlassClock implements DesktopItem {
     this._settingsIds = [];
     this._interfaceIds = [];
     this._adaptive.clear();
+    this._depth?.destroy();
+    this._depth = null;
+    this._occlusionTexture = null;
     this._source.destroy();
     this._font = null;
     this._shownFont = null;

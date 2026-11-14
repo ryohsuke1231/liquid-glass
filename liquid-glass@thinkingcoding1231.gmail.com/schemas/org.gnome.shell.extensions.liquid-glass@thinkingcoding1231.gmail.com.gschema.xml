@@ -1151,6 +1151,30 @@
       <default>1.3</default>
       <summary>Saturation</summary>
     </key>
+    <key name="glass-clock-depth" type="b">
+      <default>false</default>
+      <summary>The glass clock stands behind what is near in the wallpaper</summary>
+      <description>The wallpaper is analysed on this computer for how near its parts are and for its subject, and the clock is not drawn where a mountain ridge, a building or the subject is in front of it. Needs the models downloaded from the preferences. A wallpaper with nothing to stand behind shows the clock as usual.</description>
+    </key>
+    <key name="glass-clock-depth-auto" type="b">
+      <default>true</default>
+      <summary>Analyse a new wallpaper by itself</summary>
+      <description>A wallpaper not seen before is analysed a few seconds after it is set. Turned off, only when asked from the preferences.</description>
+    </key>
+    <key name="glass-clock-depth-request" type="i">
+      <default>0</default>
+      <summary>Raised by the preferences to have the wallpaper analysed now</summary>
+    </key>
+    <key name="glass-clock-depth-progress" type="i">
+      <range min="0" max="100"/>
+      <default>0</default>
+      <summary>How far the wallpaper analysis has come (%), for the preferences</summary>
+    </key>
+    <key name="glass-clock-depth-status" type="s">
+      <default>""</default>
+      <summary>What the wallpaper analysis is doing, for the preferences</summary>
+      <description>Written by the extension: off, no-model, unsupported, waiting, analysing, ready or failed.</description>
+    </key>
 
     <key name="icon-style-dock" type="b">
       <default>false</default>

@@ -1,5 +1,5 @@
 import Cogl from 'gi://Cogl';
-import { BlurRenderer, ShaderPipelines, configureSamplerLayer, SHAPE_LAYER, RenderPasses } from './pipelines.js';
+import { BlurRenderer, ShaderPipelines, configureSamplerLayer, OCCLUSION_LAYER, SHAPE_LAYER, RenderPasses } from './pipelines.js';
 import { setUniformArray } from '../shellVersion.js';
 import { hexToColorArray } from '../animation.js';
 // Must match glass.frag's `#define MAX_GLASS_REGIONS 16`.
@@ -24,6 +24,7 @@ export class GlassRenderer {
     _outline = null;
     _repaint;
     _shapeTexture = null;
+    _occlusionTexture = null;
 
     constructor(params) {
         this._repaint = params.repaint;
@@ -34,6 +35,9 @@ export class GlassRenderer {
         this.geometry = new GlassGeometry(this.uniforms.values);
         this.material = new MaterialSettings(params.settings, this.uniforms, this.blur, params.setDiagnostics, () => this._repaintIfDirty());
         this.material.initialize();
+        // Unset, the threshold would read as 0 and hide the whole glass.
+        if (params.shapeTexture)
+            this.uniforms.set('occlusion_threshold', 2);
         if (params.settings && params.outline) {
             this._outline = new OutlineBinding(params.settings, params.outline, this.uniforms, () => this._repaintIfDirty());
             this._outline.initialize();
@@ -79,6 +83,10 @@ export class GlassRenderer {
             compPipeline.set_layer_texture(SHAPE_LAYER, this._shapeTexture);
             configureSamplerLayer(compPipeline, SHAPE_LAYER);
         }
+        if (this._occlusionTexture) {
+            compPipeline.set_layer_texture(OCCLUSION_LAYER, this._occlusionTexture);
+            configureSamplerLayer(compPipeline, OCCLUSION_LAYER);
+        }
         // Uniforms set before the pipeline existed are written now.
         this.uniforms.flush();
     }
@@ -108,6 +116,7 @@ export class GlassRenderer {
 
     cleanup() {
         this._shapeTexture = null;
+        this._occlusionTexture = null;
         this._outline?.clear();
         this._outline = null;
         this.material.clear();
@@ -260,6 +269,26 @@ export class GlassRenderer {
         this.uniforms.set('shape_band', band);
         this.uniforms.takeDirty();
         this._repaint();
+    }
+
+    /**
+     * What a shape-texture glass hides behind: the wallpaper's depth map, whose
+     * coordinates are the shader's px times `scale` plus `offset`, and from
+     * that map everything nearer than `threshold` (above 1 for nothing) and,
+     * with `subject`, the wallpaper's subject. Without a map the glass hides
+     * behind nothing.
+     */
+    setOcclusion(texture, scale, offset, threshold, subject) {
+        const changed = texture !== this._occlusionTexture;
+        this._occlusionTexture = texture;
+        this.uniforms.set('occlusion_scale_x', scale[0]);
+        this.uniforms.set('occlusion_scale_y', scale[1]);
+        this.uniforms.set('occlusion_offset_x', offset[0]);
+        this.uniforms.set('occlusion_offset_y', offset[1]);
+        this.uniforms.set('occlusion_threshold', texture ? threshold : 2);
+        this.uniforms.set('occlusion_subject', texture && subject ? 1 : 0);
+        if (this.uniforms.takeDirty() || changed)
+            this._repaint();
     }
 
     setMultiRegionMode(enabled) {
