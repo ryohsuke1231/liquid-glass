@@ -197,7 +197,7 @@ function panelFixture() {
     _leftBox: new Signals(), _centerBox: new Signals(), _rightBox: new Signals() };
   const C = loadClass('panelMenuManager.js', 'PanelMenuManager', {
     Main: { panel, extensionManager: new Signals() },
-    PopupMenu: { PopupMenu: Popup }, GLib, UIManager: Manager,
+    PopupMenu: { PopupMenu: Popup }, GLib, UIManager: Manager, isActorValid: actor => !!actor,
   });
   const manager = new C('', settings, { log() { } });
   const add = name => {

@@ -45,7 +45,8 @@ function panelFixture() {
     _leftBox: new Signals(), _centerBox: new Signals(), _rightBox: new Signals() };
   const Main = { panel, extensionManager: new Signals() };
   const C = loadClass('panelMenuManager.js', 'PanelMenuManager', {
-    Main, PopupMenu: { PopupMenu: Popup }, GLib: clock.GLib, UIManager: Manager });
+    Main, PopupMenu: { PopupMenu: Popup }, GLib: clock.GLib, UIManager: Manager,
+    isActorValid: actor => !!actor && !actor.disposed });
   const manager = new C('', settings, { log() {} });
   const add = (name, menu = new Popup()) => {
     const button = Object.assign(new Signals(), { menu, attached: true });
@@ -56,6 +57,17 @@ function panelFixture() {
   manager.setup();
   return { ...clock, manager, settings, panel, instances, add, Popup };
 }
+
+test('skips an indicator destroyed but left in statusArea, without touching it', () => {
+  const f = panelFixture();
+  f.add('kept');
+  const gone = f.add('gone');
+  gone.disposed = true;
+  Object.defineProperty(gone, 'menu', { get() { throw Error('touched a disposed indicator'); } });
+  f.flush();
+  assert.deepEqual(f.instances.map(m => m.menu), [f.panel.statusArea.kept.menu]);
+  assert.deepEqual(f.settings.values['detected-extra-menus'], ['kept']);
+});
 
 test('discovers arbitrary and late menus, excluding built-ins and dummy menus', () => {
   const f = panelFixture();

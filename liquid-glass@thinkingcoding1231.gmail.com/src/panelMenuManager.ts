@@ -6,6 +6,7 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import * as DateMenu from 'resource:///org/gnome/shell/ui/dateMenu.js';
 
+import { isActorValid } from './actors.js';
 import { UIManager } from './uiManager.js';
 import { DOCK_BAR_CLASS } from './dockBar.js';
 import { Logger } from './logger.js';
@@ -32,7 +33,7 @@ function menusOf(name: string, button: any): [string, any][] {
 const DOCK_MENU_KEYS = ['enable-extra-menu-glass', 'dock-menus-grow'];
 
 // Whether `actor` sits in Dash to Dock's dash or, with `ours`, in the boxes the "top bar in the dock" mode adds to
-// it. Some status area entries are not actors.
+// it. A menu's source may be unset.
 function inDock(actor: unknown, ours = false): boolean {
   if (!(actor instanceof Clutter.Actor)) return false;
   for (let a: Clutter.Actor | null = actor; a; a = a.get_parent()) {
@@ -102,7 +103,8 @@ export class PanelMenuManager {
       // On the bar, moved into the dock with the rest of the bar, or moved into Dash to Dock (as Dock Tray does with
       // the tray icons) while its menus grow out of it.
       const actor = button?.container ?? button;
-      if (!button || !(panel.contains(actor) || (dockBar && inDock(actor, true)) || (dockMenus && inDock(actor)))) continue;
+      // An extension may destroy its indicator without taking it out of statusArea, as some do while the shell ends.
+      if (!button || !isActorValid(actor) || !(panel.contains(actor) || (dockBar && inDock(actor, true)) || (dockMenus && inDock(actor)))) continue;
       buttons.add(button);
       this._watchButton(button);
       for (const [menuName, menu] of menusOf(name, button)) {
