@@ -80,6 +80,8 @@ export class PanelMenuManager {
 
   private _scan() {
     const panel = Main.panel as any;
+    // The shell runs the idle while it ends, after the panel and its indicators are gone.
+    if (!isActorValid(panel)) return;
     const { buttons, wanted, detected } = this._discover(panel);
     this._forgetButtons(buttons);
     this._detachUnwanted(wanted);
@@ -103,7 +105,7 @@ export class PanelMenuManager {
       // On the bar, moved into the dock with the rest of the bar, or moved into Dash to Dock (as Dock Tray does with
       // the tray icons) while its menus grow out of it.
       const actor = button?.container ?? button;
-      // An extension may destroy its indicator without taking it out of statusArea, as some do while the shell ends.
+      // An extension may destroy its indicator without taking it out of statusArea.
       if (!button || !isActorValid(actor) || !(panel.contains(actor) || (dockBar && inDock(actor, true)) || (dockMenus && inDock(actor)))) continue;
       buttons.add(button);
       this._watchButton(button);

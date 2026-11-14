@@ -12,6 +12,8 @@ const POLL_MS = 50;
 const OPEN_MS = 250;
 const SWITCH_MS = 80;
 const CLOSE_MS = 300;
+const BUTTONS_MASK = Clutter.ModifierType.BUTTON1_MASK | Clutter.ModifierType.BUTTON2_MASK |
+    Clutter.ModifierType.BUTTON3_MASK;
 
 // The Dash to Dock app icon `actor` is in, or null.
 function appIconOf(actor) {
@@ -110,6 +112,10 @@ export class DockPreviews {
             this._suppressed = icon;
             this._close();
         }
+        else if (press && this._open && !this._menus.get(this._open)?.actor.contains(actor)) {
+            // A click elsewhere may open another menu, which the previews would cover while they wait to close.
+            this._close(BoxPointer.PopupAnimation.NONE, true);
+        }
         this._startPolling();
         return Clutter.EVENT_PROPAGATE;
     }
@@ -153,10 +159,14 @@ export class DockPreviews {
         let target = null;
         // Another menu, the overview or a dialog has the screen: the previews stay out of their way.
         const free = Main.modalCount === 0;
-        if (free && this._unannounced)
+        // A menu a click opens may only come with the button's release.
+        const [, , mods] = global.get_pointer();
+        if (free && this._unannounced && !(mods & BUTTONS_MASK))
             this._announceClosed();
         if (free && icon && icon !== this._suppressed && icon.mapped && icon.getInterestingWindows().length > 0)
             target = icon;
+        else if (!free && this._open)
+            this._close(BoxPointer.PopupAnimation.NONE);
         else if (free && this._open && (inMenu || (dash && !icon) || icon === this._open))
             target = this._open;
         const now = GLib.get_monotonic_time();
@@ -212,22 +222,23 @@ export class DockPreviews {
         menu.open(BoxPointer.PopupAnimation.FULL);
     }
 
-    _close() {
+    // `wait` leaves telling Dash to Dock to _poll(), for a menu the click that closed them may yet open.
+    _close(animation = BoxPointer.PopupAnimation.FULL, wait = false) {
         const icon = this._open;
         if (!icon)
             return;
         const menu = this._menus.get(icon);
-        this._closed(icon);
+        this._closed(icon, wait);
         if (menu?.isOpen)
-            menu.close(BoxPointer.PopupAnimation.FULL);
+            menu.close(animation);
     }
 
-    _closed(icon) {
+    _closed(icon, wait = false) {
         if (this._open !== icon)
             return;
         this._open = null;
         this._unannounced = icon;
-        if (Main.modalCount === 0)
+        if (!wait && Main.modalCount === 0)
             this._announceClosed();
         else
             this._startPolling();

@@ -69,6 +69,15 @@ test('skips an indicator destroyed but left in statusArea, without touching it',
   assert.deepEqual(f.settings.values['detected-extra-menus'], ['kept']);
 });
 
+test('does not scan once the panel itself is gone, as while the shell ends', () => {
+  const f = panelFixture();
+  f.add('kept');
+  f.panel.disposed = true;
+  Object.defineProperty(f.panel, 'statusArea', { get() { throw Error('touched a disposed panel'); } });
+  f.flush();
+  assert.equal(f.instances.length, 0);
+});
+
 test('discovers arbitrary and late menus, excluding built-ins and dummy menus', () => {
   const f = panelFixture();
   f.add('dateMenu'); f.add('quickSettings'); f.add('dummy', {}); f.add('keyboard'); f.flush();
