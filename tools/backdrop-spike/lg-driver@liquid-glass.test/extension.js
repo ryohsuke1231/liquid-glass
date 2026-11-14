@@ -3706,7 +3706,9 @@ export default class LgDriver extends Extension {
       await shot('clock-alone', [x, y, w, h]);
     }
     if (parts.includes('clockkeys')) {
-      // The arrow keys while the clock is moved and resized: plain, with Shift and with Control.
+      // The arrow keys while the clock is moved and resized: plain, with Shift and with Control. The time is held
+      // still, since a new minute changes the clock's width.
+      (await this._lgModule('desktop/clock.js')).GlassClock.prototype._timeText = () => GLib.getenv('LG_DRV_CLOCK_TEXT') ?? '12:34';
       settings.set_boolean('glass-clock-show-date', false);
       settings.set_boolean('enable-glass-clock', true);
       await sleep(4000);
@@ -3736,12 +3738,13 @@ export default class LgDriver extends Extension {
       const report = (name, [a, b], ok) => log(`clockkeys: ${name} [${a}] -> [${b}] ${ok(a, b) ? 'OK' : 'NG'}`);
       report('right', await press(Clutter.KEY_Right), (a, b) => b[0] - a[0] === 10 && b[1] === a[1] && b[2] === a[2]);
       report('up', await press(Clutter.KEY_Up), (a, b) => b[1] - a[1] === -10 && b[0] === a[0] && b[3] === a[3]);
-      report('shift+right', await press(Clutter.KEY_Right, Clutter.KEY_Shift_L), (a, b) => b[2] > a[2] + 10 && Math.abs(b[0] - a[0]) <= 2 && Math.abs(b[3] - a[3]) <= 2);
-      report('shift+left', await press(Clutter.KEY_Left, Clutter.KEY_Shift_L), (a, b) => b[2] > a[2] + 10 && Math.abs(b[0] + b[2] - a[0] - a[2]) <= 2);
-      report('shift+up', await press(Clutter.KEY_Up, Clutter.KEY_Shift_L), (a, b) => b[3] > a[3] + 10 && Math.abs(b[1] + b[3] - a[1] - a[3]) <= 2 && Math.abs(b[2] - a[2]) <= 2);
-      report('shift+down', await press(Clutter.KEY_Down, Clutter.KEY_Shift_L), (a, b) => b[3] > a[3] + 10 && Math.abs(b[1] - a[1]) <= 2);
       const center = r => [r[0] + r[2] / 2, r[1] + r[3] / 2];
       const still = (a, b) => Math.abs(center(a)[0] - center(b)[0]) <= 2 && Math.abs(center(a)[1] - center(b)[1]) <= 2;
+      const same = (a, b, i) => Math.abs(a[i] - b[i]) <= 2;
+      report('shift+right', await press(Clutter.KEY_Right, Clutter.KEY_Shift_L), (a, b) => Math.abs(b[2] - a[2] - 20) <= 3 && same(a, b, 3) && still(a, b));
+      report('shift+left', await press(Clutter.KEY_Left, Clutter.KEY_Shift_L, 10), (a, b) => Math.abs(b[2] - a[2] + 40) <= 3 && same(a, b, 3) && still(a, b));
+      report('shift+up', await press(Clutter.KEY_Up, Clutter.KEY_Shift_L, 10), (a, b) => Math.abs(b[3] - a[3] - 40) <= 3 && same(a, b, 2) && still(a, b));
+      report('shift+down', await press(Clutter.KEY_Down, Clutter.KEY_Shift_L), (a, b) => Math.abs(b[3] - a[3] + 20) <= 3 && same(a, b, 2) && still(a, b));
       report('ctrl+up', await press(Clutter.KEY_Up, Clutter.KEY_Control_L), (a, b) => b[2] > a[2] && b[3] > a[3] && still(a, b));
       report('ctrl+down', await press(Clutter.KEY_Down, Clutter.KEY_Control_L, 10), (a, b) => b[2] < a[2] && b[3] < a[3] && still(a, b));
       await shot('clockkeys', [m.x, m.y, m.width, m.height]);

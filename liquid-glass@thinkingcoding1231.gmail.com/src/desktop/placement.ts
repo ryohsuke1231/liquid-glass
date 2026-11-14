@@ -78,26 +78,27 @@ export function resizeRect(rect: Rect, hx: HandleSide, hy: HandleSide, dx: numbe
   return out;
 }
 
-/** What an arrow key does to an item being edited: moves it, pulls one of its edges outwards, or scales it. */
+/** What an arrow key does to an item being edited: moves it, makes it longer or shorter one way, or scales it. */
 export type KeyEdit = 'move' | 'stretch' | 'scale';
 
-// How far an arrow key moves an item and pulls an edge (px), and how much it scales it.
+// How far an arrow key moves an item and how much longer or shorter it makes it (px), and how much it scales it.
 const KEY_MOVE = 2;
 const KEY_STRETCH = 4;
 const KEY_SCALE = 1.02;
 
 /**
- * `rect` after an arrow key towards (dx, dy): moved that way, its edge on
- * that side pulled outwards, or (up and down only) made larger and smaller
- * about its center. At least `min` px each way; null when the key does
- * nothing.
+ * `rect` after an arrow key towards (dx, dy). Moved that way; or stretched
+ * about its center, taller with up and shorter with down, wider with right
+ * and narrower with left; or (up and down only) made larger and smaller about
+ * its center. Null when the key does nothing or the rect would get under
+ * `min` px either way.
  */
 export function keyEditRect(rect: Rect, dx: HandleSide, dy: HandleSide, edit: KeyEdit, min: number): Rect | null {
   if (edit === 'move') return { ...rect, x: rect.x + dx * KEY_MOVE, y: rect.y + dy * KEY_MOVE };
-  if (edit === 'stretch') return resizeRect(rect, dx, dy, dx * KEY_STRETCH, dy * KEY_STRETCH, min);
-  if (dy === 0) return null;
+  if (edit === 'scale' && dy === 0) return null;
   const k = dy < 0 ? KEY_SCALE : 1 / KEY_SCALE;
-  const width = rect.width * k, height = rect.height * k;
+  const width = edit === 'scale' ? rect.width * k : rect.width + dx * KEY_STRETCH;
+  const height = edit === 'scale' ? rect.height * k : rect.height - dy * KEY_STRETCH;
   if (width < min || height < min) return null;
   return { x: rect.x + (rect.width - width) / 2, y: rect.y + (rect.height - height) / 2, width, height };
 }

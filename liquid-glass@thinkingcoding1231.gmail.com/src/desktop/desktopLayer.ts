@@ -462,9 +462,9 @@ export class EditFrame {
   // Drawn guides, reused from one move to the next, and what each one shows.
   private _guideActors: St.DrawingArea[] = [];
   private _guides: Guide[] = [];
-  // The point of the item a key resize keeps where it is: its place in the item's rect (0 to 1 each way) and on
-  // the stage. The new size comes a little later and not exactly as asked, so the item is put back on it then.
-  private _held: { fx: number, fy: number, x: number, y: number } | null = null;
+  // Where a key resize keeps the item's center, on the stage. The new size comes a little later and not exactly as
+  // asked, so the item is put back on it then.
+  private _held: { x: number, y: number } | null = null;
 
   constructor(readonly item: DesktopItem, private _callbacks: EditCallbacks) {
     this._layer = new St.Widget({ name: 'liquid-glass-edit', reactive: true, x: 0, y: 0 });
@@ -532,7 +532,7 @@ export class EditFrame {
     const held = this._held;
     if (!held || this._drag) return;
     const r = itemRect(this.item);
-    const dx = Math.round(held.x - r.x - held.fx * r.width), dy = Math.round(held.y - r.y - held.fy * r.height);
+    const dx = Math.round(held.x - r.x - r.width / 2), dy = Math.round(held.y - r.y - r.height / 2);
     if (dx === 0 && dy === 0) return;
     this.item.actor.set_position(this.item.actor.x + dx, this.item.actor.y + dy);
     this._callbacks.moved(...itemOrigin(this.item));
@@ -686,8 +686,9 @@ export class EditFrame {
     return Clutter.EVENT_STOP;
   }
 
-  // An arrow key moves the item; with Shift it pulls the edge on that side outwards, and with Control the up and
-  // down keys scale it. The last two only for an item that can be resized.
+  // An arrow key moves the item. With Shift it stretches it: taller with up, shorter with down, wider with right,
+  // narrower with left. With Control the up and down keys scale it. The last two only for an item that can be
+  // resized, and both about its center.
   private _arrow([dx, dy]: [HandleSide, HandleSide], state: Clutter.ModifierType): void {
     if (this._drag) return;
     const edit: KeyEdit = state & Clutter.ModifierType.CONTROL_MASK ? 'scale' : state & Clutter.ModifierType.SHIFT_MASK ? 'stretch' : 'move';
@@ -700,11 +701,8 @@ export class EditFrame {
       this.item.actor.set_position(this.item.actor.x + to.x - from.x, this.item.actor.y + to.y - from.y);
       this._callbacks.moved(...itemOrigin(this.item));
     } else {
-      // The edge opposite the pulled one stays, or the center when scaling.
-      const fx = edit === 'scale' ? 0.5 : (1 - dx) / 2, fy = edit === 'scale' ? 0.5 : (1 - dy) / 2;
-      const held = this._held;
-      // Further presses the same way keep the point of the first, not wherever the item is on its way there.
-      if (!held || held.fx !== fx || held.fy !== fy) this._held = { fx, fy, x: from.x + fx * from.width, y: from.y + fy * from.height };
+      // Further presses keep the center of the first, not wherever the item is on its way there.
+      this._held ??= { x: from.x + from.width / 2, y: from.y + from.height / 2 };
       this._callbacks.resized!(from, to);
     }
     this.sync();
