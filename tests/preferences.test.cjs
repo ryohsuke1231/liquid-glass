@@ -388,11 +388,12 @@ test('the animation and adaptive color rows are set in under their switches and 
   assert.equal(row('Spring mass').visible, false);
 });
 
-test('the desktop page keeps the clock switch, time format and date; its look is a surface of the advanced view', () => {
+test('the desktop page keeps the clock switch, time format, date and wallpaper depth; its look is a surface of the advanced view', () => {
   const f = fixture({'preferences-advanced': true});
   const desktop = f.window.children.find(page => page.title === 'Desktop');
   const clock = desktop.children.find(group => group.title === 'Glass clock');
-  assert.deepEqual(clock.children.map(row => row.title), ['Show the clock', 'Time format', 'Show the date']);
+  assert.deepEqual(clock.children.map(row => row.title), ['Show the clock', 'Time format', 'Show the date',
+    'Stand behind the wallpaper', 'Models', 'Analyse new wallpapers automatically', 'This wallpaper']);
   const selector = f.row('Surface');
   selector.selected = selector.model.indexOf('Desktop clock');
   const group = f.window.children[0].children.find(group => group.title === 'Desktop clock');

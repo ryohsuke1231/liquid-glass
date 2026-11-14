@@ -216,8 +216,10 @@ export class ShaderPipelines {
         // BlurRenderer when needed.
         this.composite = Cogl.Pipeline.new(ctx);
         configureSamplerLayer(this.composite, 0);
-        if (this._shapeTexture)
+        if (this._shapeTexture) {
             configureSamplerLayer(this.composite, SHAPE_LAYER);
+            configureSamplerLayer(this.composite, OCCLUSION_LAYER);
+        }
         // Premultiplied-alpha "over", as ShaderEffect blends by default.
         this.composite.set_blend('RGBA = ADD(SRC_COLOR, DST_COLOR * (1 - SRC_COLOR[A]))');
         this._loadCompositeShader();
@@ -244,6 +246,8 @@ export class ShaderPipelines {
 
 // The composite's layer for the distance field of a shape-texture glass.
 export const SHAPE_LAYER = 2;
+// And the one for the wallpaper's depth map that such a glass can hide behind.
+export const OCCLUSION_LAYER = 3;
 
 // Bilinear filtering and clamp-to-edge on one layer.
 export function configureSamplerLayer(pipeline, layer) {

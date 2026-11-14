@@ -9,6 +9,7 @@ import Soup from 'gi://Soup?version=3.0';
 import { BUNDLED_FAMILIES } from '../dist/desktop/fonts.js';
 import { PreferenceControls, Branch, ToggleBranch, uniformPatch, dumpSettings, parseSettings } from './controls.js';
 import { IconStyleRules, WindowRules } from './apps.js';
+import { clockDepthRows } from './depth.js';
 
 // The surfaces whose glass the simple view sets as one. The clock keeps its own look.
 const SURFACES = ['dock', 'menu', 'panel-menu', 'notification', 'quick-settings', 'osd', 'application', 'desktop-menu',
@@ -615,6 +616,7 @@ function addClock(page, controls) {
     { title: '12-hour', patch: { 'glass-clock-format': '12h' } },
   ], '', false));
   details.add(controls.toggle(group, 'Show the date', 'glass-clock-show-date'));
+  for (const row of clockDepthRows(group, controls)) details.add(row);
   controls.watch(['enable-glass-clock'], () => { details.enabled = show.active; });
 }
 

@@ -11,6 +11,8 @@ import { connectClicks, PREFERRED_MIN_CONTRAST } from './widgets.js';
 import { FIELD_RANGE, DigitsMaker } from './glassText.js';
 import { coglContext } from '../shellVersion.js';
 import { WorkerProcess } from '../workers/workerProcess.js';
+import { chooseOcclusion } from './depthMap.js';
+import { WallpaperDepth } from './wallpaperDepth.js';
 // The drop shadow's reach (px), a little inside the distance field's.
 const SHADOW_REACH = 40;
 // New digits are made once the preferences stop changing them; until then
@@ -67,6 +69,11 @@ export class GlassClock {
     _interfaceSettings = new Gio.Settings({ schema_id: 'org.gnome.desktop.interface' });
     _interfaceIds = [];
     _adaptive;
+    // The wallpaper's depth map while the clock stands behind what is near in it.
+    _depth = null;
+    // Where the digits were and which map there was when what they hide behind was last worked out.
+    _occlusionKey = '';
+    _occlusionTexture = null;
 
     constructor(env) {
         this._env = env;
@@ -97,9 +104,54 @@ export class GlassClock {
             watch(`desktop-widget-${key}`, () => this._syncAdaptive());
         this._interfaceIds.push(this._interfaceSettings.connect('changed::clock-format', () => this._tick()));
         this._interfaceIds.push(this._interfaceSettings.connect('changed::font-name', () => this._queueFont()));
+        watch('glass-clock-depth', () => this._syncDepth());
         this._applyMaterial();
         this._syncAdaptive();
+        this._syncDepth();
         this._loadFont();
+    }
+
+    _syncDepth() {
+        const wanted = this._env.settings.get_boolean('glass-clock-depth');
+        if (wanted === !!this._depth)
+            return;
+        if (wanted) {
+            this._depth = new WallpaperDepth(this._env.path, this._env.settings, this._env.logger, () => {
+                this._occlusionKey = '';
+                this._env.relayout();
+            });
+        }
+        else {
+            this._depth.destroy();
+            this._depth = null;
+        }
+        this._occlusionKey = '';
+        this._env.relayout();
+    }
+
+    // Works out what the digits hide behind where they are now, when they moved or the map changed.
+    _syncOcclusion() {
+        const shown = this._depth?.current ?? null;
+        const [gx, gy] = this._glass.get_transformed_position();
+        const key = shown ? [gx, gy, ...this._fieldSize, ...this._fieldScale, shown.map.width, shown.monitor.x, shown.monitor.y].join(' ') : 'none';
+        if (key === this._occlusionKey && (!shown || shown.texture === this._occlusionTexture))
+            return;
+        this._occlusionKey = key;
+        this._occlusionTexture = shown?.texture ?? null;
+        if (!shown) {
+            this._glass.setOcclusion(null, [0, 0], [0, 0], 2, false);
+            return;
+        }
+        const { map, monitor } = shown;
+        const [rx, ry] = this._fieldScale.map(k => FIELD_RANGE * k);
+        const kx = map.width / monitor.width, ky = map.height / monitor.height;
+        const occlusion = chooseOcclusion(map, [
+            (gx + rx - monitor.x) * kx, (gy + ry - monitor.y) * ky,
+            (this._fieldSize[0] - 2 * rx) * kx, (this._fieldSize[1] - 2 * ry) * ky,
+        ], shown.subject);
+        if (this._env.logger.enabled)
+            this._env.logger.log(`[Liquid Glass] The clock stands behind ${occlusion.subject ? 'the subject' : occlusion.threshold > 1 ? 'nothing' : `depth ${occlusion.threshold.toFixed(3)}`}`);
+        this._glass.setOcclusion(shown.texture, [this._fieldScale[0] / monitor.width, this._fieldScale[1] / monitor.height], [(gx - monitor.x) / monitor.width, (gy - monitor.y) / monitor.height], occlusion.threshold, occlusion.subject);
     }
 
     _applyMaterial() {
@@ -337,6 +389,7 @@ export class GlassClock {
         }
         if (this.actor.mapped) {
             ensureGlassAllocated(this._glass);
+            this._syncOcclusion();
             this._glass.syncSources();
         }
         return changed;
@@ -355,6 +408,9 @@ export class GlassClock {
         this._settingsIds = [];
         this._interfaceIds = [];
         this._adaptive.clear();
+        this._depth?.destroy();
+        this._depth = null;
+        this._occlusionTexture = null;
         this._source.destroy();
         this._font = null;
         this._shownFont = null;

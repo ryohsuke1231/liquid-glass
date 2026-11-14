@@ -23,7 +23,7 @@
 //              widgets, the glass clock and the launcher, on a photo wallpaper
 //              ($LG_DRV_WALLPAPER); LG_DRV_FEATURES picks parts (comma
 //              separated: morph, topbar, widgets, clock, launcher; default all;
-//              also morphtrace, qssub, clockshot, media, guides, launcherpointer,
+//              also morphtrace, qssub, clockshot, clockdepth (the clock behind the wallpaper; needs the models), media, guides, launcherpointer,
 //              launchercolor, iconstyle, iconglass, workspaces, fullshot, popupfreeze, redrawclip, prefshover, bannerintro, stalefreeze, dockgrow, nanrelay, notifstack (LG_DRV_LIGHT as for scale, LG_DRV_STACK notifications); fullshot to prefshover and the last three need LG_DTD_DIR; qsheight, the calendar matched
 //              to Quick Settings' height; qsflicker, the Quick Settings glass rect while adaptive colour samples;
 //              adaptiveoff, adaptive colour turned off and on while each surface is shown);
@@ -3704,6 +3704,44 @@ export default class LgDriver extends Extension {
       const [x, y] = clock.get_transformed_position();
       const [w, h] = clock.get_transformed_size();
       await shot('clock-alone', [x, y, w, h]);
+    }
+    if (parts.includes('clockdepth')) {
+      // The clock standing behind what is near in the wallpaper ($LG_DRV_WALLPAPER): before and after the
+      // analysis, at each of $LG_DRV_CLOCK_AT ("x:y;x:y", its center as fractions of the work area).
+      // The models have to be in the session's data folder ($XDG_DATA_HOME/liquid-glass/models).
+      settings.set_boolean('output-logs', true);
+      settings.set_int('glass-clock-size', Number(GLib.getenv('LG_DRV_CLOCK_SIZE') ?? 240));
+      settings.set_boolean('glass-clock-show-date', false);
+      const text = GLib.getenv('LG_DRV_CLOCK_TEXT');
+      if (text) (await this._lgModule('desktop/clock.js')).GlassClock.prototype._timeText = () => text;
+      const places = (GLib.getenv('LG_DRV_CLOCK_AT') ?? '0.5:0.3').split(';').map(p => p.split(':').map(Number));
+      const place = at => settings.set_string('desktop-item-positions', JSON.stringify({clock: at}));
+      place(places[0]);
+      settings.set_boolean('enable-glass-clock', true);
+      await sleep(4000);
+      await shot('clockdepth-before', [m.x, m.y, m.width, m.height]);
+      const started = GLib.get_monotonic_time();
+      settings.set_boolean('glass-clock-depth', true);
+      let status = '';
+      for (let i = 0; i < 240; i++) {
+        status = settings.get_string('glass-clock-depth-status');
+        if (!['', 'off', 'analysing'].includes(status)) break;
+        await sleep(500);
+      }
+      const seconds = ((GLib.get_monotonic_time() - started) / 1e6).toFixed(1);
+      log(`clockdepth: status=${status} after ${seconds} s ${status === 'ready' ? 'OK' : 'NG'}`);
+      for (const [i, at] of places.entries()) {
+        place(at);
+        await sleep(2500);
+        await shot(`clockdepth-${i}`, [m.x, m.y, m.width, m.height]);
+      }
+      // A second wallpaper change back and forth reads the map from the cache.
+      settings.set_boolean('glass-clock-depth', false);
+      await sleep(500);
+      const again = GLib.get_monotonic_time();
+      settings.set_boolean('glass-clock-depth', true);
+      for (let i = 0; i < 40 && settings.get_string('glass-clock-depth-status') !== 'ready'; i++) await sleep(100);
+      log(`clockdepth: cached status=${settings.get_string('glass-clock-depth-status')} after ${((GLib.get_monotonic_time() - again) / 1e6).toFixed(1)} s`);
     }
     if (parts.includes('topbar')) {
       for (const style of ['pill', 'islands', 'center']) {
