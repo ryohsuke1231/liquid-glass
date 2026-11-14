@@ -117,8 +117,9 @@ export class DockBarManager {
     _host = null;
     _origins = new Map();
     _menus = new Map();
-    // The button containers hidden by the "left out" setting.
-    _hiddenByUs = new Set();
+    // The button containers held hidden by the "left out" setting, with the handler that hides each again, and
+    // whether its owner would have it shown.
+    _leftOut = new Map();
     // The top bars' boxes held hidden, with the handler that hides each again.
     _held = new Map();
     _disconnects = [];
@@ -377,7 +378,10 @@ export class DockBarManager {
                 if (dockTray && role.startsWith(TRAY_ROLE))
                     continue;
                 const destroyId = this._origins.get(container)?.destroyId ??
-                    container.connect('destroy', () => this._origins.delete(container));
+                    container.connect('destroy', () => {
+                        this._origins.delete(container);
+                        this._leftOut.delete(container);
+                    });
                 this._origins.set(container, {
                     parent,
                     index: places.get(container),
@@ -411,21 +415,40 @@ export class DockBarManager {
         });
     }
 
-    // Hides the buttons the settings leave out, and shows again those that are back in. A button that hides itself,
-    // as the keyboard layout's does with one layout, is not touched.
+    // Hides the buttons the settings leave out, and keeps them hidden: the top bar shows a button again as it takes
+    // it back, as after the lock screen. Those back in show again unless they hide themselves, as the keyboard
+    // layout's does with one layout.
     _hideLeftOut(entries) {
         const leftOut = this._settings.get_strv('dock-bar-hidden');
         for (const { role, container } of entries) {
-            if (leftOut.includes(role)) {
-                if (container.visible) {
-                    this._hiddenByUs.add(container);
-                    container.hide();
-                }
+            if (!leftOut.includes(role)) {
+                this._releaseLeftOut(container);
+                continue;
             }
-            else if (this._hiddenByUs.delete(container)) {
-                container.show();
-            }
+            if (this._leftOut.has(container))
+                continue;
+            const hold = { id: 0, shown: container.visible };
+            hold.id = container.connect('notify::visible', () => {
+                if (!container.visible)
+                    return;
+                hold.shown = true;
+                container.hide();
+            });
+            this._leftOut.set(container, hold);
+            container.hide();
         }
+    }
+
+    _releaseLeftOut(container) {
+        const hold = this._leftOut.get(container);
+        if (!hold)
+            return;
+        this._leftOut.delete(container);
+        if (!isActorValid(container))
+            return;
+        container.disconnect(hold.id);
+        if (hold.shown)
+            container.show();
     }
 
     // Quick settings opens from its button's left edge and counts on the screen edge to push it back. In the dock
@@ -453,6 +476,7 @@ export class DockBarManager {
             return;
         this._origins.delete(container);
         container.disconnect(origin.destroyId);
+        this._releaseLeftOut(container);
         this._untrackMenu(indicator);
     }
 
@@ -465,10 +489,8 @@ export class DockBarManager {
             ours.add(this._host.left);
             ours.add(this._host.right);
         }
-        for (const container of this._hiddenByUs)
-            if (isActorValid(container))
-                container.show();
-        this._hiddenByUs.clear();
+        for (const container of [...this._leftOut.keys()])
+            this._releaseLeftOut(container);
         const origins = [...this._origins].sort(([, a], [, b]) => a.index - b.index);
         this._origins.clear();
         for (const [container, origin] of origins) {
