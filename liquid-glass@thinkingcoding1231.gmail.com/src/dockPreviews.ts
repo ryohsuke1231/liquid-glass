@@ -192,6 +192,8 @@ export class DockPreviews {
     const menu = this._menuFor(icon);
     // What WindowPreviewMenu.popup() does, short of taking the keyboard focus.
     menu._redisplay();
+    // A narrow window with a short title leaves its preview narrower than a menu's least width: it goes in the middle.
+    menu._previewBox.box.x_align = Clutter.ActorAlign.CENTER;
     this._open = icon;
     // Keeps a dock that hides by itself shown, and the app's name hidden, as for its other menus.
     icon.emit('menu-state-changed', true);
