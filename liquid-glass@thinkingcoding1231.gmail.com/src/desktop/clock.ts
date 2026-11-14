@@ -263,7 +263,7 @@ export class GlassClock implements DesktopItem {
     if (sx === 1 && this._digitHeight) {
       const added = (sy - 1) * this._bounds[3] / this._digitHeight;
       const height = clamp(s.get_double('glass-clock-height') + added, keyRange(s, 'glass-clock-height'));
-      s.set_double('glass-clock-height', Math.round(height * 100) / 100);
+      s.set_double('glass-clock-height', Math.round(height * 1000) / 1000);
       this._loadFont();
       return;
     }
@@ -272,7 +272,7 @@ export class GlassClock implements DesktopItem {
     // The width follows the size too; the stretch makes up the rest.
     const stretch = clamp(s.get_double('glass-clock-stretch') * sx * size / newSize, keyRange(s, 'glass-clock-stretch'));
     s.set_int('glass-clock-size', newSize);
-    s.set_double('glass-clock-stretch', Math.round(stretch * 100) / 100);
+    s.set_double('glass-clock-stretch', Math.round(stretch * 1000) / 1000);
     this._loadFont();
   }
 

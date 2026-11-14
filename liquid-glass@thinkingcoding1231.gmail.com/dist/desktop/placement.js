@@ -70,6 +70,31 @@ export function resizeRect(rect, hx, hy, dx, dy, min) {
     return out;
 }
 
+// How far an arrow key moves an item and pulls an edge (px), and how much it scales it.
+const KEY_MOVE = 2;
+const KEY_STRETCH = 4;
+const KEY_SCALE = 1.02;
+
+/**
+ * `rect` after an arrow key towards (dx, dy): moved that way, its edge on
+ * that side pulled outwards, or (up and down only) made larger and smaller
+ * about its center. At least `min` px each way; null when the key does
+ * nothing.
+ */
+export function keyEditRect(rect, dx, dy, edit, min) {
+    if (edit === 'move')
+        return { ...rect, x: rect.x + dx * KEY_MOVE, y: rect.y + dy * KEY_MOVE };
+    if (edit === 'stretch')
+        return resizeRect(rect, dx, dy, dx * KEY_STRETCH, dy * KEY_STRETCH, min);
+    if (dy === 0)
+        return null;
+    const k = dy < 0 ? KEY_SCALE : 1 / KEY_SCALE;
+    const width = rect.width * k, height = rect.height * k;
+    if (width < min || height < min)
+        return null;
+    return { x: rect.x + (rect.width - width) / 2, y: rect.y + (rect.height - height) / 2, width, height };
+}
+
 // The positions the user moved items to, by item id, as stored in the
 // `desktop-item-positions` setting. Anything unreadable counts as none.
 export function parsePositions(json) {

@@ -85,3 +85,18 @@ test('a column that would run off the work area is moved up to fit', () => {
   assert.deepEqual(placement.stackColumns(saved.map(r => ({ saved: r, size: [200, r.height + 60], shown: true })), area),
     [[0, 84], [0, 260]]);
 });
+
+test('an arrow key moves the rect, pulls the edge on its side outwards, or scales it about its center', () => {
+  assert.deepEqual(placement.keyEditRect(rect, -1, 0, 'move', 48), { x: 98, y: 200, width: 300, height: 150 });
+  assert.deepEqual(placement.keyEditRect(rect, 0, 1, 'move', 48), { x: 100, y: 202, width: 300, height: 150 });
+  // Right and down pull the far edges; left and up pull the near ones and keep the far ones.
+  assert.deepEqual(placement.keyEditRect(rect, 1, 0, 'stretch', 48), { x: 100, y: 200, width: 304, height: 150 });
+  assert.deepEqual(placement.keyEditRect(rect, -1, 0, 'stretch', 48), { x: 96, y: 200, width: 304, height: 150 });
+  assert.deepEqual(placement.keyEditRect(rect, 0, -1, 'stretch', 48), { x: 100, y: 196, width: 300, height: 154 });
+  assert.deepEqual(placement.keyEditRect(rect, 0, 1, 'stretch', 48), { x: 100, y: 200, width: 300, height: 154 });
+  const larger = placement.keyEditRect(rect, 0, -1, 'scale', 48), smaller = placement.keyEditRect(rect, 0, 1, 'scale', 48);
+  assert.ok(larger.width > 300 && Math.abs(larger.width / larger.height - 2) < 1e-9);
+  assert.ok(smaller.width < 300 && Math.abs(smaller.x + smaller.width / 2 - 250) < 1e-9 && Math.abs(larger.y + larger.height / 2 - 275) < 1e-9);
+  assert.equal(placement.keyEditRect(rect, 1, 0, 'scale', 48), null, 'left and right do not scale');
+  assert.equal(placement.keyEditRect({ x: 0, y: 0, width: 60, height: 48 }, 0, 1, 'scale', 48), null, 'not below the minimum');
+});
