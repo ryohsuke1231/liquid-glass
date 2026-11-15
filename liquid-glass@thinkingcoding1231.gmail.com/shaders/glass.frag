@@ -321,10 +321,13 @@ float sdGlass(vec2 p, vec2 b, vec2 corner) {
 }
 
 // The circular-cornered sdGlass(), cheap enough to pick a region with.
+// Its radius stops where cornerShape()'s does: past the shorter half-extent
+// the distance bulges out at the ends, and a neighbouring region wins pixels
+// that belong to this one.
 float sdGlassPick(vec2 p, vec2 b, float r) {
+    r = min(r, min(b.x, b.y));
     if (attach_edge < 0.5)
         return sdCircleRoundRect(p, b, r);
-    r = min(r, min(b.x, b.y));
     vec2 bodyP, bodyB, wallP, wallB;
     edgeParts(p, b, r, bodyP, bodyB, wallP, wallB);
     return edgeUnion(sdCircleRoundRect(bodyP, bodyB, r), sdCircleRoundRect(wallP, wallB, 0.0));

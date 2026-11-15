@@ -5,7 +5,7 @@
 // Scenarios ($LG_DRV_SCENARIO):
 //   dock       the dock over windows, a changing background and UI actors
 //   ui         the calendar menu, Quick Settings, a notification and the OSD
-//   toggles    Quick Settings in toggle mode
+//   toggles    Quick Settings in toggle mode ($LG_DRV_SETTINGS_DUMP sets the session up first)
 //   outline    the ui and toggles scenarios with every surface's outline on
 //              (LG_DRV_OUTLINE_WIDTH, default 3, and LG_DRV_OUTLINE_COLOR, default #ff2020)
 //   fullstage  how many frames redraw the whole stage while the calendar opens
@@ -415,6 +415,20 @@ export default class LgDriver extends Extension {
 
   _lgSettings() {
     return Extension.lookupByUUID(LG_UUID).getSettings();
+  }
+
+  // $LG_DRV_SETTINGS_DUMP: a `dconf dump` of the extension's settings to start from.
+  _applySettingsDump(settings) {
+    const dump = GLib.getenv('LG_DRV_SETTINGS_DUMP');
+    if (!dump) return;
+    const text = new TextDecoder().decode(GLib.file_get_contents(dump)[1]);
+    for (const line of text.split('\n')) {
+      const at = line.indexOf('=');
+      const key = line.slice(0, at);
+      if (at < 0 || !settings.settings_schema.has_key(key)) continue;
+      const type = new GLib.VariantType(settings.get_value(key).get_type_string());
+      settings.set_value(key, GLib.Variant.parse(type, line.slice(at + 1), null, null));
+    }
   }
 
   // Rebuilds one surface's glass by switching it off and on.
@@ -943,6 +957,7 @@ export default class LgDriver extends Extension {
 
   async _togglesScenario() {
     const settings = this._lgSettings();
+    this._applySettingsDump(settings);
     settings.set_int('quick-settings-apply-to', 1);
     await sleep(1500);
     const qs = Main.panel.statusArea.quickSettings.menu;
@@ -3393,18 +3408,7 @@ export default class LgDriver extends Extension {
   async _featuresScenario() {
     const parts = (GLib.getenv('LG_DRV_FEATURES') ?? 'morph,topbar,widgets,clock,launcher').split(',');
     const settings = this._lgSettings();
-    // A `dconf dump` of the extension's settings to start from, and an icon theme.
-    const dump = GLib.getenv('LG_DRV_SETTINGS_DUMP');
-    if (dump) {
-      const text = new TextDecoder().decode(GLib.file_get_contents(dump)[1]);
-      for (const line of text.split('\n')) {
-        const at = line.indexOf('=');
-        const key = line.slice(0, at);
-        if (at < 0 || !settings.settings_schema.has_key(key)) continue;
-        const type = new GLib.VariantType(settings.get_value(key).get_type_string());
-        settings.set_value(key, GLib.Variant.parse(type, line.slice(at + 1), null, null));
-      }
-    }
+    this._applySettingsDump(settings);
     const iconTheme = GLib.getenv('LG_DRV_ICON_THEME');
     if (iconTheme) new Gio.Settings({schema_id: 'org.gnome.desktop.interface'}).set_string('icon-theme', iconTheme);
     // A shell theme's gnome-shell.css, as the User Themes extension would load it.
