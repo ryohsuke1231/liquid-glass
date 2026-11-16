@@ -33,6 +33,8 @@ const MENU_MEASURE_FRAMES = 30;
 // The calendar menu's cards (stylesheet.css).
 const CARD_CLASSES = ['events-button', 'world-clocks-button', 'message'];
 const MENU_MEASURE_STABLE_FRAMES = 3;
+// On a menu growing up out of a dock at the bottom (stylesheet.css).
+const DOCK_MENU_CLASS = 'liquid-glass-dock-menu';
 // Quick Settings' open height, measured once for every menu that matches it,
 // and the callbacks waiting for a measurement in progress.
 let _quickSettingsHeight = 0;
@@ -71,6 +73,8 @@ export class UIManager {
     _glassExpand;
     _menuXoffset;
     _menuYoffset;
+    // In place of _menuYoffset while the menu grows up out of a dock: it rests on the dock's glass.
+    _dockYoffset = null;
     _menuScale = 1.0;
     _ownsAccentCss = true;
     _matchQuickSettingsHeight = false;
@@ -194,6 +198,8 @@ export class UIManager {
         this._animSignalId = this.menu.connect('open-state-changed', (menu, isOpen) => {
             if (isOpen)
                 this._openedFrom = this.menu.sourceActor;
+            if (isOpen)
+                this._placeForDock();
             if (!this._isEffectActive)
                 return;
             if (isOpen) {
@@ -209,6 +215,23 @@ export class UIManager {
             this._destroySignalId = 0;
             this.cleanup();
         });
+    }
+
+    // A menu hangs _menuYoffset into the top bar it opens from. Out of a dock at the bottom it grows up instead, and
+    // its bottom rests on the dock's glass: the box pointer's bottom is at its source's top, its body above the arrow.
+    _placeForDock() {
+        const edge = this._barGrowth.edge();
+        const source = this.menu?.sourceActor;
+        if (edge && edge.direction < 0 && source) {
+            this.targetActor.add_style_class_name(DOCK_MENU_CLASS);
+            const rise = this.targetActor.get_theme_node().get_length('-arrow-rise');
+            this._dockYoffset = edge.y - (source.get_transformed_position()[1] - rise);
+        }
+        else {
+            this.targetActor.remove_style_class_name(DOCK_MENU_CLASS);
+            this._dockYoffset = null;
+        }
+        this.animActor.translation_y = this._dockYoffset ?? this._menuYoffset;
     }
 
     setup() {
@@ -637,7 +660,7 @@ export class UIManager {
         connectSetting(this._key('y-offset'), () => {
             if (this.animActor) {
                 this._menuYoffset = this._settings.get_int(this._key('y-offset'));
-                this.animActor.translation_y = this._menuYoffset;
+                this.animActor.translation_y = this._dockYoffset ?? this._menuYoffset;
             }
         });
         connectSetting(this._key('enable-adaptive-text-color'), () => {
@@ -1664,6 +1687,7 @@ export class UIManager {
         this._openedFrom = null;
         if (this._destroySignalId) {
             this.targetActor.disconnect(this._destroySignalId);
+            this.targetActor.remove_style_class_name(DOCK_MENU_CLASS);
             this._destroySignalId = 0;
         }
         this._disconnectAccentColor();

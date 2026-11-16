@@ -45,7 +45,8 @@ function panelFixture() {
     _leftBox: new Signals(), _centerBox: new Signals(), _rightBox: new Signals() };
   const Main = { panel, extensionManager: new Signals() };
   const C = loadClass('panelMenuManager.js', 'PanelMenuManager', {
-    Main, PopupMenu: { PopupMenu: Popup }, GLib: clock.GLib, UIManager: Manager });
+    Main, PopupMenu: { PopupMenu: Popup }, GLib: clock.GLib, UIManager: Manager,
+    isActorValid: actor => !!actor && !actor.disposed });
   const manager = new C('', settings, { log() {} });
   const add = (name, menu = new Popup()) => {
     const button = Object.assign(new Signals(), { menu, attached: true });
@@ -56,6 +57,26 @@ function panelFixture() {
   manager.setup();
   return { ...clock, manager, settings, panel, instances, add, Popup };
 }
+
+test('skips an indicator destroyed but left in statusArea, without touching it', () => {
+  const f = panelFixture();
+  f.add('kept');
+  const gone = f.add('gone');
+  gone.disposed = true;
+  Object.defineProperty(gone, 'menu', { get() { throw Error('touched a disposed indicator'); } });
+  f.flush();
+  assert.deepEqual(f.instances.map(m => m.menu), [f.panel.statusArea.kept.menu]);
+  assert.deepEqual(f.settings.values['detected-extra-menus'], ['kept']);
+});
+
+test('does not scan once the panel itself is gone, as while the shell ends', () => {
+  const f = panelFixture();
+  f.add('kept');
+  f.panel.disposed = true;
+  Object.defineProperty(f.panel, 'statusArea', { get() { throw Error('touched a disposed panel'); } });
+  f.flush();
+  assert.equal(f.instances.length, 0);
+});
 
 test('discovers arbitrary and late menus, excluding built-ins and dummy menus', () => {
   const f = panelFixture();
@@ -120,7 +141,7 @@ function notificationFixture() {
     // A banner floating below the bar, not grown out of it.
     BarGrowth: class { start() { return false; } holdAtRest() { return false; } release() {} },
     MessageTray: { State: { HIDING: 3 } },
-    attachRectToEdge: rect => rect,
+    attachRectToEdge: rect => rect, topBarsHeld: () => false,
   });
   const manager = new C('', new Settings(), { error() {} });
   return { ...clock, manager, tray, monitor };

@@ -10,6 +10,7 @@ import { StageContrastSampler, AdaptiveContrastConfig, sanitizeColorPreference }
 import { BANNER_TRANSPARENT_CLASS } from './shellVersion.js';
 import { BarGrowth } from './barGrowth.js';
 import { attachRectToEdge } from './dockManager.js';
+import { topBarsHeld } from './topBarHold.js';
 // GNOME's own slide-in of a banner, which is held while it grows out of the bar instead.
 const BANNER_EASED = ['y', 'opacity', 'scale-x', 'scale-y'];
 // Room around the glass rect for the shader's edge effects.
@@ -391,6 +392,8 @@ export class NotificationManager {
         const offset = Math.fround(this._originalBannerOffset + this._notificationYOffset);
         if (bannerBin.translation_y !== offset)
             bannerBin.translation_y = offset;
+        if (topBarsHeld())
+            this._unshiftBanner(bannerBin);
         // Grown out of the bar, the bar draws the glass; it runs back in as GNOME slides the banner away.
         // @ts-expect-error: internal state
         const hiding = this.tray._notificationState === MessageTray.State.HIDING;
@@ -487,6 +490,20 @@ export class NotificationManager {
         if (this._edgeAttached)
             rect = attachRectToEdge(rect, 'top', 0, 0, SHADER_PADDING);
         this.glass.setGlassGeometry(rect[0], rect[1], rect[2], rect[3]);
+    }
+
+    // Hide Top Bar moves banners down by the top bar's height while the bar is not slid away. A bar held hidden for
+    // the "top bar in the dock" mode is not slid away, but it is not there either: the banner goes back to the top
+    // of the screen.
+    _unshiftBanner(bannerBin) {
+        const ease = bannerBin.get_transition('y');
+        if (ease) {
+            if (ease.get_interval().peek_final_value() > 0)
+                ease.set_to(0);
+        }
+        else if (bannerBin.y > 0) {
+            bannerBin.y = 0;
+        }
     }
 
     // Whether the top bar is off the screen, as Hide Top Bar slides it, above the monitor's top at `monitorY`.

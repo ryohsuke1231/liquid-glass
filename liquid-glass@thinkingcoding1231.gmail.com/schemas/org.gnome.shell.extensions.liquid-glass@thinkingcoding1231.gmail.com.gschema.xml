@@ -35,7 +35,50 @@
     <key name="dock-menus-grow" type="b">
       <default>false</default>
       <summary>Menus grow out of the dock</summary>
-      <description>The dock's glass grows into the menus of top bar buttons placed in the dock (such as the tray icons Dock Tray moves there) instead of the menus floating with glass of their own: up out of a dock at the bottom of the screen, down out of one at the top. The menus then take the dock's glass settings, and the edge flare radius rounds the join.</description>
+      <description>The dock's glass grows into the names of its apps and into the menus of its apps and of top bar buttons placed in the dock (such as the tray icons Dock Tray moves there) instead of the menus floating with glass of their own: up out of a dock at the bottom of the screen, down out of one at the top. The menus then take the dock's glass settings, and dock-growth-radius rounds the join.</description>
+    </key>
+    <key name="dock-growth-radius" type="d">
+      <range min="0.0" max="64.0"/>
+      <default>24.0</default>
+      <summary>Join radius of what grows out of the dock (px)</summary>
+      <description>Radius of the concave curve where the names, previews and menus that grow out of the dock join its glass. Smoothed as the corners are, by glass-corner-smoothing.</description>
+    </key>
+    <key name="dock-space-edge" type="i">
+      <range min="-1" max="40"/>
+      <default>-1</default>
+      <summary>Space between the dock's apps and the screen edge (px)</summary>
+      <description>With Dash to Dock's icon size and the space on the other side, this sets the dock's thickness. Below 0, or with the other below 0, the space is Dash to Dock's.</description>
+    </key>
+    <key name="dock-space-far" type="i">
+      <range min="-1" max="40"/>
+      <default>-1</default>
+      <summary>Space on the other side of the dock's apps (px)</summary>
+      <description>See dock-space-edge.</description>
+    </key>
+    <key name="dock-window-previews" type="b">
+      <default>false</default>
+      <summary>Window previews on the dock</summary>
+      <description>Hovering an app with windows on a Dash to Dock dock shows Dash to Dock's window previews in place of the app's name. They open without a grab or keyboard focus.</description>
+    </key>
+    <key name="top-bar-in-dock" type="b">
+      <default>false</default>
+      <summary>Top bar in the dock</summary>
+      <description>Hides the top bar and puts its buttons into Dash to Dock, left and right of the apps, on docks along the top or bottom of the screen. Without such a dock the top bar stays.</description>
+    </key>
+    <key name="dock-bar-order" type="as">
+      <default>['activities', 'apps', 'quickSettings', 'dateMenu']</default>
+      <summary>Order of the top bar's buttons in the dock</summary>
+      <description>The buttons' names in the top bar, from left to right. Those before "apps" go left of the dock's apps, the others right of them. Buttons not listed yet are added next to the apps.</description>
+    </key>
+    <key name="dock-bar-hidden" type="as">
+      <default>[]</default>
+      <summary>Top bar buttons left out of the dock</summary>
+      <description>Their names, as in the order. They are hidden while the top bar's buttons are in the dock.</description>
+    </key>
+    <key name="quick-settings-hidden-indicators" type="as">
+      <default>[]</default>
+      <summary>Icons left off the quick settings button</summary>
+      <description>The names of the shell's fields that hold them, without the underscore (network, volumeInput, powerProfiles…), and "others" for those other extensions add. The quick settings menu keeps their entries.</description>
     </key>
     <key name="dock-tint-color" type="s">
       <default>"#ffffff"</default>
@@ -944,7 +987,13 @@
     <key name="top-bar-menus-grow" type="b">
       <default>false</default>
       <summary>Menus grow out of the bar</summary>
-      <description>The top bar's glass grows down into the menus opened from it (the calendar, Quick Settings in whole-menu mode and the other top bar menus) instead of the menus floating below it with glass of their own. The menus then take the top bar's glass settings, and the edge flare radius rounds the join.</description>
+      <description>The top bar's glass grows down into the menus opened from it (the calendar, Quick Settings in whole-menu mode and the other top bar menus) instead of the menus floating below it with glass of their own. The menus then take the top bar's glass settings, and top-bar-growth-radius rounds the join.</description>
+    </key>
+    <key name="top-bar-growth-radius" type="d">
+      <range min="0.0" max="64.0"/>
+      <default>18.0</default>
+      <summary>Join radius of what grows out of the bar (px)</summary>
+      <description>Radius of the concave curve where the menus, banners and popups that grow out of the top bar join its glass. Smoothed as the corners are, by glass-corner-smoothing.</description>
     </key>
     <key name="top-bar-padding-top" type="i">
       <range min="0" max="100"/>

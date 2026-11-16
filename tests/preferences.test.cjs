@@ -310,8 +310,15 @@ test('advanced top bar group owns its style and shows spacing only for pills', (
     .find(group => group.title === 'Individual effects');
   const effectsStyle = effects.children.find(row => row.title === 'Top bar');
   effectsStyle.selected = 2;
-  assert.deepEqual(f.writes.at(-1), {'top-bar-style': 'islands'});
+  assert.deepEqual(f.writes.at(-1), {'top-bar-style': 'islands', 'top-bar-in-dock': false});
+  // In the dock keeps the bar's style for when it comes back, and shows the buttons' order.
+  const order = effects.children.find(row => row.title === 'Top bar buttons in the dock, from left to right');
+  assert.equal(order.visible, false);
+  effectsStyle.selected = 4;
+  assert.deepEqual(f.writes.at(-1), {'top-bar-in-dock': true});
+  assert.equal(order.visible, true);
   effectsStyle.selected = 0;
+  assert.equal(order.visible, false);
   f.row('Surface').selected = 8;
   const group = f.window.children[0].children.find(group => group.title === 'Top bar');
   const style = group.children.find(row => row.title === 'Style');
@@ -319,7 +326,7 @@ test('advanced top bar group owns its style and shows spacing only for pills', (
   const padding = group.children.find(row => row.title === 'Padding right');
   assert.equal(margin.visible, false);
   style.selected = 1;
-  assert.deepEqual(f.writes.at(-1), {'top-bar-style': 'pill'});
+  assert.deepEqual(f.writes.at(-1), {'top-bar-style': 'pill', 'top-bar-in-dock': false});
   assert.equal(margin.visible, true);
   assert.equal(padding.visible, true);
   margin.value = 12;

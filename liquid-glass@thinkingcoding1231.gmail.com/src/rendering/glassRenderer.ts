@@ -7,6 +7,7 @@ import {
 } from './pipelines.js';
 import { setUniformArray } from '../shellVersion.js';
 import { hexToColorArray } from '../animation.js';
+import { GROWTH_CURVE_POINTS } from '../growthBars.js';
 
 // Must match glass.frag's `#define MAX_GLASS_REGIONS 16`.
 export const MAX_GLASS_REGIONS = 16;
@@ -24,14 +25,31 @@ const ATTACHED_EDGES: AttachedEdge[] = ['none', 'top', 'bottom', 'left', 'right'
 // Must match glass.frag's `#define MAX_GLASS_GROWTHS 3`: a menu closing, another opening and a notification.
 export const MAX_GLASS_GROWTHS = 3;
 
+// Must match glass.frag's MAX_GROWTH_CURVES.
+export const MAX_GROWTH_CURVES = 3;
+
+/**
+ * The edge a menu's side near the glass's end joins it along instead of a fillet, in actor px: GROWTH_CURVE_POINTS
+ * points walked with the glass on their left, run on straight past both ends; the glass's edge is cut to it only on
+ * the side of `clip` = [y, sign] where (y' - y) * sign <= 0. `box` ([x, y, w, h]) is the stretch the menu's glass runs
+ * on over between its side and the end.
+ */
+export interface GrowthCurve {
+  points: number[][];
+  clip: number[];
+  box: number[];
+}
+
 /**
  * A menu grown out of the glass: a box in actor px, its corners' radii (top left, top right, bottom right, bottom
- * left) and the concave fillets (left, right) that join its sides to the glass.
+ * left), the concave fillets (left, right) that join its sides to the glass and, for a side near the glass's end,
+ * the curve that does instead.
  */
 export interface GlassGrowth {
   x: number; y: number; w: number; h: number;
   radii: number[];
   fillets: number[];
+  curves: (GrowthCurve | null)[];
 }
 
 /**
@@ -270,6 +288,24 @@ export class GlassRenderer {
     this.uniforms.setArray('grow_h', slot(g => g.h));
     this.uniforms.setArray('grow_r', Array.from({ length: MAX_GLASS_GROWTHS * 4 },
       (_, i) => Math.max(used[Math.floor(i / 4)]?.radii[i % 4] ?? 0, 0)));
+    // The newest growths' curves first, as many as fit; a side left without one is joined sharp.
+    const curves: { slot: number, curve: GrowthCurve }[] = [];
+    for (let i = used.length - 1; i >= 0; i--) {
+      used[i].curves.forEach((curve, side) => {
+        if (curve && curves.length < MAX_GROWTH_CURVES) curves.push({ slot: i * 2 + side, curve });
+      });
+    }
+    const perCurve = (n: number, pick: (c: GrowthCurve, k: number) => number) =>
+      Array.from({ length: MAX_GROWTH_CURVES * n }, (_, i) => {
+        const entry = curves[Math.floor(i / n)];
+        return entry ? pick(entry.curve, i % n) : 0;
+      });
+    this.uniforms.set('curve_count', curves.length);
+    this.uniforms.setArray('curve_slot', Array.from({ length: MAX_GROWTH_CURVES }, (_, i) => curves[i]?.slot ?? -1));
+    this.uniforms.setArray('curve_px', perCurve(GROWTH_CURVE_POINTS, (c, k) => c.points[k][0]));
+    this.uniforms.setArray('curve_py', perCurve(GROWTH_CURVE_POINTS, (c, k) => c.points[k][1]));
+    this.uniforms.setArray('curve_clip', perCurve(2, (c, k) => c.clip[k]));
+    this.uniforms.setArray('curve_box', perCurve(4, (c, k) => c.box[k]));
     this.geometry.growths = used.map(g => [g.x, g.y, g.w, g.h]);
     this._repaintIfDirty();
   }

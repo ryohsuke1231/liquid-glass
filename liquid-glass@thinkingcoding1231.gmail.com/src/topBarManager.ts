@@ -11,7 +11,7 @@ import { ensureGlassAllocated, isActorValid } from './actors.js';
 import { startSyncLoop, stopStageLoop, hexToColorArray } from './animation.js';
 import { sanitizeColorPreference, AdaptiveTextColor } from './contrastSampler.js';
 import type { Logger } from './logger.js';
-import { addGrowthBar, removeGrowthBar, cornerReach, layoutGrowths, type GrowthBar } from './growthBars.js';
+import { addGrowthBar, removeGrowthBar, bodyCorner, layoutGrowths, moveGrowth, type GrowthBar } from './growthBars.js';
 
 export type TopBarStyle = 'off' | 'pill' | 'islands' | 'center';
 
@@ -126,6 +126,7 @@ export class TopBarManager implements GrowthBar {
       this._applyAttach();
       this._applyGrowths();
     });
+    watch('top-bar-growth-radius', () => this._applyGrowths());
     for (const key of GROW_KEYS)
       watch(key, () => {
         // The glass reaches down the monitor only while something grows out of it.
@@ -237,6 +238,7 @@ export class TopBarManager implements GrowthBar {
       if (released(actor) && isActorValid(actor)) actor.set_style(style);
     }
     this._childrenStyles = this._childrenStyles.filter(([actor]) => !released(actor));
+    if (isActorValid(child)) this._text.release(child);
     if (!target) return;
     for (const [actor, id] of this._containerSignalIds) {
       if (released(actor) && isActorValid(actor)) actor.disconnect(id);
@@ -634,9 +636,10 @@ export class TopBarManager implements GrowthBar {
     return (this._panel as unknown as { monitorIndex?: number }).monitorIndex ?? Main.layoutManager.primaryIndex;
   }
 
-  /** The bar's status area button `name` (dateMenu, quickSettings…), or null. */
+  /** The bar's status area button `name` (dateMenu, quickSettings…), or null while it is not on the bar. */
   button(name: string): St.Widget | null {
-    return (this._panel as unknown as { statusArea?: Record<string, St.Widget> }).statusArea?.[name] ?? null;
+    const button = (this._panel as unknown as { statusArea?: Record<string, St.Widget> }).statusArea?.[name];
+    return button && this._panel.contains(button) ? button : null;
   }
 
   /** Whether what opens from `source`, a button on this bar, grows out of it by the setting `key`. */
@@ -685,7 +688,7 @@ export class TopBarManager implements GrowthBar {
       glass.setGlassRegions(regions);
       glass.setGlassGeometry(0, 0, width, height);
     }
-    glass.setGrowths(growths.map(g => ({ ...g, x: g.x - glass.x, y: g.y - glass.y })));
+    glass.setGrowths(growths.map(g => moveGrowth(g, -glass.x, -glass.y)));
     glass.syncSources();
   }
 
@@ -696,8 +699,9 @@ export class TopBarManager implements GrowthBar {
     const smoothing = this._settings.get_double('glass-corner-smoothing');
     return layoutGrowths(this._bodies, menus, {
       minX, maxX: minX + this._glassSize[0],
-      fillet: this._settings.get_double(this._key('edge-radius')),
-      reach: h => cornerReach(radius, smoothing, h),
+      fillet: this._settings.get_double(this._key('growth-radius')),
+      smoothing,
+      corner: h => bodyCorner(radius, smoothing, h),
       direction: 1,
     });
   }
@@ -772,8 +776,8 @@ export class TopBarManager implements GrowthBar {
   }
 }
 
-// Built like the shell's Panel, whose three boxes the glass follows.
-function isTopBar(actor: Clutter.Actor): actor is TopBarPanel {
+/** Whether `actor` is built like the shell's Panel, whose three boxes the glass follows. */
+export function isTopBar(actor: Clutter.Actor): actor is TopBarPanel {
   return actor instanceof St.Widget
     && '_leftBox' in actor && actor._leftBox instanceof St.BoxLayout
     && '_centerBox' in actor && actor._centerBox instanceof St.BoxLayout
@@ -870,10 +874,12 @@ export class ExtraTopBarManager {
     this._watched.set(panel, [destroyId, styleId]);
   }
 
+  // Disconnects first: taking the glass off changes the bar's style class, which would queue a scan, and after
+  // cleanup() that scan would attach a manager nothing takes down again.
   private _unwatch(panel: TopBarPanel) {
-    this._detach(panel);
     for (const id of this._watched.get(panel) ?? []) panel.disconnect(id);
     this._watched.delete(panel);
+    this._detach(panel);
   }
 
   private _detach(panel: TopBarPanel) {
