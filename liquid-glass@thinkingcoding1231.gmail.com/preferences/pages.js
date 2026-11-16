@@ -49,11 +49,18 @@ const QUALITY = [
   { title: 'Fast', patch: { 'blur-method': 1, 'glass-blur-downscale': 4 } },
 ];
 
+// The settings by which things grow out of the top bar.
+const TOP_BAR_GROW_KEYS = ['top-bar-menus-grow', 'top-bar-notifications-grow', 'top-bar-osd-grow'];
+
+const DOCK_PREVIEWS = 'Window previews on the dock';
+const DOCK_PREVIEWS_HINT = 'Hovering an app with windows shows Dash to Dock\'s window previews in place of its name';
+const TOP_BAR_HINT = 'The bar itself; menus have their own entries. In the dock: its buttons sit in Dash to Dock and the bar is hidden';
 const TOP_BAR = [
-  { title: 'Off', patch: { 'top-bar-style': 'off' } },
-  { title: 'One pill', patch: { 'top-bar-style': 'pill' } },
-  { title: 'Three pills', patch: { 'top-bar-style': 'islands' } },
-  { title: 'Centered pill', patch: { 'top-bar-style': 'center' } },
+  { title: 'Off', patch: { 'top-bar-style': 'off', 'top-bar-in-dock': false } },
+  { title: 'One pill', patch: { 'top-bar-style': 'pill', 'top-bar-in-dock': false } },
+  { title: 'Three pills', patch: { 'top-bar-style': 'islands', 'top-bar-in-dock': false } },
+  { title: 'Centered pill', patch: { 'top-bar-style': 'center', 'top-bar-in-dock': false } },
+  { title: 'In the dock', patch: { 'top-bar-in-dock': true } },
 ];
 
 const QUICK_SETTINGS_GLASS = [
@@ -96,7 +103,8 @@ const APPEARANCE = [
 ];
 
 const LAYOUT = {
-  dock: [['glass-expand', 'Glass expansion', 0, 50, 1], ['margin-bottom', 'Edge spacing', -5, 30, 1]],
+  dock: [['glass-expand', 'Glass expansion', 0, 50, 1], ['margin-bottom', 'Edge spacing', -5, 30, 1],
+  ['space-edge', 'Space between the apps and the screen edge', -1, 40, 1], ['space-far', 'Space on the apps\' other side', -1, 40, 1]],
   menu: [['glass-expand', 'Glass expansion', 0, 50, 1], ['x-offset', 'Horizontal offset', -200, 200, 1],
   ['y-offset', 'Vertical offset', -50, 100, 1], ['scale', 'Menu scale', 0.5, 1, 0.01]],
   'panel-menu': [['glass-expand', 'Glass expansion', 0, 50, 1], ['x-offset', 'Horizontal offset', -200, 200, 1],
@@ -726,6 +734,126 @@ function addEdgeAttachment(group, controls, surface, marginRow, shownKeys = [], 
   });
 }
 
+// The top bar's buttons by their names in its status area. Others, from extensions, show under that name.
+const DOCK_BAR_APPS = 'apps';
+const DOCK_BAR_BUTTONS = {
+  activities: 'Activities',
+  dateMenu: 'Clock and notifications',
+  quickSettings: 'Quick settings',
+  keyboard: 'Keyboard layout',
+  a11y: 'Accessibility',
+  dwellClick: 'Click assist',
+  screenRecording: 'Screen recording',
+  screenSharing: 'Screen sharing',
+};
+
+// The order of the top bar's buttons in the dock, each with a switch that leaves it out, shown while the top bar is
+// in the dock.
+function addDockBar(group, controls) {
+  const { settings } = controls;
+  const order = new Adw.ExpanderRow({
+    title: 'Top bar buttons in the dock, from left to right',
+    subtitle: 'The switches leave a button out. Buttons the top bar gets later are added next to the apps',
+  });
+  group.add(order);
+  const reset = new Gtk.Button({
+    icon_name: 'edit-undo-symbolic', tooltip_text: 'Reset the order', valign: Gtk.Align.CENTER, css_classes: ['flat', 'circular'],
+  });
+  reset.connect('clicked', () => settings.reset('dock-bar-order'));
+  order.add_suffix(reset);
+
+  const rows = [];
+  const iconButton = (icon, tooltip, sensitive, clicked) => {
+    const button = new Gtk.Button({
+      icon_name: icon, tooltip_text: tooltip, valign: Gtk.Align.CENTER, css_classes: ['flat', 'circular'], sensitive,
+    });
+    button.connect('clicked', clicked);
+    return button;
+  };
+  controls.watch(['dock-bar-order', 'dock-bar-hidden'], () => {
+    for (const row of rows.splice(0)) order.remove(row);
+    const saved = settings.get_strv('dock-bar-order');
+    const names = saved.includes(DOCK_BAR_APPS) ? saved : [...saved, DOCK_BAR_APPS];
+    const leftOut = settings.get_strv('dock-bar-hidden');
+    const move = (from, to) => {
+      const next = [...names];
+      next.splice(to, 0, ...next.splice(from, 1));
+      settings.set_strv('dock-bar-order', next);
+    };
+    names.forEach((name, i) => {
+      const apps = name === DOCK_BAR_APPS;
+      const row = new Adw.ActionRow({
+        title: apps ? 'The dock\'s apps' : DOCK_BAR_BUTTONS[name] ?? name,
+        subtitle: apps ? 'What is above goes left of them, what is below right' : '',
+      });
+      if (apps) {
+        row.add_prefix(new Gtk.Image({ icon_name: 'view-app-grid-symbolic' }));
+      } else {
+        const shown = new Gtk.Switch({ active: !leftOut.includes(name), valign: Gtk.Align.CENTER, tooltip_text: 'Show in the dock' });
+        shown.connect('notify::active', () => {
+          const rest = settings.get_strv('dock-bar-hidden').filter(other => other !== name);
+          settings.set_strv('dock-bar-hidden', shown.active ? rest : [...rest, name]);
+        });
+        row.add_suffix(shown);
+      }
+      row.add_suffix(iconButton('go-up-symbolic', 'Move left', i > 0, () => move(i, i - 1)));
+      row.add_suffix(iconButton('go-down-symbolic', 'Move right', i < names.length - 1, () => move(i, i + 1)));
+      order.add_row(row);
+      rows.push(row);
+    });
+  });
+  controls.watch(['top-bar-in-dock'], () => { order.visible = settings.get_boolean('top-bar-in-dock'); });
+}
+
+// The quick settings button's icons by the names of the shell's fields that hold them, in their order on the button.
+const INDICATORS = [
+  ['remoteAccess', 'Remote desktop'],
+  ['camera', 'Camera in use'],
+  ['volumeInput', 'Microphone in use'],
+  ['location', 'Location in use'],
+  ['others', 'Icons from other extensions'],
+  ['brightness', 'Brightness'],
+  ['thunderbolt', 'Thunderbolt'],
+  ['nightLight', 'Night light'],
+  ['network', 'Network'],
+  ['darkMode', 'Dark style'],
+  ['doNotDisturb', 'Do not disturb'],
+  ['backlight', 'Keyboard backlight'],
+  ['bluetooth', 'Bluetooth'],
+  ['rfkill', 'Airplane mode'],
+  ['autoRotate', 'Screen rotation'],
+  ['volumeOutput', 'Volume'],
+  ['unsafeMode', 'Unsafe mode'],
+  ['powerProfiles', 'Power mode'],
+  ['system', 'Power and battery'],
+];
+
+// Which icons the quick settings button shows.
+function addIndicators(page, controls) {
+  const { settings } = controls;
+  const key = 'quick-settings-hidden-indicators';
+  const icons = new Adw.ExpanderRow({
+    title: 'Icons on the quick settings button',
+    subtitle: 'An icon turned off is hidden. The quick settings menu keeps its entry',
+  });
+  controls.group(page, 'Quick settings button').add(icons);
+  const rows = INDICATORS.map(([name, title]) => {
+    const row = new Adw.SwitchRow({ title });
+    row.connect('notify::active', () => {
+      const leftOut = settings.get_strv(key);
+      if (row.active === !leftOut.includes(name)) return;
+      const rest = leftOut.filter(other => other !== name);
+      settings.set_strv(key, row.active ? rest : [...rest, name]);
+    });
+    icons.add_row(row);
+    return [name, row];
+  });
+  controls.watch([key], () => {
+    const leftOut = settings.get_strv(key);
+    for (const [name, row] of rows) row.active = !leftOut.includes(name);
+  });
+}
+
 function addLayout(group, controls, surface, appearance) {
   const rows = addNumbers(group, controls, LAYOUT[surface], `${surface}-`);
   if (surface === 'menu' || surface === 'panel-menu') {
@@ -735,8 +863,12 @@ function addLayout(group, controls, surface, appearance) {
   }
   if (surface === 'dock') {
     addEdgeAttachment(group, controls, surface, rows.get('margin-bottom'));
-    controls.toggle(group, 'Menus grow out of the dock', 'dock-menus-grow',
-      'Menus of top bar buttons placed in the dock (such as Dock Tray\'s tray icons) grow out of the dock\'s glass');
+    const grow = controls.toggle(group, 'Menus grow out of the dock', 'dock-menus-grow',
+      'The apps\' names, their menus and those of top bar buttons placed in the dock grow out of the dock\'s glass');
+    const branch = new Branch(grow);
+    branch.add(controls.number(group, 'Join radius', ['dock-growth-radius'], 0, 64, 1,
+      'Where what grows out meets the dock', { slider: true }));
+    controls.watch(['dock-menus-grow'], () => { branch.enabled = controls.settings.get_boolean('dock-menus-grow'); });
   }
   if (surface === 'top-bar') {
     const shown = () => controls.settings.get_value('top-bar-style').deep_unpack() !== 'off';
@@ -750,7 +882,12 @@ function addLayout(group, controls, surface, appearance) {
       'Banners grow out of the bar under the clock, or out of the screen\'s top edge while the bar is hidden');
     const growOsd = controls.toggle(group, 'Volume and brightness popups grow out of the bar', 'top-bar-osd-grow',
       'The popup moves up under the bar\'s system indicators and grows out of the bar, or out of the screen\'s top edge while the bar is hidden');
+    const joinRadius = controls.number(group, 'Join radius', ['top-bar-growth-radius'], 0, 64, 1,
+      'Where what grows out meets the bar', { slider: true });
     controls.watch(['top-bar-style'], () => { grow.visible = growNotifications.visible = growOsd.visible = shown(); });
+    controls.watch(['top-bar-style', ...TOP_BAR_GROW_KEYS], () => {
+      joinRadius.visible = shown() && TOP_BAR_GROW_KEYS.some(key => controls.settings.get_boolean(key));
+    });
     controls.toggle(group, 'Glass behind the hidden-panel clock', 'enable-hidden-clock-glass',
       'The clock Hide Top Bar: Multi Monitors shows while a panel is hidden sits on the top bar\'s glass, grown out of the screen edge');
   }
@@ -811,7 +948,7 @@ function addAdaptiveColor(group, controls, surface) {
 
 function addSurface(page, controls, surface, title) {
   const group = controls.group(page, title);
-  if (surface === 'top-bar') controls.choice(group, 'Style', TOP_BAR, 'The bar itself; menus have their own entries', false);
+  if (surface === 'top-bar') controls.choice(group, 'Style', TOP_BAR, TOP_BAR_HINT, false);
   if (surface === 'quick-settings') controls.choice(group, 'Apply glass to', QUICK_SETTINGS_GLASS, QUICK_SETTINGS_GLASS_HINT, false);
 
   // The clock's digits are glass of their own shape, without corners or an outline.
@@ -868,9 +1005,11 @@ function buildAdvancedPreferences(pages, controls) {
   selectorGroup.add(selector);
   const surfaces = new Map();
   const effects = controls.group(pages.effects, 'Individual effects');
-  controls.choice(effects, 'Top bar', TOP_BAR, 'The bar itself; menus have their own entries', false);
+  controls.choice(effects, 'Top bar', TOP_BAR, TOP_BAR_HINT, false);
+  addDockBar(effects, controls);
   for (const [surface, title, key, hint] of SURFACE_OPTIONS)
     if (key && surface !== 'application') controls.toggle(effects, title, key, hint ?? '');
+  controls.toggle(effects, DOCK_PREVIEWS, 'dock-window-previews', DOCK_PREVIEWS_HINT);
   const groups = [selectorGroup, effects, addPanelMenus(pages.effects, controls),
     ...addRendering(pages.rendering, controls)];
   let visible = false;
@@ -951,8 +1090,10 @@ export function buildPreferences(window, settings) {
   ]));
 
   const surfaces = controls.group(effects, 'Show glass on');
-  controls.choice(surfaces, 'Top bar', TOP_BAR, 'The bar itself; menus are below', false);
+  controls.choice(surfaces, 'Top bar', TOP_BAR, TOP_BAR_HINT, false);
+  addDockBar(surfaces, controls);
   controls.toggle(surfaces, 'Dock', 'enable-dock-glass');
+  controls.toggle(surfaces, DOCK_PREVIEWS, 'dock-window-previews', DOCK_PREVIEWS_HINT);
   controls.choice(surfaces, 'Menus', booleanChoices(MENU_KEYS), 'Calendar, quick settings, other top bar menus and desktop');
   controls.choice(surfaces, 'Apply quick settings glass to', QUICK_SETTINGS_GLASS, QUICK_SETTINGS_GLASS_HINT, false);
   controls.choice(surfaces, 'Popups', booleanChoices(POPUP_KEYS), 'Notifications and volume / brightness indicators');
@@ -974,6 +1115,7 @@ export function buildPreferences(window, settings) {
   addLauncher(desktop, controls);
 
   const effectsTail = collectGroups(effects, () => {
+    addIndicators(effects, controls);
     new IconStyleRules(settings, controls).add(effects);
     new WindowRules(settings, controls).add(effects);
   });

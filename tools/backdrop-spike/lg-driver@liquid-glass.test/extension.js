@@ -5,7 +5,7 @@
 // Scenarios ($LG_DRV_SCENARIO):
 //   dock       the dock over windows, a changing background and UI actors
 //   ui         the calendar menu, Quick Settings, a notification and the OSD
-//   toggles    Quick Settings in toggle mode
+//   toggles    Quick Settings in toggle mode ($LG_DRV_SETTINGS_DUMP sets the session up first)
 //   outline    the ui and toggles scenarios with every surface's outline on
 //              (LG_DRV_OUTLINE_WIDTH, default 3, and LG_DRV_OUTLINE_COLOR, default #ff2020)
 //   fullstage  how many frames redraw the whole stage while the calendar opens
@@ -24,7 +24,7 @@
 //              ($LG_DRV_WALLPAPER); LG_DRV_FEATURES picks parts (comma
 //              separated: morph, topbar, widgets, clock, launcher; default all;
 //              also morphtrace, qssub, clockshot, clockdepth (the clock behind the wallpaper; needs the models), clockkeys (the arrow keys while the clock is edited), media, guides, launcherpointer,
-//              launchercolor, iconstyle, iconglass, workspaces, fullshot, popupfreeze, redrawclip, prefshover, bannerintro, stalefreeze, dockgrow, nanrelay, notifstack (LG_DRV_LIGHT as for scale, LG_DRV_STACK notifications); fullshot to prefshover and the last three need LG_DTD_DIR; qsheight, the calendar matched
+//              launchercolor, iconstyle, iconglass, workspaces, fullshot, popupfreeze, redrawclip, prefshover, bannerintro, stalefreeze, dockgrow, dockhover, dockbar, nanrelay, notifstack (LG_DRV_LIGHT as for scale, LG_DRV_STACK notifications); fullshot to prefshover and the last three need LG_DTD_DIR; qsheight, the calendar matched
 //              to Quick Settings' height; qsflicker, the Quick Settings glass rect while adaptive colour samples;
 //              adaptiveoff, adaptive colour turned off and on while each surface is shown);
 //              also scale (the calendar, Quick Settings in both modes and the launcher
@@ -415,6 +415,20 @@ export default class LgDriver extends Extension {
 
   _lgSettings() {
     return Extension.lookupByUUID(LG_UUID).getSettings();
+  }
+
+  // $LG_DRV_SETTINGS_DUMP: a `dconf dump` of the extension's settings to start from.
+  _applySettingsDump(settings) {
+    const dump = GLib.getenv('LG_DRV_SETTINGS_DUMP');
+    if (!dump) return;
+    const text = new TextDecoder().decode(GLib.file_get_contents(dump)[1]);
+    for (const line of text.split('\n')) {
+      const at = line.indexOf('=');
+      const key = line.slice(0, at);
+      if (at < 0 || !settings.settings_schema.has_key(key)) continue;
+      const type = new GLib.VariantType(settings.get_value(key).get_type_string());
+      settings.set_value(key, GLib.Variant.parse(type, line.slice(at + 1), null, null));
+    }
   }
 
   // Rebuilds one surface's glass by switching it off and on.
@@ -943,6 +957,7 @@ export default class LgDriver extends Extension {
 
   async _togglesScenario() {
     const settings = this._lgSettings();
+    this._applySettingsDump(settings);
     settings.set_int('quick-settings-apply-to', 1);
     await sleep(1500);
     const qs = Main.panel.statusArea.quickSettings.menu;
@@ -3390,21 +3405,127 @@ export default class LgDriver extends Extension {
     await sleep(1000);
   }
 
+  // The top bar's buttons in the dock: where they are, with the bar hidden; a menu opened from the dock; the bar
+  // back with the mode off. Left on, so disabling has to put the buttons back.
+  async _dockBar(settings, m) {
+    const panel = Main.panel;
+    const boxes = [panel._leftBox, panel._centerBox, panel._rightBox];
+    const inBar = () => boxes.reduce((n, box) => n + box.get_n_children(), 0);
+    const inDock = () => findActors(Main.layoutManager.uiGroup, a => a.has_style_class_name?.('liquid-glass-dock-bar'))
+      .reduce((n, box) => n + box.get_n_children(), 0);
+    const state = () => `bar=${inBar()} dock=${inDock()} panelBox=${Main.layoutManager.panelBox.visible}`;
+    const before = inBar();
+    settings.set_boolean('dock-attach-to-edge', true);
+    settings.set_boolean('dock-menus-grow', true);
+    settings.set_boolean('top-bar-in-dock', true);
+    await sleep(2500);
+    // The buttons' highlight is a pill in the middle of the dock, cut out by the generated borders.
+    const quick = panel.statusArea.quickSettings;
+    const pill = quick.height - 2 * quick.get_theme_node().get_border_width(St.Side.TOP);
+    const on = inBar() === 0 && inDock() === before && !Main.layoutManager.panelBox.visible && pill <= 46;
+    log(`dockbar on: ${state()} pill=${pill} of ${quick.height} order=${settings.get_strv('dock-bar-order')} ${on ? 'OK' : 'NG'}`);
+    const full = [m.x, m.y, m.width, m.height];
+    await shot('dockbar-on', full);
+    for (const name of ['dateMenu', 'quickSettings']) {
+      const menu = panel.statusArea[name].menu;
+      menu.open(true);
+      await sleep(2500);
+      const [, y] = menu.actor.get_transformed_position();
+      const [, dockY] = panel.statusArea[name].get_transformed_position();
+      const above = menu.isOpen && y + menu.actor.height <= dockY + 8;
+      log(`dockbar ${name}: open=${menu.isOpen} menu bottom=${Math.round(y + menu.actor.height)} button top=${Math.round(dockY)} ${above ? 'OK' : 'NG'}`);
+      await shot(`dockbar-${name}`, full);
+      menu.close(true);
+      await sleep(1500);
+    }
+    settings.set_strv('dock-bar-hidden', ['activities']);
+    await sleep(800);
+    log(`dockbar left out: activities visible=${panel.statusArea.activities.container.visible} ` +
+      `${panel.statusArea.activities.container.visible ? 'NG' : 'OK'}`);
+    settings.reset('dock-bar-hidden');
+    settings.set_boolean('top-bar-in-dock', false);
+    await sleep(1500);
+    const off = inBar() === before && inDock() === 0 && Main.layoutManager.panelBox.visible &&
+      panel.statusArea.activities.container.visible;
+    log(`dockbar off: ${state()} ${off ? 'OK' : 'NG'}`);
+    await shot('dockbar-off', full);
+    // An icon left off the quick settings button stays hidden, and comes back with the setting.
+    const system = panel.statusArea.quickSettings._system;
+    settings.set_strv('quick-settings-hidden-indicators', ['system']);
+    await sleep(300);
+    const hidden = !system.visible;
+    system.show();
+    const kept = !system.visible;
+    settings.reset('quick-settings-hidden-indicators');
+    await sleep(300);
+    log(`indicators: hidden=${hidden} kept hidden=${kept} back=${system.visible} ${hidden && kept && system.visible ? 'OK' : 'NG'}`);
+    settings.set_boolean('top-bar-in-dock', true);
+    await sleep(2000);
+    this._dockBarButtons = before;
+  }
+
+  // The pointer on the dock: an app's name grows out of the dock's glass, and an app with a window shows its
+  // window previews in place of its name; both go when the pointer leaves.
+  async _dockHover(settings, m) {
+    settings.set_boolean('dock-attach-to-edge', true);
+    settings.set_boolean('dock-menus-grow', true);
+    settings.set_boolean('dock-window-previews', true);
+    // The virtual pointer starts in the top left corner.
+    new Gio.Settings({schema_id: 'org.gnome.desktop.interface'}).set_boolean('enable-hot-corners', false);
+    const app = await this._spawn(['gjs', '-m', `${this.path}/ticker-app.js`], 'lgdrv-ticker');
+    app?.win.move_resize_frame(false, m.x + 40, m.y + 40, 500, 300);
+    await sleep(2500);
+    const dash = findActor(Main.layoutManager.uiGroup, 'dashtodockDashContainer');
+    const items = findActors(dash, a => a.label instanceof St.Label && typeof a.showLabel === 'function');
+    const icons = findActors(dash, a => a.app && typeof a.getInterestingWindows === 'function');
+    const plain = icons.find(icon => icon.getInterestingWindows().length === 0);
+    const windowed = icons.find(icon => icon.getInterestingWindows().length > 0);
+    const backend = SHELL_MAJOR >= 48 ? global.stage.context.get_backend() : Clutter.get_default_backend();
+    const pointer = backend.get_default_seat().create_virtual_device(Clutter.InputDeviceType.POINTER_DEVICE);
+    const moveTo = async actor => {
+      const [x, y] = actor.get_transformed_position();
+      const [w, h] = actor.get_transformed_size();
+      for (const d of [6, 3, 0]) {
+        pointer.notify_absolute_motion(GLib.get_monotonic_time(), x + w / 2 - d, y + h / 2);
+        await sleep(60);
+      }
+    };
+    const full = [m.x, m.y, m.width, m.height];
+    const labelOf = icon => items.find(item => item.contains(icon))?.label;
+    const previews = () => Main.layoutManager.uiGroup.get_children()
+      .map(a => a._delegate).filter(menu => menu?._previewBox && menu.isOpen);
+
+    await moveTo(plain);
+    await sleep(1800);
+    const label = labelOf(plain);
+    const drawn = label.visible && label.has_style_class_name('liquid-glass-transparent');
+    log(`dockhover name: items=${items.length} label="${label.text}" visible=${label.visible} opacity=${label.opacity} ` +
+      `on the dock's glass=${label.has_style_class_name('liquid-glass-transparent')} ${drawn && label.opacity === 255 ? 'OK' : 'NG'}`);
+    await shot('dockhover-name', full);
+
+    if (windowed) {
+      await moveTo(windowed);
+      await sleep(2500);
+      const name = labelOf(windowed);
+      const open = previews();
+      log(`dockhover previews: open=${open.length} overview=${Main.overview.visible} name visible=${name.visible} first name gone=${!label.visible} ` +
+        `${open.length === 1 && !name.visible && !label.visible ? 'OK' : 'NG'}`);
+      await shot('dockhover-previews', full);
+    } else {
+      log('dockhover previews: no app with a window on the dock NG');
+    }
+    pointer.notify_absolute_motion(GLib.get_monotonic_time(), m.x + m.width / 2, m.y + 300);
+    await sleep(2000);
+    const left = previews().length === 0 && !label.visible;
+    log(`dockhover away: previews=${previews().length} name visible=${label.visible} ${left ? 'OK' : 'NG'}`);
+    app?.win.delete(global.get_current_time());
+    await sleep(1000);
+  }
+
   async _featuresScenario() {
     const parts = (GLib.getenv('LG_DRV_FEATURES') ?? 'morph,topbar,widgets,clock,launcher').split(',');
     const settings = this._lgSettings();
-    // A `dconf dump` of the extension's settings to start from, and an icon theme.
-    const dump = GLib.getenv('LG_DRV_SETTINGS_DUMP');
-    if (dump) {
-      const text = new TextDecoder().decode(GLib.file_get_contents(dump)[1]);
-      for (const line of text.split('\n')) {
-        const at = line.indexOf('=');
-        const key = line.slice(0, at);
-        if (at < 0 || !settings.settings_schema.has_key(key)) continue;
-        const type = new GLib.VariantType(settings.get_value(key).get_type_string());
-        settings.set_value(key, GLib.Variant.parse(type, line.slice(at + 1), null, null));
-      }
-    }
+    this._applySettingsDump(settings);
     const iconTheme = GLib.getenv('LG_DRV_ICON_THEME');
     if (iconTheme) new Gio.Settings({schema_id: 'org.gnome.desktop.interface'}).set_string('icon-theme', iconTheme);
     // A shell theme's gnome-shell.css, as the User Themes extension would load it.
@@ -4135,6 +4256,10 @@ export default class LgDriver extends Extension {
       await this._staleFreeze(settings, m);
     if (parts.includes('dockgrow'))
       await this._dockGrow();
+    if (parts.includes('dockhover'))
+      await this._dockHover(settings, m);
+    if (parts.includes('dockbar'))
+      await this._dockBar(settings, m);
     if (parts.includes('nanrelay'))
       await this._nanRelay(settings);
     if (parts.includes('notifstack'))
@@ -4148,6 +4273,11 @@ export default class LgDriver extends Extension {
     await sleep(1000);
     log(`features disabled: leftovers=${JSON.stringify(this._leftovers())} ` +
       `panel transparent=${Main.panel.has_style_class_name('liquid-glass-transparent')} modal=${Main.modalCount}`);
+    if (this._dockBarButtons) {
+      const back = [Main.panel._leftBox, Main.panel._centerBox, Main.panel._rightBox].reduce((n, box) => n + box.get_n_children(), 0);
+      const shown = Main.layoutManager.panelBox.visible;
+      log(`dockbar disabled: bar=${back} panelBox=${shown} ${back === this._dockBarButtons && shown ? 'OK' : 'NG'}`);
+    }
     Main.extensionManager.enableExtension(LG_UUID);
     await sleep(4000);
     log(`features enabled again: glasses=${lg()?.glassObjects().map(g => g._owner).join(',')}`);

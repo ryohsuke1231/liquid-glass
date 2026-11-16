@@ -6,7 +6,9 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import * as DateMenu from 'resource:///org/gnome/shell/ui/dateMenu.js';
 
+import { isActorValid } from './actors.js';
 import { UIManager } from './uiManager.js';
+import { DOCK_BAR_CLASS } from './dockBar.js';
 import { Logger } from './logger.js';
 
 // Settings prefix for every detected panel menu, separate from the calendar's
@@ -30,11 +32,14 @@ function menusOf(name: string, button: any): [string, any][] {
 // The settings Dash to Dock's menus get glass by: the panel menus' switch, and the dock growing its menus.
 const DOCK_MENU_KEYS = ['enable-extra-menu-glass', 'dock-menus-grow'];
 
-// Whether `actor` sits in Dash to Dock's dash. Some status area entries are not actors.
-function inDock(actor: unknown): boolean {
+// Whether `actor` sits in Dash to Dock's dash or, with `ours`, in the boxes the "top bar in the dock" mode adds to
+// it. A menu's source may be unset.
+function inDock(actor: unknown, ours = false): boolean {
   if (!(actor instanceof Clutter.Actor)) return false;
-  for (let a: Clutter.Actor | null = actor; a; a = a.get_parent())
-    if (a.get_name() === 'dashtodockDashContainer') return true;
+  for (let a: Clutter.Actor | null = actor; a; a = a.get_parent()) {
+    if (ours ? a instanceof St.Widget && a.has_style_class_name(DOCK_BAR_CLASS) : a.get_name() === 'dashtodockDashContainer')
+      return true;
+  }
   return false;
 }
 
@@ -75,6 +80,8 @@ export class PanelMenuManager {
 
   private _scan() {
     const panel = Main.panel as any;
+    // The shell runs the idle while it ends, after the panel and its indicators are gone.
+    if (!isActorValid(panel)) return;
     const { buttons, wanted, detected } = this._discover(panel);
     this._forgetButtons(buttons);
     this._detachUnwanted(wanted);
@@ -92,11 +99,14 @@ export class PanelMenuManager {
     const enabled = this._settings.get_boolean('enable-extra-menu-glass');
     const reserved = new Set([panel.statusArea.dateMenu?.menu, panel.statusArea.quickSettings?.menu]);
     const dockMenus = this._settings.get_boolean('dock-menus-grow');
+    const dockBar = this._settings.get_boolean('top-bar-in-dock');
 
     for (const [name, button] of Object.entries<any>(panel.statusArea)) {
-      // On the bar, or moved into Dash to Dock (as Dock Tray does with the tray icons) while its menus grow out of it.
+      // On the bar, moved into the dock with the rest of the bar, or moved into Dash to Dock (as Dock Tray does with
+      // the tray icons) while its menus grow out of it.
       const actor = button?.container ?? button;
-      if (!button || !(panel.contains(actor) || (dockMenus && inDock(actor)))) continue;
+      // An extension may destroy its indicator without taking it out of statusArea.
+      if (!button || !isActorValid(actor) || !(panel.contains(actor) || (dockBar && inDock(actor, true)) || (dockMenus && inDock(actor)))) continue;
       buttons.add(button);
       this._watchButton(button);
       for (const [menuName, menu] of menusOf(name, button)) {
@@ -222,7 +232,10 @@ export class DockMenuManager {
   private _attach(actor: Clutter.Actor) {
     const menu = menuOf(actor);
     if (!menu || this._menus.has(menu) || !this._enabled()) return;
-    if (!(actor instanceof St.Widget) || !actor.has_style_class_name('dock-app-menu') || !menu.box) return;
+    // The app icons' menus, and their window previews, which only their source tells apart from other menus.
+    if (!(actor instanceof St.Widget) || !menu.box) return;
+    const source: any = menu.sourceActor;
+    if (!actor.has_style_class_name('dock-app-menu') && !(inDock(source) && typeof source.getInterestingWindows === 'function')) return;
     const manager = new UIManager(this._path, this._settings, this._logger, { menu }, false,
       'enable-extra-menu-glass', PANEL_MENU_PREFIX, `menu:dock${++this._attached}`, false);
     manager.setup();
