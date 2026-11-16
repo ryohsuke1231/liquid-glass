@@ -6,7 +6,7 @@ import { reportFrameLoopError } from './logger.js';
 import { ensureGlassAllocated, setClipIfChanged, isActorValid, placeScreenGlass, GLASS_SHADOW_MAX_RADIUS } from './actors.js';
 import { isFrameSyncFrozen, SAME_FRAME_WINDOW_US, startStageLoop, stopStageLoop, hexToColorArray } from './animation.js';
 import { MAX_GLASS_GROWTHS } from './rendering/glassRenderer.js';
-import { addGrowthBar, removeGrowthBar, cornerReach, layoutGrowths } from './growthBars.js';
+import { addGrowthBar, removeGrowthBar, bodyCorner, layoutGrowths, moveGrowth } from './growthBars.js';
 import { dockSpacingSet } from './dockSpacing.js';
 // Room around the glass rect for the shader's edge effects.
 export const SHADER_PADDING = 20;
@@ -103,9 +103,10 @@ export class DashManager {
     // The glass rect last placed (monitor-local, padded) and the screen edge the dock is on.
     _glassRect = null;
     _side = null;
-    // dock-attach-to-edge, dock-edge-radius and dock-menus-grow, which the per-frame sync reads.
+    // dock-attach-to-edge, dock-edge-radius, dock-menus-grow and dock-growth-radius, which the per-frame sync reads.
     _attached = false;
     _edgeRadius = 0;
+    _growthRadius = 0;
     _menusGrow = false;
 
     constructor(extensionPath, targetActor, settings, logger) {
@@ -160,6 +161,12 @@ export class DashManager {
         connectSetting('dock-space-edge', remargin);
         connectSetting('dock-space-far', remargin);
         connectSetting('dock-edge-radius', () => this._readEdgeSettings());
+        connectSetting('dock-growth-radius', () => {
+            this._readEdgeSettings();
+            if (this._glassRect)
+                this._placeGlassRect(this._glassRect);
+            this.glass?.queue_redraw();
+        });
         connectSetting('dock-menus-grow', () => {
             this._readEdgeSettings();
             this._growths.clear();
@@ -178,6 +185,7 @@ export class DashManager {
         this._attached = this._settings.get_boolean('dock-attach-to-edge');
         this._edgeRadius = this._settings.get_double('dock-edge-radius');
         this._menusGrow = this._settings.get_boolean('dock-menus-grow');
+        this._growthRadius = this._settings.get_double('dock-growth-radius');
     }
 
     _effectiveMargin() {
@@ -537,14 +545,15 @@ export class DashManager {
             const smoothing = this._settings.get_double('glass-corner-smoothing');
             const { bodies, growths } = layoutGrowths([[x + p + ox, y + p + oy, w - p * 2, h - p * 2]], menus, {
                 minX: ox, maxX: ox + glass.width,
-                fillet: this._edgeRadius,
-                reach: bh => cornerReach(radius, smoothing, bh),
+                fillet: this._growthRadius,
+                smoothing,
+                corner: bh => bodyCorner(radius, smoothing, bh),
                 direction: this.growDirection,
             });
             // A menu reaching past the dock's end takes the end out with it.
             x = bodies[0][0] - ox - p;
             w = bodies[0][2] + p * 2;
-            const local = growths.map(g => ({ ...g, x: g.x - ox, y: g.y - oy }));
+            const local = growths.map(g => moveGrowth(g, -ox, -oy));
             glass.setGrowths(local);
             this._drewGrowths = local.length > 0;
             for (const g of local) {

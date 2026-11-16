@@ -14,7 +14,7 @@ import {
 } from './animation.js';
 import type { IconStyler } from './iconStyle/iconStyler.js';
 import { MAX_GLASS_GROWTHS } from './rendering/glassRenderer.js';
-import { addGrowthBar, removeGrowthBar, cornerReach, layoutGrowths, type GrowthBar } from './growthBars.js';
+import { addGrowthBar, removeGrowthBar, bodyCorner, layoutGrowths, moveGrowth, type GrowthBar } from './growthBars.js';
 import { dockSpacingSet } from './dockSpacing.js';
 
 // Room around the glass rect for the shader's edge effects.
@@ -129,9 +129,10 @@ export class DashManager implements GrowthBar {
   // The glass rect last placed (monitor-local, padded) and the screen edge the dock is on.
   private _glassRect: number[] | null = null;
   private _side: DockSide | null = null;
-  // dock-attach-to-edge, dock-edge-radius and dock-menus-grow, which the per-frame sync reads.
+  // dock-attach-to-edge, dock-edge-radius, dock-menus-grow and dock-growth-radius, which the per-frame sync reads.
   private _attached = false;
   private _edgeRadius = 0;
+  private _growthRadius = 0;
   private _menusGrow = false;
 
   constructor(extensionPath: string, targetActor: St.Widget, settings: Gio.Settings, logger: Logger) {
@@ -190,6 +191,11 @@ export class DashManager implements GrowthBar {
     connectSetting('dock-space-edge', remargin);
     connectSetting('dock-space-far', remargin);
     connectSetting('dock-edge-radius', () => this._readEdgeSettings());
+    connectSetting('dock-growth-radius', () => {
+      this._readEdgeSettings();
+      if (this._glassRect) this._placeGlassRect(this._glassRect);
+      this.glass?.queue_redraw();
+    });
     connectSetting('dock-menus-grow', () => {
       this._readEdgeSettings();
       this._growths.clear();
@@ -208,6 +214,7 @@ export class DashManager implements GrowthBar {
     this._attached = this._settings.get_boolean('dock-attach-to-edge');
     this._edgeRadius = this._settings.get_double('dock-edge-radius');
     this._menusGrow = this._settings.get_boolean('dock-menus-grow');
+    this._growthRadius = this._settings.get_double('dock-growth-radius');
   }
 
   private _effectiveMargin(): number {
@@ -575,14 +582,15 @@ export class DashManager implements GrowthBar {
       const smoothing = this._settings.get_double('glass-corner-smoothing');
       const { bodies, growths } = layoutGrowths([[x + p + ox, y + p + oy, w - p * 2, h - p * 2]], menus, {
         minX: ox, maxX: ox + glass.width,
-        fillet: this._edgeRadius,
-        reach: bh => cornerReach(radius, smoothing, bh),
+        fillet: this._growthRadius,
+        smoothing,
+        corner: bh => bodyCorner(radius, smoothing, bh),
         direction: this.growDirection,
       });
       // A menu reaching past the dock's end takes the end out with it.
       x = bodies[0][0] - ox - p;
       w = bodies[0][2] + p * 2;
-      const local = growths.map(g => ({ ...g, x: g.x - ox, y: g.y - oy }));
+      const local = growths.map(g => moveGrowth(g, -ox, -oy));
       glass.setGrowths(local);
       this._drewGrowths = local.length > 0;
       for (const g of local) {

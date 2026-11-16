@@ -49,6 +49,9 @@ const QUALITY = [
   { title: 'Fast', patch: { 'blur-method': 1, 'glass-blur-downscale': 4 } },
 ];
 
+// The settings by which things grow out of the top bar.
+const TOP_BAR_GROW_KEYS = ['top-bar-menus-grow', 'top-bar-notifications-grow', 'top-bar-osd-grow'];
+
 const DOCK_PREVIEWS = 'Window previews on the dock';
 const DOCK_PREVIEWS_HINT = 'Hovering an app with windows shows Dash to Dock\'s window previews in place of its name';
 const TOP_BAR_HINT = 'The bar itself; menus have their own entries. In the dock: its buttons sit in Dash to Dock and the bar is hidden';
@@ -860,8 +863,12 @@ function addLayout(group, controls, surface, appearance) {
   }
   if (surface === 'dock') {
     addEdgeAttachment(group, controls, surface, rows.get('margin-bottom'));
-    controls.toggle(group, 'Menus grow out of the dock', 'dock-menus-grow',
+    const grow = controls.toggle(group, 'Menus grow out of the dock', 'dock-menus-grow',
       'The apps\' names, their menus and those of top bar buttons placed in the dock grow out of the dock\'s glass');
+    const branch = new Branch(grow);
+    branch.add(controls.number(group, 'Join radius', ['dock-growth-radius'], 0, 64, 1,
+      'Where what grows out meets the dock', { slider: true }));
+    controls.watch(['dock-menus-grow'], () => { branch.enabled = controls.settings.get_boolean('dock-menus-grow'); });
   }
   if (surface === 'top-bar') {
     const shown = () => controls.settings.get_value('top-bar-style').deep_unpack() !== 'off';
@@ -875,7 +882,12 @@ function addLayout(group, controls, surface, appearance) {
       'Banners grow out of the bar under the clock, or out of the screen\'s top edge while the bar is hidden');
     const growOsd = controls.toggle(group, 'Volume and brightness popups grow out of the bar', 'top-bar-osd-grow',
       'The popup moves up under the bar\'s system indicators and grows out of the bar, or out of the screen\'s top edge while the bar is hidden');
+    const joinRadius = controls.number(group, 'Join radius', ['top-bar-growth-radius'], 0, 64, 1,
+      'Where what grows out meets the bar', { slider: true });
     controls.watch(['top-bar-style'], () => { grow.visible = growNotifications.visible = growOsd.visible = shown(); });
+    controls.watch(['top-bar-style', ...TOP_BAR_GROW_KEYS], () => {
+      joinRadius.visible = shown() && TOP_BAR_GROW_KEYS.some(key => controls.settings.get_boolean(key));
+    });
     controls.toggle(group, 'Glass behind the hidden-panel clock', 'enable-hidden-clock-glass',
       'The clock Hide Top Bar: Multi Monitors shows while a panel is hidden sits on the top bar\'s glass, grown out of the screen edge');
   }

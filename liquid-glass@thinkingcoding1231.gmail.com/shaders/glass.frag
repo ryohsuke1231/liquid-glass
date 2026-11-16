@@ -112,8 +112,8 @@ uniform float attach_radius;
 // Menus grown out of the glass (a top bar's): up to MAX_GLASS_GROWTHS boxes in
 // actor px, each with its corners' radii (top left, top right, bottom right,
 // bottom left), joined to the glass through concave fillets of grow_f px on
-// their left and right. A side flush with the glass's end has none, since a
-// rounded union bulges where two straight edges run together.
+// their left and right (see smoothUnion()). A side flush with the glass's end
+// has none, since a rounded union bulges where two straight edges run together.
 #define MAX_GLASS_GROWTHS 3
 uniform float grow_count;
 uniform float grow_f[MAX_GLASS_GROWTHS * 2];
@@ -122,6 +122,20 @@ uniform float grow_y[MAX_GLASS_GROWTHS];
 uniform float grow_w[MAX_GLASS_GROWTHS];
 uniform float grow_h[MAX_GLASS_GROWTHS];
 uniform float grow_r[MAX_GLASS_GROWTHS * 4];
+// A side too near the glass's end for the fillet and the corner to fit joins it
+// along a curve instead: GROWTH_CURVE_POINTS points in actor px walked with the
+// glass on their left (curve_px, curve_py), run on straight past both ends. It
+// belongs to side curve_slot (menu * 2 + side, left 0, right 1) and cuts the
+// glass where (y - curve_clip[0]) * curve_clip[1] <= 0. The menu's glass runs on
+// over curve_box (x, y, w, h), the stretch between its side and the glass's end.
+#define MAX_GROWTH_CURVES 3
+#define GROWTH_CURVE_POINTS 17
+uniform float curve_count;
+uniform float curve_slot[MAX_GROWTH_CURVES];
+uniform float curve_px[MAX_GROWTH_CURVES * GROWTH_CURVE_POINTS];
+uniform float curve_py[MAX_GROWTH_CURVES * GROWTH_CURVE_POINTS];
+uniform float curve_clip[MAX_GROWTH_CURVES * 2];
+uniform float curve_box[MAX_GROWTH_CURVES * 4];
 
 // Multi-region mode, for Quick Settings' toggle-button glass: up to
 // MAX_GLASS_REGIONS separate rounded rects drawn from the same blurred
@@ -276,6 +290,26 @@ float roundUnion(float a, float b, float f) {
     return max(f, min(a, b)) - length(u);
 }
 
+// roundUnion() with the fillet smoothed as the corners are (corner_smoothing):
+// a superellipse quarter that keeps the midpoint of a circle of radius f and
+// turns into both sides without a step in curvature. As in sdRoundRect(), the
+// superellipse norm is divided by its gradient's length, so the edge keeps its
+// width along the fillet.
+float smoothUnion(float a, float b, float f) {
+    if (f < 0.5)
+        return min(a, b);
+    float k = 1.0 + clamp(corner_smoothing, 0.0, 1.0) * corner_smoothing_enabled;
+    float n = -1.0 / log2(1.0 - 0.29289322 / k);
+    float r = f * k;
+    vec2 u = max(vec2(r - a, r - b), 0.0);
+    if (u.x <= 0.0 || u.y <= 0.0)
+        return max(r, min(a, b)) - length(u);
+    float len = superLength(u, n);
+    vec2 g = pow(u / len, vec2(n - 1.0));
+    float gradLen = mix(1.0, length(g), clamp(len / r, 0.0, 1.0));
+    return (r - len) / max(gradLen, 0.5);
+}
+
 float edgeUnion(float body, float wall) {
     return roundUnion(body, wall, max(attach_radius, 0.0));
 }
@@ -293,6 +327,12 @@ float sdGlassShape(vec2 p, vec2 b, vec2 corner) {
 // Where main() put the frame sdGlass() is called in: actor px = p + frame_origin.
 vec2 frame_origin;
 
+// How far (px) a growth curve runs on straight past its ends, and how far from
+// them it is still measured: past the lens band and most of the shadow, beyond
+// which the glass's other edges are as near.
+#define CURVE_RUN_ON 4096.0
+#define CURVE_MARGIN 48.0
+
 // Signed distance to a box with half-extents b and its own circular radius
 // at each corner (top left, top right, bottom right, bottom left; y down).
 float sdCornerBox(vec2 p, vec2 b, vec4 r) {
@@ -302,10 +342,27 @@ float sdCornerBox(vec2 p, vec2 b, vec4 r) {
     return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - rr;
 }
 
+float cross2(vec2 a, vec2 b) {
+    return a.x * b.y - a.y * b.x;
+}
+
+// One segment of a growth curve: keeps the nearest distance to q in `best`, and
+// in `side` which side of the curve q is on, from the segment spanning q's y:
+// the curve runs one way across y, so exactly one does.
+void curveStep(vec2 q, vec2 a, vec2 b, inout float best, inout float side) {
+    vec2 e = b - a;
+    vec2 w = q - a;
+    float t = clamp(dot(w, e) / max(dot(e, e), 1.0e-6), 0.0, 1.0);
+    best = min(best, length(w - e * t));
+    if ((q.y - a.y) * (q.y - b.y) <= 0.0 && abs(e.y) > 1.0e-6)
+        side = cross2(e, w) > 0.0 ? -1.0 : 1.0;
+}
+
 // sdGlassShape() with the menus grown out of it.
 float sdGlass(vec2 p, vec2 b, vec2 corner) {
     float d = sdGlassShape(p, b, corner);
     int count = int(min(grow_count, float(MAX_GLASS_GROWTHS)));
+    int curves = int(min(curve_count, float(MAX_GROWTH_CURVES)));
     vec2 q = p + frame_origin;
     for (int i = 0; i < MAX_GLASS_GROWTHS; i++) {
         if (i >= count) break;
@@ -315,7 +372,33 @@ float sdGlass(vec2 p, vec2 b, vec2 corner) {
         // Blended across the middle, so the field stays continuous inside.
         float side = smoothstep(c.x - extent.x * 0.5, c.x + extent.x * 0.5, q.x);
         float f = max(mix(grow_f[i * 2], grow_f[i * 2 + 1], side), 0.0);
-        d = roundUnion(d, sdCornerBox(q - c, extent, r), f);
+        d = smoothUnion(d, sdCornerBox(q - c, extent, r), f);
+        for (int k = 0; k < MAX_GROWTH_CURVES; k++) {
+            if (k >= curves) break;
+            float slot = curve_slot[k];
+            if (abs(slot - float(i * 2)) > 0.5 && abs(slot - float(i * 2 + 1)) > 0.5) continue;
+            vec4 box = vec4(curve_box[k * 4], curve_box[k * 4 + 1], curve_box[k * 4 + 2], curve_box[k * 4 + 3]);
+            d = min(d, sdCornerBox(q - box.xy - box.zw * 0.5, box.zw * 0.5, vec4(0.0)));
+            if ((q.y - curve_clip[k * 2]) * curve_clip[k * 2 + 1] > 0.0) continue;
+            int base = k * GROWTH_CURVE_POINTS;
+            vec2 first = vec2(curve_px[base], curve_py[base]);
+            vec2 last = vec2(curve_px[base + GROWTH_CURVE_POINTS - 1], curve_py[base + GROWTH_CURVE_POINTS - 1]);
+            // The curve runs one way across x and across y, so its ends bound it.
+            if (q.x < min(first.x, last.x) - CURVE_MARGIN || q.x > max(first.x, last.x) + CURVE_MARGIN ||
+                q.y < min(first.y, last.y) - CURVE_MARGIN || q.y > max(first.y, last.y) + CURVE_MARGIN) continue;
+            vec2 second = vec2(curve_px[base + 1], curve_py[base + 1]);
+            vec2 nextToLast = vec2(curve_px[base + GROWTH_CURVE_POINTS - 2], curve_py[base + GROWTH_CURVE_POINTS - 2]);
+            float best = 1.0e9;
+            float inSide = 1.0;
+            vec2 prev = first + normalize(first - second) * CURVE_RUN_ON;
+            for (int n = 0; n < GROWTH_CURVE_POINTS; n++) {
+                vec2 next = vec2(curve_px[base + n], curve_py[base + n]);
+                curveStep(q, prev, next, best, inSide);
+                prev = next;
+            }
+            curveStep(q, last, last + normalize(last - nextToLast) * CURVE_RUN_ON, best, inSide);
+            d = max(d, best * inSide);
+        }
     }
     return d;
 }

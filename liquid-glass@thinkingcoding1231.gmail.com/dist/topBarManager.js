@@ -8,7 +8,7 @@ import { MAX_GLASS_GROWTHS } from './rendering/glassRenderer.js';
 import { ensureGlassAllocated, isActorValid } from './actors.js';
 import { startSyncLoop, stopStageLoop, hexToColorArray } from './animation.js';
 import { sanitizeColorPreference, AdaptiveTextColor } from './contrastSampler.js';
-import { addGrowthBar, removeGrowthBar, cornerReach, layoutGrowths } from './growthBars.js';
+import { addGrowthBar, removeGrowthBar, bodyCorner, layoutGrowths, moveGrowth } from './growthBars.js';
 // Extra space for shader edge effects.
 const SHADER_PADDING = 20;
 // Space for the pill shadow.
@@ -117,6 +117,7 @@ export class TopBarManager {
             this._applyAttach();
             this._applyGrowths();
         });
+        watch('top-bar-growth-radius', () => this._applyGrowths());
         for (const key of GROW_KEYS)
             watch(key, () => {
                 // The glass reaches down the monitor only while something grows out of it.
@@ -710,7 +711,7 @@ export class TopBarManager {
             glass.setGlassRegions(regions);
             glass.setGlassGeometry(0, 0, width, height);
         }
-        glass.setGrowths(growths.map(g => ({ ...g, x: g.x - glass.x, y: g.y - glass.y })));
+        glass.setGrowths(growths.map(g => moveGrowth(g, -glass.x, -glass.y)));
         glass.syncSources();
     }
 
@@ -721,8 +722,9 @@ export class TopBarManager {
         const smoothing = this._settings.get_double('glass-corner-smoothing');
         return layoutGrowths(this._bodies, menus, {
             minX, maxX: minX + this._glassSize[0],
-            fillet: this._settings.get_double(this._key('edge-radius')),
-            reach: h => cornerReach(radius, smoothing, h),
+            fillet: this._settings.get_double(this._key('growth-radius')),
+            smoothing,
+            corner: h => bodyCorner(radius, smoothing, h),
             direction: 1,
         });
     }

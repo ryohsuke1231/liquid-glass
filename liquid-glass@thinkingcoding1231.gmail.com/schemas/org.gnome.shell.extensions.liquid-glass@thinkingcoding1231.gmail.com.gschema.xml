@@ -35,7 +35,13 @@
     <key name="dock-menus-grow" type="b">
       <default>false</default>
       <summary>Menus grow out of the dock</summary>
-      <description>The dock's glass grows into the names of its apps and into the menus of its apps and of top bar buttons placed in the dock (such as the tray icons Dock Tray moves there) instead of the menus floating with glass of their own: up out of a dock at the bottom of the screen, down out of one at the top. The menus then take the dock's glass settings, and the edge flare radius rounds the join.</description>
+      <description>The dock's glass grows into the names of its apps and into the menus of its apps and of top bar buttons placed in the dock (such as the tray icons Dock Tray moves there) instead of the menus floating with glass of their own: up out of a dock at the bottom of the screen, down out of one at the top. The menus then take the dock's glass settings, and dock-growth-radius rounds the join.</description>
+    </key>
+    <key name="dock-growth-radius" type="d">
+      <range min="0.0" max="64.0"/>
+      <default>24.0</default>
+      <summary>Join radius of what grows out of the dock (px)</summary>
+      <description>Radius of the concave curve where the names, previews and menus that grow out of the dock join its glass. Smoothed as the corners are, by glass-corner-smoothing.</description>
     </key>
     <key name="dock-space-edge" type="i">
       <range min="-1" max="40"/>
@@ -981,7 +987,13 @@
     <key name="top-bar-menus-grow" type="b">
       <default>false</default>
       <summary>Menus grow out of the bar</summary>
-      <description>The top bar's glass grows down into the menus opened from it (the calendar, Quick Settings in whole-menu mode and the other top bar menus) instead of the menus floating below it with glass of their own. The menus then take the top bar's glass settings, and the edge flare radius rounds the join.</description>
+      <description>The top bar's glass grows down into the menus opened from it (the calendar, Quick Settings in whole-menu mode and the other top bar menus) instead of the menus floating below it with glass of their own. The menus then take the top bar's glass settings, and top-bar-growth-radius rounds the join.</description>
+    </key>
+    <key name="top-bar-growth-radius" type="d">
+      <range min="0.0" max="64.0"/>
+      <default>18.0</default>
+      <summary>Join radius of what grows out of the bar (px)</summary>
+      <description>Radius of the concave curve where the menus, banners and popups that grow out of the top bar join its glass. Smoothed as the corners are, by glass-corner-smoothing.</description>
     </key>
     <key name="top-bar-padding-top" type="i">
       <range min="0" max="100"/>
