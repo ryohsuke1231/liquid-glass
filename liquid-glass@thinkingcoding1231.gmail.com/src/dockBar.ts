@@ -25,6 +25,8 @@ const ACTIVE = (ExtensionState as unknown as { ACTIVE: number }).ACTIVE;
 // Dash to Dock builds its new docks right after it tears the old ones down. The top bar stays hidden in between,
 // and comes back only if no dock is there after this long.
 const RESCAN_MS = 1000;
+// How often a menu of another extension that holds the screen is looked at once the dock's own have closed (ms).
+const MENU_RECHECK_MS = 100;
 // A button's highlight is this high (px), in the middle of the dock; the button takes the pointer across the dock.
 const PILL = 44;
 // The screen recording and sharing indicators are a filled pill at all times, which at the others' height would be
@@ -163,6 +165,8 @@ export class DockBarManager {
   private _frameSignalId = 0;
   // The dash that was told a menu is open, until it is told the menu closed.
   private _announcedDash: Clutter.Actor | null = null;
+  // The dash's own emit(), if it had one of its own rather than its class's, while closing is held back.
+  private _ownEmit: ((...args: any[]) => any) | undefined;
   private _syncing = false;
   private _quickSettings: { menu: any, alignment: number } | null = null;
   private _style: GeneratedStylesheet;
@@ -287,7 +291,10 @@ export class DockBarManager {
     this._slots.splice(index, 1);
     if (slot === this._host) {
       // The dock is going: there is nothing left to tell it.
-      if (this._announcedDash === slot.dash) this._announcedDash = null;
+      if (this._announcedDash === slot.dash) {
+        this._announcedDash = null;
+        this._ownEmit = undefined;
+      }
       this._restoreAll();
       this._host = null;
     }
@@ -613,25 +620,42 @@ export class DockBarManager {
       GLib.Source.remove(this._closeIdleId);
       this._closeIdleId = 0;
     }
-    const dash = this._host?.dash;
+    const dash: any = this._host?.dash;
     if (this._announcedDash || !dash || !isActorValid(dash)) return;
     this._announcedDash = dash;
+    // Dash to Dock keeps one flag for all the dock's menus, and Dock Tray tells it about its own: going from a tray
+    // menu to one of the buttons ends the tray's, which would let the dock hide under the menu now open. Another
+    // extension's closing is held back while a menu still holds the screen.
+    this._ownEmit = Object.hasOwn(dash, 'emit') ? dash.emit : undefined;
+    const emit = dash.emit;
+    dash.emit = (name: string, ...args: unknown[]) =>
+      name === 'menu-closed' && this._holdsScreen() ? undefined : emit.call(dash, name, ...args);
     dash.emit('menu-opened');
   }
 
+  private _holdsScreen(): boolean {
+    return this._menuOpen() || Main.modalCount > 0;
+  }
+
   // Lets the dock hide again once no menu is open. Going from one button to the next closes a menu and opens
-  // another, and the dock must not start hiding in between: this waits for an idle.
+  // another, and the dock must not start hiding in between: this waits for an idle. A menu of another extension's
+  // that still holds the screen is waited for, as nothing else tells the dock it closed.
   private _queueMenuClosed(): void {
     if (this._closeIdleId || !this._announcedDash) return;
-    this._closeIdleId = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
-      this._closeIdleId = 0;
-      if (!this._menuOpen()) {
-        this._endMenu();
-        // The pointer may have gone to another dock while the menu held it.
-        this._queueMove();
-      }
+    this._closeIdleId = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => this._closeIdle());
+  }
+
+  private _closeIdle(): boolean {
+    this._closeIdleId = 0;
+    if (this._menuOpen()) return GLib.SOURCE_REMOVE;
+    if (Main.modalCount > 0) {
+      this._closeIdleId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, MENU_RECHECK_MS, () => this._closeIdle());
       return GLib.SOURCE_REMOVE;
-    });
+    }
+    this._endMenu();
+    // The pointer may have gone to another dock while the menu held it.
+    this._queueMove();
+    return GLib.SOURCE_REMOVE;
   }
 
   private _endMenu(): void {
@@ -639,9 +663,13 @@ export class DockBarManager {
       GLib.Source.remove(this._closeIdleId);
       this._closeIdleId = 0;
     }
-    const dash = this._announcedDash;
+    const dash: any = this._announcedDash;
     this._announcedDash = null;
-    if (dash && isActorValid(dash)) dash.emit('menu-closed');
+    if (!dash || !isActorValid(dash)) return;
+    if (this._ownEmit) dash.emit = this._ownEmit;
+    else delete dash.emit;
+    this._ownEmit = undefined;
+    dash.emit('menu-closed');
   }
 
   private _frame(): void {
